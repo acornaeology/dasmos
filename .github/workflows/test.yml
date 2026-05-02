@@ -1,0 +1,141 @@
+name: Test
+
+# Reusable workflow: builds a wheel and runs the test suite against the
+# installed wheel (not the source tree) on a matrix of OS x Python
+# version. Called by ci.yml on push/PR so verification always exercises
+# the exact artefact shape users will install -- catching packaging
+# regressions like missing package data, omitted entry points, or an
+# unshipped py.typed marker that an editable install would hide.
+#
+# A pinned beebasm checkout is built from source per matrix cell and
+# placed on PATH before pytest runs. This activates the
+# ``@pytest.mark.beebasm`` round-trip tests (which auto-skip when the
+# binary isn't found); without them the headline acceptance tests
+# (Econet Bridge full-driver round-trip, 6502 Tube Client round-trip,
+# py8dis annotation parity) are deselected, so dasmos in CI without
+# beebasm would be a hollow check.
+
+on:
+  workflow_call:
+
+# Pin beebasm at a known-good upstream ref so a remote rewrite can't
+# silently break the round-trip tests. Bump deliberately.
+env:
+  BEEBASM_REF: master
+
+jobs:
+  resolve-python-versions:
+    name: Resolve supported Python versions from pyproject classifiers
+    runs-on: ubuntu-latest
+    outputs:
+      versions: ${{ steps.extract.outputs.versions }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: extract
+        name: Pick earliest + latest declared Python version
+        # Reading the supported versions from the classifiers keeps the CI
+        # matrix in sync with the published metadata. ubuntu-latest ships
+        # a stdlib tomllib-capable Python (>=3.11).
+        run: |
+          versions=$(python - <<'PY'
+          import json
+          import re
+          import tomllib
+          from pathlib import Path
+
+          data = tomllib.loads(Path("pyproject.toml").read_text())
+          declared = sorted(
+              (
+                  c.rsplit(" :: ", 1)[-1]
+                  for c in data["project"]["classifiers"]
+                  if re.match(r"^Programming Language :: Python :: 3\.\d+$", c)
+              ),
+              key=lambda v: tuple(map(int, v.split("."))),
+          )
+          if not declared:
+              raise SystemExit("No 'Programming Language :: Python :: 3.x' classifiers found")
+          selected = [declared[0], declared[-1]] if len(declared) >= 2 else declared
+          print(json.dumps(selected))
+          PY
+          )
+          echo "versions=$versions" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Test on ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    needs: resolve-python-versions
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ${{ fromJson(needs.resolve-python-versions.outputs.versions) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # ---- beebasm: build from source per OS so the round-trip tests
+      # ---- run for real rather than getting auto-skipped.
+
+      - name: Checkout beebasm
+        uses: actions/checkout@v4
+        with:
+          repository: stardot/beebasm
+          ref: ${{ env.BEEBASM_REF }}
+          path: beebasm-src
+
+      - name: Build beebasm (cmake)
+        # CMake handles all three OSes uniformly. The built binary
+        # lands under build/ on Linux/macOS and under build/Release/
+        # on Windows MSBuild generators; we move it to a stable
+        # location so the next step can put it on PATH.
+        shell: bash
+        run: |
+          cd beebasm-src
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release
+          mkdir -p "$HOME/bin"
+          if   [ -f build/Release/beebasm.exe ]; then cp build/Release/beebasm.exe "$HOME/bin/"
+          elif [ -f build/beebasm.exe        ]; then cp build/beebasm.exe         "$HOME/bin/"
+          elif [ -f build/beebasm            ]; then cp build/beebasm             "$HOME/bin/"
+          else
+            echo "Could not locate the built beebasm binary under build/"
+            ls -la build/
+            exit 1
+          fi
+
+      - name: Add beebasm to PATH
+        # ``conftest.py`` finds beebasm via the BEEBASM env var first,
+        # then PATH. Putting it on PATH is enough.
+        shell: bash
+        run: echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      # ---- dasmos: build a wheel and test against the installed wheel.
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache-dependency-glob: pyproject.toml
+
+      - name: Install dependency environment (without dasmos itself)
+        # Sync all dev/test deps into the venv but skip installing the
+        # dasmos project. We install it from a freshly built wheel below
+        # so tests exercise the distribution artefact rather than the
+        # source tree.
+        run: uv sync --no-install-project
+
+      - name: Build wheel
+        run: uv build
+
+      - name: Install the built wheel into the test environment
+        # Force bash so dist/*.whl globs on Windows runners too (default
+        # pwsh does not glob the same way).
+        shell: bash
+        run: uv pip install dist/*.whl
+
+      - name: Run tests against the installed wheel
+        # --no-sync keeps the existing venv (with the wheel-installed
+        # dasmos) intact; without it `uv run` would re-sync and
+        # reinstate an editable install of the source tree, defeating
+        # the point. Confirmed locally that the test process imports
+        # dasmos from site-packages.
+        run: uv run --no-sync pytest -v

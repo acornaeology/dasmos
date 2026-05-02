@@ -1,0 +1,62 @@
+name: Release
+
+# Atomic release workflow: on a `v*` tag, runs the full test matrix as
+# the publication gate. Only when all tests pass do we publish to PyPI.
+#
+# A failing test matrix holds back the publication, so every shipped
+# version has green tests against the built wheel on every supported
+# OS x Python combination.
+#
+# `workflow_dispatch` is enabled so a release can be re-attempted
+# manually if a publication fails transiently after the gate passes.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+# Default read-only permissions for the workflow; the publishing job
+# narrows its own permissions to what it actually needs.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # Reuses the matrix defined in test.yml so CI and Release exercise
+    # the exact same test surface against the built wheel.
+    uses: ./.github/workflows/test.yml
+
+  publish-pypi:
+    name: Publish to PyPI
+    # The test gate must pass before publication. If it fails, this
+    # job does not run.
+    needs: [test]
+    runs-on: ubuntu-latest
+    # The `pypi` GitHub deployment environment is the gate for the
+    # PYPI_TOKEN secret (and/or trusted-publishing OIDC config).
+    environment:
+      name: pypi
+      url: https://pypi.org/project/dasmos/
+    permissions:
+      # Required if/when the project opts into PyPI trusted publishing
+      # via OIDC. Harmless when using a token instead.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+
+      - name: Build distributions
+        run: uv build
+
+      - name: Publish to PyPI
+        # Uses UV_PUBLISH_TOKEN if set; otherwise uv falls back to
+        # PyPI trusted publishing via the OIDC token minted by
+        # GitHub (works when the project is registered as a trusted
+        # publisher under the `pypi` environment).
+        run: uv publish
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
