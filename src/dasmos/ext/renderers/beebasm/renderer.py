@@ -84,10 +84,14 @@ class BeebasmRenderer(TextRenderer):
     #: Default prefix used for the inline boundary labels that bracket
     #: the loaded region (``{prefix}start`` / ``{prefix}end``). Beebasm's
     #: ``save`` directive references these so the produced binary
-    #: covers exactly the disassembled byte range. Override via the
-    #: constructor's ``boundary_label_prefix`` keyword to use a
-    #: different prefix — e.g. ``"pydis_"`` for byte-for-byte text
-    #: compatibility with py8dis-fork output during migration testing.
+    #: covers exactly the disassembled byte range.
+    #:
+    #: Override via the constructor's ``boundary_label_prefix`` keyword
+    #: to use a different prefix — e.g. ``"pydis_"`` for byte-for-byte
+    #: text compatibility with py8dis-fork output during migration
+    #: testing — or pass ``""`` (the empty string) to suppress the
+    #: marker labels entirely; the ``save`` directive then references
+    #: literal hex addresses for the loaded range.
     DEFAULT_BOUNDARY_LABEL_PREFIX = "dasmos_"
 
     def __init__(
@@ -100,6 +104,7 @@ class BeebasmRenderer(TextRenderer):
         super().__init__(name=name, **kwargs)
         # Beebasm wants ``ROL A`` (explicit accumulator), not just ``ROL``.
         self.explicit_a = True
+        # ``None`` means "use the default"; ``""`` means "suppress".
         self.boundary_label_prefix = (
             boundary_label_prefix
             if boundary_label_prefix is not None
@@ -107,13 +112,29 @@ class BeebasmRenderer(TextRenderer):
         )
 
     @property
-    def boundary_start_label(self) -> str:
-        """The ``.label`` placed at the start of the loaded region."""
+    def emit_boundary_labels(self) -> bool:
+        """True iff this renderer is configured to emit start/end
+        marker labels around the loaded range. False when
+        ``boundary_label_prefix`` is the empty string.
+        """
+        return bool(self.boundary_label_prefix)
+
+    @property
+    def boundary_start_label(self) -> str | None:
+        """The ``.label`` placed at the start of the loaded region,
+        or ``None`` if marker labels are suppressed.
+        """
+        if not self.emit_boundary_labels:
+            return None
         return f"{self.boundary_label_prefix}start"
 
     @property
-    def boundary_end_label(self) -> str:
-        """The ``.label`` placed one past the end of the loaded region."""
+    def boundary_end_label(self) -> str | None:
+        """The ``.label`` placed one past the end of the loaded region,
+        or ``None`` if marker labels are suppressed.
+        """
+        if not self.emit_boundary_labels:
+            return None
         return f"{self.boundary_label_prefix}end"
 
     # -- lexical building blocks ------------------------------------------
@@ -162,17 +183,31 @@ class BeebasmRenderer(TextRenderer):
         return []
 
     def disassembly_end(self) -> list[str]:
-        # ``save <start>, <end>`` references the boundary labels
-        # render() emits around the loaded range, so beebasm produces
-        # a binary identical in size. The label prefix is
-        # configurable — see DEFAULT_BOUNDARY_LABEL_PREFIX.
-        out: list[str] = [""]
-        save_args = f"{self.boundary_start_label}, {self.boundary_end_label}"
-        if self.output_filename is not None:
-            out.append(f'save "{self.output_filename}", {save_args}')
+        # The ``save`` directive isn't emitted from here any more —
+        # it depends on the load range, which only ``render()`` has
+        # access to. ``render()`` calls ``_save_directive()`` for that.
+        # ``disassembly_end`` is now reserved for whatever truly
+        # belongs at the very end (assertions, trailing newlines).
+        return []
+
+    def _save_directive(self, load_start, load_end) -> str:
+        """Render the ``save`` directive for the loaded range.
+
+        Uses the boundary marker labels when they're configured;
+        falls back to literal hex addresses when they're suppressed
+        (``boundary_label_prefix=""``).
+        """
+        if self.emit_boundary_labels:
+            save_args = (
+                f"{self.boundary_start_label}, {self.boundary_end_label}"
+            )
         else:
-            out.append(f"save {save_args}")
-        return out
+            save_args = (
+                f"{self.hex4(int(load_start))}, {self.hex4(int(load_end))}"
+            )
+        if self.output_filename is not None:
+            return f'save "{self.output_filename}", {save_args}'
+        return f"save {save_args}"
 
     def code_start(self, start_addr, end_addr, first: bool) -> list[str]:
         # Blank line before, ORG line, blank line after — matches
@@ -235,9 +270,10 @@ class BeebasmRenderer(TextRenderer):
             lines.extend(self.disassembly_end())
             return TextOutput("\n".join(lines) + "\n")
 
-        # ORG + start marker.
+        # ORG + optional start marker (omitted when prefix is empty).
         lines.extend(self.code_start(load_start, load_end, first=True))
-        lines.append(self.inline_label(self.boundary_start_label))
+        if self.boundary_start_label is not None:
+            lines.append(self.inline_label(self.boundary_start_label))
 
         # Walk classifications in order. Anything between classified
         # addresses is unclassified-loaded data (already covered by
@@ -291,8 +327,11 @@ class BeebasmRenderer(TextRenderer):
             for ann in ir.annotations.get_for_align(int(binary_addr), Align.AFTER_LINE):
                 lines.append(self._render_annotation(ann))
 
-        # End marker + save directive.
-        lines.append(self.inline_label(self.boundary_end_label))
+        # Optional end marker, save directive, any trailing close-out.
+        if self.boundary_end_label is not None:
+            lines.append(self.inline_label(self.boundary_end_label))
+        lines.append("")
+        lines.append(self._save_directive(load_start, load_end))
         lines.extend(self.disassembly_end())
 
         return TextOutput("\n".join(lines) + "\n")

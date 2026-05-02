@@ -115,31 +115,46 @@ class TestLexicalSyntax:
         out = BeebasmRenderer().fill_directive(0xAA, 16)
         assert out == ["for _dasmos_fill%, 1, 16 : equb &aa : next"]
 
-    def test_save_directive_uses_default_dasmos_prefix(self):
-        # Default save form references the dasmos_start / dasmos_end
-        # marker labels that render() emits around the loaded range.
-        # Prefix is configurable via the constructor.
-        out = BeebasmRenderer().disassembly_end()
-        assert "save dasmos_start, dasmos_end" in out
+    def test_boundary_labels_default_to_dasmos_prefix(self):
+        r = BeebasmRenderer()
+        assert r.boundary_start_label == "dasmos_start"
+        assert r.boundary_end_label == "dasmos_end"
+        assert r.emit_boundary_labels is True
 
-    def test_save_directive_with_pydis_prefix_for_compat(self):
-        # Constructing with the legacy py8dis prefix lets dasmos
-        # produce text that matches py8dis-fork output line-for-line
-        # — useful for diffing during the migration.
+    def test_boundary_labels_with_pydis_prefix_for_compat(self):
+        # The legacy py8dis prefix lets dasmos produce text that
+        # matches py8dis-fork output line-for-line — useful for
+        # diffing during the migration.
         r = BeebasmRenderer(boundary_label_prefix="pydis_")
-        out = r.disassembly_end()
-        assert "save pydis_start, pydis_end" in out
+        assert r.boundary_start_label == "pydis_start"
+        assert r.boundary_end_label == "pydis_end"
 
-    def test_boundary_labels_are_derived_from_prefix(self):
+    def test_boundary_labels_are_derived_from_arbitrary_prefix(self):
         r = BeebasmRenderer(boundary_label_prefix="my_marker_")
         assert r.boundary_start_label == "my_marker_start"
         assert r.boundary_end_label == "my_marker_end"
 
-    def test_save_directive_with_filename(self):
+    def test_empty_prefix_suppresses_boundary_labels(self):
+        r = BeebasmRenderer(boundary_label_prefix="")
+        assert r.emit_boundary_labels is False
+        assert r.boundary_start_label is None
+        assert r.boundary_end_label is None
+
+    def test_save_directive_with_filename_renders_into_output(self, tmp_path):
+        # The save directive lives in render() now (it depends on the
+        # load range). Constructing the renderer and rendering a tiny
+        # IR is the easiest way to verify the filename surfaces.
+        from dasmos.disassembler import Disassembler
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(b"\x60")
+        d = Disassembler.create(cpu="nmos6502")
+        d.load(bin_path, 0x8000)
+        d.entry(0x8000)
+        ir = d.disassemble()
         r = BeebasmRenderer()
         r.set_output_filename("output.bin")
-        out = r.disassembly_end()
-        assert any("output.bin" in line for line in out)
+        text = str(ir.render(r))
+        assert 'save "output.bin", dasmos_start, dasmos_end' in text
 
 
 # ---------------------------------------------------------------------------
@@ -157,13 +172,16 @@ def _make_disassembler_with_program(tmp_path, binary_bytes, load_addr=0x8000):
 
 class TestRenderTinyProgram:
 
-    def test_empty_ir_produces_no_org_just_save(self, tmp_path):
-        # Without any load(), the renderer can't even emit ORG.
+    def test_empty_ir_produces_minimal_output(self, tmp_path):
+        # Without any load(), the renderer has nothing to anchor a
+        # save directive to (no load range, no marker labels), so it
+        # emits the minimal empty disassembly. Better than emitting a
+        # save directive that references undefined labels.
         d = Disassembler.create(cpu="nmos6502")
         ir = d.disassemble()
         text = str(ir.render("beebasm"))
-        assert "save dasmos_start, dasmos_end" in text
-        assert "org" not in text  # nothing loaded
+        assert "org" not in text   # nothing loaded
+        assert "save" not in text  # no range to save
 
     def test_renders_org_and_save_around_loaded_range(self, tmp_path):
         d = _make_disassembler_with_program(tmp_path, b"\x60", 0x8000)
@@ -189,6 +207,28 @@ class TestRenderTinyProgram:
         assert ".pydis_end" in text
         assert "save pydis_start, pydis_end" in text
         assert ".dasmos_start" not in text  # default prefix not present
+
+    def test_empty_prefix_omits_marker_labels_uses_literal_addresses(
+        self, tmp_path,
+    ):
+        # An empty prefix suppresses the .start / .end marker labels.
+        # The save directive then references literal hex addresses
+        # for the loaded range — still round-trippable, just without
+        # the symbolic anchors in the source.
+        from dasmos.ext.renderers.beebasm import BeebasmRenderer
+        d = _make_disassembler_with_program(tmp_path, b"\x60", 0x8000)
+        d.entry(0x8000)
+        ir = d.disassemble()
+        renderer = BeebasmRenderer(boundary_label_prefix="")
+        text = str(ir.render(renderer))
+        # No marker labels at all — and no stringified-None leak either.
+        assert ".dasmos_start" not in text
+        assert ".dasmos_end" not in text
+        assert ".pydis_start" not in text
+        assert ".None" not in text
+        # Save uses literal addresses bracketing the loaded range.
+        # 1-byte load at &8000 → range [&8000, &8001).
+        assert "save &8000, &8001" in text
 
     def test_renders_simple_lda_rts(self, tmp_path):
         # 0x8000: LDA #$2A   (a9 2a)
@@ -390,6 +430,42 @@ class TestBeebasmRoundTrip:
         original = b"\x6c\x34\x12"
         produced = self._round_trip(tmp_path, original)
         assert produced == original
+
+    def test_empty_prefix_round_trips_via_literal_addresses(self, tmp_path):
+        # Round-trip with marker labels suppressed — the save directive
+        # uses literal hex addresses; the resulting binary still
+        # equals the original.
+        binpath = tmp_path / "in.bin"
+        original = b"\xa9\x42\x60"
+        binpath.write_bytes(original)
+
+        d = Disassembler.create(cpu="nmos6502")
+        d.load(binpath, 0x8000)
+        d.entry(0x8000)
+        ir = d.disassemble()
+
+        renderer = BeebasmRenderer(boundary_label_prefix="")
+        renderer.set_output_filename(str(tmp_path / "out.bin"))
+        text = str(ir.render(renderer))
+
+        # Sanity: no marker labels present — and no stringified-None
+        # leak either (regression: a previous version emitted ".None"
+        # when the prefix was empty).
+        assert "_start" not in text
+        assert "_end" not in text
+        assert ".None" not in text
+
+        asm_path = tmp_path / "src.asm"
+        asm_path.write_text(text)
+        result = subprocess.run(
+            [BEEBASM, "-i", str(asm_path)],
+            capture_output=True, text=True, cwd=str(tmp_path),
+        )
+        assert result.returncode == 0, (
+            f"beebasm failed:\n=== source ===\n{text}\n"
+            f"=== stderr ===\n{result.stderr}"
+        )
+        assert (tmp_path / "out.bin").read_bytes() == original
 
     def test_each_addressing_mode_round_trips(self, tmp_path):
         # A program that exercises every common 6502 addressing mode.
