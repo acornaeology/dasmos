@@ -49,6 +49,7 @@ from typing import TYPE_CHECKING
 from dasmos.core.annotations import Align, Annotation, Banner, Comment
 from dasmos.core.classification import Byte, Fill, String, Word
 from dasmos.core.memory import BinaryAddr
+from dasmos.core.move import MoveDefinition
 from dasmos.cpu import Opcode, OperandKind
 from dasmos.output import TextOutput
 from dasmos.renderer import TextRenderer
@@ -342,6 +343,14 @@ class BeebasmRenderer(TextRenderer):
         if self.boundary_start_label is not None:
             lines.append(self.inline_label(self.boundary_start_label))
 
+        # Pre-compute move-region boundaries: ``{src_binary_addr: move_def}``
+        # for every registered (non-base) move. The body walk uses this to
+        # detect when iteration enters or exits a relocated region.
+        moves_by_src = self._moves_by_src_addr(ir)
+        active_move = None
+        active_move_src_label: str | None = None
+        active_move_dest_label: str | None = None
+
         # Walk classifications in order. Anything between classified
         # addresses is unclassified-loaded data (already covered by
         # the leftover-classification pass) so iter_classified_starts
@@ -351,6 +360,38 @@ class BeebasmRenderer(TextRenderer):
             # the user adds classifications manually before loading.
             if not (int(load_start) <= int(binary_addr) < int(load_end)):
                 continue
+
+            # Move-region exit: if the iteration has stepped past the
+            # end of the active relocated block, emit the close-out
+            # directives and resume in the source-PC context.
+            if active_move is not None and int(binary_addr) >= (
+                int(active_move.src_binary_addr) + active_move.length
+            ):
+                lines.extend(self._emit_move_exit(
+                    active_move, active_move_src_label, active_move_dest_label,
+                ))
+                active_move = None
+                active_move_src_label = None
+                active_move_dest_label = None
+
+            # Move-region entry: if this binary address is the start
+            # of a relocation, anchor the source label here, switch PC
+            # to the destination, and remember the labels we need for
+            # the close-out.
+            if active_move is None and int(binary_addr) in moves_by_src:
+                move = moves_by_src[int(binary_addr)]
+                active_move_src_label = self._first_explicit_name(
+                    ir, int(binary_addr),
+                )
+                active_move_dest_label = self._first_explicit_name(
+                    ir, int(move.dest_runtime_addr),
+                )
+                if active_move_src_label is not None:
+                    lines.append(self.inline_label(active_move_src_label))
+                lines.extend(self._emit_move_enter(
+                    moves_by_src, move, active_move_src_label,
+                ))
+                active_move = move
 
             # Map binary → runtime so label lookups work even when
             # this byte belongs to a relocation. Without a move,
@@ -438,6 +479,14 @@ class BeebasmRenderer(TextRenderer):
             # Emit AFTER_LINE annotations at this address.
             for ann in ir.annotations.get_for_align(int(binary_addr), Align.AFTER_LINE):
                 lines.extend(self._render_annotation(ann))
+
+        # If iteration ended while still inside a relocated region,
+        # emit its close-out directives now.
+        if active_move is not None:
+            lines.extend(self._emit_move_exit(
+                active_move, active_move_src_label, active_move_dest_label,
+            ))
+            active_move = None
 
         # Optional end marker, save directive, any trailing close-out.
         if self.boundary_end_label is not None:
@@ -620,6 +669,120 @@ class BeebasmRenderer(TextRenderer):
             f"{self.comment_prefix()} {self.hex(runtime_addr)} "
             f"referenced {count} {word} by {ref_list}"
         )
+
+    # -- move-aware emission --------------------------------------------
+
+    @staticmethod
+    def _moves_by_src_addr(ir) -> dict[int, "MoveDefinition"]:
+        """Sorted ``{src_binary_addr: MoveDefinition}`` for every
+        registered (non-base) relocation. The base move (id 0) is
+        skipped since it's the identity 1:1 mapping over the whole
+        address space.
+        """
+        out: dict[int, "MoveDefinition"] = {}
+        for move_id, defn in enumerate(ir.moves._move_definitions):
+            if move_id == 0:
+                continue  # base move = identity, no relocation directives
+            out[int(defn.src_binary_addr)] = defn
+        return out
+
+    @staticmethod
+    def _first_explicit_name(ir, runtime_addr: int) -> str | None:
+        """First (alphabetically) explicit name on the label at this
+        runtime address, or ``None``. Used as the symbolic anchor for
+        relocation directives — beebasm's ``copyblock`` / ``clear`` /
+        ``org`` need named anchors to reference.
+        """
+        label = ir.labels.get_label(runtime_addr)
+        if label is None:
+            return None
+        names = sorted(label.explicit_name_texts())
+        return names[0] if names else None
+
+    def _emit_move_enter(
+        self,
+        moves_by_src: dict[int, "MoveDefinition"],
+        move: "MoveDefinition",
+        src_label: str | None,
+    ) -> list[str]:
+        """Return the lines that switch beebasm's PC from the source
+        position into the relocated destination range.
+
+        Mirrors py8dis's pattern (without the ``Move N:`` move-id since
+        we don't expose move ids the same way):
+
+            <blank>
+            ; Move <id>: &<src> to &<dest> for length <N>
+                org &<dest>
+
+        The source label (if any) is emitted by the caller *before*
+        this block, so the source position has its symbolic anchor
+        before PC switches away.
+        """
+        # Compute the move id by reverse lookup (cheap — typically very
+        # few moves per ROM).
+        move_id = next(
+            i for i, src in enumerate(sorted(moves_by_src))
+            if moves_by_src[src] is move
+        ) + 1
+        return [
+            "",
+            (
+                f"{self.comment_prefix()} Move {move_id}: "
+                f"{self.hex(int(move.src_binary_addr))} to "
+                f"{self.hex(int(move.dest_runtime_addr))} for length "
+                f"{move.length}"
+            ),
+            f"    org {self.hex(int(move.dest_runtime_addr))}",
+        ]
+
+    def _emit_move_exit(
+        self,
+        move: "MoveDefinition",
+        src_label: str | None,
+        dest_label: str | None,
+    ) -> list[str]:
+        """Return the lines that close out a relocated block:
+
+            <blank>
+                copyblock <dest>, *, <src>
+                clear <dest>, &<dest_end>
+                org <src> + (* - <dest>)
+            <blank>
+
+        Beebasm's ``copyblock`` copies the assembled bytes from the
+        scratch destination range back to the corresponding file
+        position. ``clear`` wipes the scratch space so beebasm can
+        reuse it. The final ``org`` restores PC to the next position
+        in the source binary.
+
+        Falls back to literal hex when no label exists at one of the
+        anchors — beebasm accepts both, just less readable.
+        """
+        src_anchor = src_label or self.hex(int(move.src_binary_addr))
+        dest_anchor = dest_label or self.hex(int(move.dest_runtime_addr))
+        dest_end = int(move.dest_runtime_addr) + move.length
+        cp = self.comment_prefix()
+        return [
+            "",
+            "",
+            f"    {cp} Copy the newly assembled block of code back to "
+            "it's proper place in the binary",
+            f"    {cp} file.",
+            f"    {cp} (Note the parameter order: "
+            "'copyblock <start>,<end>,<dest>')",
+            f"    copyblock {dest_anchor}, *, {src_anchor}",
+            "",
+            f"    {cp} Clear the area of memory we just temporarily "
+            "used to assemble the new block,",
+            f"    {cp} allowing us to assemble there again if needed",
+            f"    clear {dest_anchor}, {self.hex(dest_end)}",
+            "",
+            f"    {cp} Set the program counter to the next position "
+            "in the binary file.",
+            f"    org {src_anchor} + (* - {dest_anchor})",
+            "",
+        ]
 
     # -- end-of-file stats block ----------------------------------------
 
@@ -1024,6 +1187,13 @@ class BeebasmRenderer(TextRenderer):
         binary_addr, _ = ir.moves.r2b(RuntimeAddr(runtime_addr))
         if binary_addr is None:
             return False
+        # A label at a move-source binary address gets its inline
+        # anchor from the move-enter emission (the body walk emits
+        # ``.<src_label>`` just before the ``org &<dest>`` switch).
+        # Treat that as an inline anchor here so we don't double-
+        # define the symbol via the equate table.
+        if int(binary_addr) == runtime_addr and int(binary_addr) in self._moves_by_src_addr(ir):
+            return True
         if int(ir.moves.b2r(binary_addr)) != runtime_addr:
             return False
         c = ir.classifications.get_classification(int(binary_addr))

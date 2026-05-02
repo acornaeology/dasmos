@@ -1387,6 +1387,74 @@ class TestMoveContext:
         text = roundtrip_via_beebasm(source, 0x8000, configure)
         assert "; this code runs at zero-page-ish" in text
 
+    def test_moved_block_emits_relocation_directives(
+        self, roundtrip_via_beebasm,
+    ):
+        """A moved region must be rendered with beebasm's relocation
+        idiom so cross-references between the dest-runtime addresses
+        and the rest of the listing resolve correctly:
+
+            org &<dest>           ; switch PC to destination
+            ...moved bytes...
+            copyblock <dest_label>, *, <src_label>
+            clear <dest_label>, &<dest_end>
+            org <src_label> + (* - <dest_label>)
+
+        Without these directives, the moved bytes assemble at their
+        SOURCE position (so labels at dest addresses get the wrong
+        value), and any operand referencing the dest address
+        resolves to the source address instead — which is what causes
+        the byte-equality mismatch in the 6502 Tube Client round-trip
+        before move-aware emission lands.
+        """
+        # Outer layout (binary addrs):
+        #   8000: jsr moved_dest      ; calls into RAM where the moved
+        #                             ; bytes live at runtime
+        #   8003: rts
+        #   8004-8007: 4 bytes that get copied to &0070-&0073 by the
+        #              boot routine (we don't emit the copy code in
+        #              this minimal test — we just declare the move).
+        #   8008: rts                 ; back to outer flow
+        source = """
+            org &8000
+        .start
+            jsr moved_dest
+            rts
+        .moved_src
+            nop
+            nop
+            nop
+            rts
+        .after
+            rts
+        save "step1.bin", start, P%
+        moved_dest = &0070
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            move_id = d.add_move(
+                dest_runtime_addr=0x70,
+                src_binary_addr=0x8004,
+                length=4,
+            )
+            d.label(0x8004, "moved_src")
+            with d.using_move(move_id):
+                d.label(0x70, "moved_dest")
+                d.entry(0x70)
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # The renderer emits all four relocation directives.
+        assert "org &70" in text or "org &0070" in text
+        assert "copyblock moved_dest" in text
+        assert "clear moved_dest" in text
+        # And restores PC after the moved block.
+        assert "org moved_src + (* - moved_dest)" in text
+        # The source label appears inline at the source position.
+        assert ".moved_src" in text
+        # The dest label appears inline INSIDE the moved block.
+        assert ".moved_dest" in text
+
 
 @pytest.mark.beebasm
 class TestSubroutineAndBanner:
