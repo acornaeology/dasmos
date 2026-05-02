@@ -50,6 +50,7 @@ Issues = "https://github.com/acornaeology/dasmos/issues"
 # land.
 [project.entry-points."dasmos.cpu"]
 nmos6502 = "dasmos.ext.cpus.nmos6502:Cpu"
+cmos65c02 = "dasmos.ext.cpus.cmos65c02:Cpu"
 
 [project.entry-points."dasmos.renderer"]
 beebasm = "dasmos.ext.renderers.beebasm:Renderer"

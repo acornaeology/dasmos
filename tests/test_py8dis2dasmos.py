@@ -89,8 +89,9 @@ class TestInitAndLoad:
             go()
         """)
         assert "init(" not in out
-        # The assembler name (default "beebasm") flows to render().
-        assert "ir.render('beebasm')" in out
+        # The assembler name (default "beebasm") flows to render() —
+        # the ported call also threads py8dis-compat kwargs through.
+        assert "ir.render('beebasm'" in out
 
     def test_load_with_md5_kwarg(self):
         out = port("""
@@ -207,7 +208,10 @@ class TestGoConversion:
             go()
         """)
         assert "ir = d.disassemble()" in out
-        assert "ir.render('beebasm')" in out
+        # render() call carries py8dis-compat kwargs too.
+        assert "ir.render('beebasm'" in out
+        assert "boundary_label_prefix='pydis_'" in out
+        assert "byte_column=True" in out
         assert "print(" in out
 
 

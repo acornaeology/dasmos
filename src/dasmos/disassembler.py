@@ -62,6 +62,11 @@ class Disassembler:
     def __init__(self, cpu: Cpu):
         self._cpu = cpu
         self._config = Config()
+        # Subroutine hooks: callables fired by the trace when it
+        # processes a JSR whose target runtime address is a key here.
+        # Hook signature: ``(disassembler, jsr_binary_addr) -> int``,
+        # returning the binary address where the trace continues.
+        self._subroutine_hooks: dict[int, object] = {}
         size = cpu.address_space_size
         self._memory = MemoryImage(address_space_size=size)
         self._moves = MoveManager(address_space_size=size)
@@ -199,26 +204,104 @@ class Disassembler:
         self._raise_if_disassembled("expr_label")
         return self._labels.add_expression(runtime_addr, expression, **kwargs)
 
+    # -- driver-script API: subroutine hooks ----------------------------
+
+    def hook_subroutine(self, runtime_addr, name: str, hook) -> None:
+        """Register a callable the trace fires when it processes a JSR
+        whose operand resolves to ``runtime_addr``. Used for the
+        inline-string idiom and similar non-standard return conventions.
+
+        Hook signature::
+
+            def hook(disassembler, jsr_binary_addr) -> int
+
+        The hook returns the binary address where execution continues
+        after the JSR. See :mod:`dasmos.hooks` for the bundled hooks
+        (``stringhi_hook``, ``stringz_hook``, …) and the protocol
+        details.
+
+        Also registers ``name`` as an optional label at ``runtime_addr``
+        so JSR operands resolve to the symbolic name in the rendered
+        output. Mirrors py8dis's ``hook_subroutine`` behaviour.
+        """
+        self._raise_if_disassembled("hook_subroutine")
+        self._labels.add_label(
+            runtime_addr, name, is_optional=True,
+        )
+        self._subroutine_hooks[int(runtime_addr)] = hook
+
     # -- driver-script API: data classification -------------------------
 
-    def byte(self, binary_addr, length: int = 1, cols: int | None = None):
-        """Mark ``length`` bytes at ``binary_addr`` as raw bytes."""
+    def byte(
+        self,
+        runtime_addr,
+        length: int = 1,
+        cols: int | None = None,
+        *,
+        move_id: int | None = None,
+    ):
+        """Mark ``length`` bytes at ``runtime_addr`` as raw bytes."""
         self._raise_if_disassembled("byte")
+        binary_addr = self._resolve_to_binary_addr(runtime_addr, move_id)
         self._classifications.add_classification(binary_addr, Byte(length, cols))
 
-    def word(self, binary_addr, length: int = 2, cols: int | None = None):
-        """Mark ``length`` bytes at ``binary_addr`` as 16-bit words."""
+    def word(
+        self,
+        runtime_addr,
+        length: int = 2,
+        cols: int | None = None,
+        *,
+        move_id: int | None = None,
+    ):
+        """Mark ``length`` bytes at ``runtime_addr`` as 16-bit words."""
         self._raise_if_disassembled("word")
+        binary_addr = self._resolve_to_binary_addr(runtime_addr, move_id)
         self._classifications.add_classification(binary_addr, Word(length, cols))
 
-    def fill(self, binary_addr, length: int, value: int):
-        """Mark a run of ``length`` identical ``value`` bytes."""
+    def fill(
+        self,
+        runtime_addr,
+        length: int,
+        value: int | None = None,
+        *,
+        move_id: int | None = None,
+    ):
+        """Mark a run of ``length`` identical bytes at ``runtime_addr``.
+
+        ``value`` is the byte the fill should expand to. If omitted,
+        it's inferred from the loaded memory (the byte at
+        ``runtime_addr``) — matching py8dis's idiom of ``fill(addr, n)``
+        for runs of the same value the binary already contains. If
+        ``value`` is supplied AND disagrees with the loaded byte,
+        raises :class:`DisassemblerError`.
+        """
         self._raise_if_disassembled("fill")
+        binary_addr = self._resolve_to_binary_addr(runtime_addr, move_id)
+        if value is None:
+            # Infer from memory; requires the byte to be loaded.
+            value = self._memory.get_u8(binary_addr)
+        elif self._memory.is_loaded(binary_addr):
+            # If both value and a loaded byte are present, they must
+            # agree — otherwise the rendered fill would re-assemble
+            # to bytes that differ from the source.
+            actual = self._memory.get_u8(binary_addr)
+            if actual != value:
+                raise DisassemblerError(
+                    f"fill value mismatch at 0x{int(binary_addr):x}: "
+                    f"loaded byte is 0x{actual:x}, requested 0x{value:x}"
+                )
         self._classifications.add_classification(binary_addr, Fill(length, value))
 
-    def string(self, binary_addr, length: int):
-        """Mark ``length`` bytes at ``binary_addr`` as a string."""
+    def string(
+        self,
+        runtime_addr,
+        length: int,
+        *,
+        move_id: int | None = None,
+    ):
+        """Mark ``length`` bytes at ``runtime_addr`` as a string."""
         self._raise_if_disassembled("string")
+        binary_addr = self._resolve_to_binary_addr(runtime_addr, move_id)
         self._classifications.add_classification(binary_addr, String(length))
 
     # -- driver-script API: expressions ---------------------------------
@@ -448,6 +531,28 @@ class Disassembler:
             # Continue tracing whether we classified or not — the
             # control flow is determined by the opcode, not by who
             # owns the classification record.
+            #
+            # Subroutine hooks: when this is a JSR whose target has a
+            # registered hook, the hook decides where the trace
+            # continues *instead of* the default fall-through. The
+            # target (the called subroutine) is still queued.
+            from dasmos.cpu import FlowControl as _FlowControl
+            if (
+                opcode.flow_control is _FlowControl.SUBROUTINE_CALL
+                and self._subroutine_hooks
+            ):
+                target = opcode._compute_target(self._memory, addr)
+                if target is not None and target in self._subroutine_hooks:
+                    hook = self._subroutine_hooks[target]
+                    continuation = hook(self, addr)
+                    if (
+                        continuation is not None
+                        and 0 <= continuation < self._memory.address_space_size
+                    ):
+                        pending.append(continuation)
+                    if 0 <= target < self._memory.address_space_size:
+                        pending.append(target)
+                    continue
             for next_addr in opcode.next_addresses(self._memory, addr):
                 if 0 <= next_addr < self._memory.address_space_size:
                     pending.append(next_addr)

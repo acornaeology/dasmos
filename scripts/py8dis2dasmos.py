@@ -30,7 +30,8 @@ from pathlib import Path
 # Map py8dis CPU names to dasmos plug-in names.
 CPU_NAME_MAP: dict[str, str] = {
     "6502": "nmos6502",
-    "65c02": "cmos65c02",  # when the 65C02 plug-in lands
+    "65c02": "cmos65c02",
+    "65C02": "cmos65c02",  # py8dis drivers spell it uppercase
 }
 
 # py8dis's free functions that become methods on the Disassembler.
@@ -51,12 +52,52 @@ DASMOS_METHODS: frozenset[str] = frozenset({
     "subroutine",
     "banner",
     "add_move",
+    "hook_subroutine",
 })
+
+
+# py8dis free-function names that map to differently-named dasmos
+# Disassembler methods. Applied before the DASMOS_METHODS check so the
+# rewrite to ``d.<dasmos_name>(...)`` uses the right attr.
+PY8DIS_FUNCTION_RENAMES: dict[str, str] = {
+    # py8dis's ``move(binary_addr, runtime_addr, length)`` registers a
+    # relocation; dasmos's equivalent is ``Disassembler.add_move``.
+    "move": "add_move",
+}
+
+
+# Top-level calls to these py8dis free functions are silently dropped
+# by the porter — the corresponding dasmos feature isn't implemented
+# yet. Drivers using these features may still round-trip byte-
+# identically, but the rendered annotations will be poorer than
+# py8dis's output. Empty for now; populate as gaps surface.
+UNSUPPORTED_PY8DIS_FUNCTIONS: frozenset[str] = frozenset()
+
+
+# py8dis names that are part of ``py8dis.commands`` and now live in
+# dasmos sub-modules. The porter prepends explicit imports for any of
+# these that the ported driver references, so the wildcard
+# ``from py8dis.commands import *`` we drop doesn't leave them
+# undefined.
+PY8DIS_COMMAND_RELOCATIONS: dict[str, str] = {
+    # Subroutine hooks ported to ``dasmos.hooks``.
+    "stringhi_hook": "dasmos.hooks",
+}
 
 
 # Free functions that the porter consumes specially (not rewritten as
 # d.method calls — they fold into the constructor or output stage).
 SPECIAL_FUNCTIONS: frozenset[str] = frozenset({"init", "load", "go"})
+
+
+# py8dis's memory-read free functions become method calls on the
+# Disassembler's MemoryImage. Map of py8dis name → dasmos method name
+# on ``d.memory``.
+MEMORY_ACCESSORS: dict[str, str] = {
+    "get_u8_binary": "get_u8",
+    "get_u16_binary": "get_u16_le",
+    "get_u16_be_binary": "get_u16_be",
+}
 
 
 class Py8disToDasmosTransformer(ast.NodeTransformer):
@@ -92,6 +133,37 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
             ):
                 continue
 
+            # Drop top-level calls to py8dis features dasmos doesn't
+            # support yet. The ported script keeps running; the rendered
+            # disassembly just loses whatever annotations the dropped
+            # call would have contributed. (Empty by default — drop to
+            # the porter's set only when there's a concrete reason.)
+            if (
+                UNSUPPORTED_PY8DIS_FUNCTIONS
+                and isinstance(stmt, ast.Expr)
+                and isinstance(stmt.value, ast.Call)
+                and self._call_name(stmt.value) in UNSUPPORTED_PY8DIS_FUNCTIONS
+            ):
+                continue
+
+            # Detect ``subroutine(..., is_entry_point=False, ...)``
+            # BEFORE visit_Call rewrites — needs to expand to two
+            # statements (label + banner) so it can't be handled as
+            # a single Call rewrite.
+            if (
+                isinstance(stmt, ast.Expr)
+                and isinstance(stmt.value, ast.Call)
+                and self._call_name(stmt.value) == "subroutine"
+                and self._is_kw_constant(stmt.value, "is_entry_point", False)
+            ):
+                expanded = self._convert_subroutine_to_label_banner(stmt.value)
+                # Visit each new statement so its Call children are
+                # rewritten too.
+                for new_stmt in expanded:
+                    new_stmt = self.visit(new_stmt)
+                    new_body.append(new_stmt)
+                continue
+
             # Visit children first — rewrites Call nodes inside.
             stmt = self.visit(stmt)
 
@@ -109,6 +181,18 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
                 if func_name == "go":
                     new_body.extend(self._convert_go(call))
                     continue
+
+            # ``output = go(print_output=False)`` — go() used as a
+            # value; rewrite RHS to the rendered-text expression and
+            # keep the assignment.
+            if (
+                isinstance(stmt, ast.Assign)
+                and isinstance(stmt.value, ast.Call)
+                and self._call_name(stmt.value) == "go"
+            ):
+                stmt.value = self._render_text_expression()
+                new_body.append(stmt)
+                continue
 
             # Detect Align.INLINE usage anywhere in the rewritten
             # statement (so we can decide whether to import Align).
@@ -130,7 +214,39 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
                 )
             )
 
+        # Detect names from py8dis.commands that have been relocated
+        # to dasmos sub-modules (e.g. ``stringhi_hook`` →
+        # ``dasmos.hooks``); prepend explicit imports for any actually
+        # used by the ported body.
+        relocations_needed = self._find_relocations_needed(new_body)
+        for module, names in sorted(relocations_needed.items()):
+            imports.append(
+                ast.ImportFrom(
+                    module=module,
+                    names=[ast.alias(name=n, asname=None) for n in sorted(names)],
+                    level=0,
+                )
+            )
+
         return ast.Module(body=imports + new_body, type_ignores=[])
+
+    @staticmethod
+    def _find_relocations_needed(
+        body: list[ast.stmt],
+    ) -> dict[str, set[str]]:
+        """Walk ``body``; return a dict ``{module: {names}}`` of every
+        :data:`PY8DIS_COMMAND_RELOCATIONS` name actually referenced.
+        """
+        result: dict[str, set[str]] = {}
+        class NameVisitor(ast.NodeVisitor):
+            def visit_Name(self, node: ast.Name):
+                if node.id in PY8DIS_COMMAND_RELOCATIONS:
+                    module = PY8DIS_COMMAND_RELOCATIONS[node.id]
+                    result.setdefault(module, set()).add(node.id)
+        visitor = NameVisitor()
+        for stmt in body:
+            visitor.visit(stmt)
+        return result
 
     def visit_Call(self, node: ast.Call) -> ast.Call:
         """Rewrite a free-function call into a ``d.method`` call when
@@ -138,14 +254,30 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
         """
         self.generic_visit(node)  # transform children first
 
-        if isinstance(node.func, ast.Name) and node.func.id in DASMOS_METHODS:
-            method_name = node.func.id
-            node.func = ast.Attribute(
-                value=ast.Name(id="d", ctx=ast.Load()),
-                attr=method_name,
-                ctx=ast.Load(),
-            )
-            self._transform_kwargs(method_name, node)
+        if isinstance(node.func, ast.Name):
+            name = node.func.id
+            # Apply py8dis→dasmos renames (e.g. ``move`` →
+            # ``add_move``) before the DASMOS_METHODS check.
+            dasmos_name = PY8DIS_FUNCTION_RENAMES.get(name, name)
+            if dasmos_name in DASMOS_METHODS:
+                node.func = ast.Attribute(
+                    value=ast.Name(id="d", ctx=ast.Load()),
+                    attr=dasmos_name,
+                    ctx=ast.Load(),
+                )
+                self._transform_kwargs(dasmos_name, node)
+            elif name in MEMORY_ACCESSORS:
+                # Memory accessors live on ``d.memory`` rather than
+                # directly on ``d``.
+                node.func = ast.Attribute(
+                    value=ast.Attribute(
+                        value=ast.Name(id="d", ctx=ast.Load()),
+                        attr="memory",
+                        ctx=ast.Load(),
+                    ),
+                    attr=MEMORY_ACCESSORS[name],
+                    ctx=ast.Load(),
+                )
         return node
 
     # -- specials --------------------------------------------------------
@@ -233,12 +365,17 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
         return [ctor, load_call]
 
     def _convert_go(self, call: ast.Call) -> list[ast.stmt]:
-        """Convert ``go(...)`` into ``ir = d.disassemble(); print(str(ir.render(...)))``.
+        """Convert top-level ``go(...)`` into ``ir = d.disassemble();
+        print(str(ir.render(...)))``.
+
+        For an ``output = go(print_output=False)`` form (go used as a
+        value), see the ``Assign`` branch in :meth:`visit_Module` —
+        that uses :meth:`_render_text_expression` directly.
 
         ``go()``'s arguments (``print_output``, ``post_trace_steps``,
-        ``autostring_min_length``) are not yet honoured by the porter
-        — the simple ``disassemble + render + print`` shape covers
-        the surveyed drivers.
+        ``autostring_min_length``) aren't yet honoured by the porter
+        when used at the top level. The default behaviour (print to
+        stdout) matches py8dis's default.
         """
         # ir = d.disassemble()
         disasm = ast.Assign(
@@ -253,7 +390,7 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
                 keywords=[],
             ),
         )
-        # print(str(ir.render("beebasm")))
+        # print(str(ir.render("beebasm", **py8dis_compat_kwargs)))
         render_print = ast.Expr(
             value=ast.Call(
                 func=ast.Name(id="print", ctx=ast.Load()),
@@ -268,7 +405,7 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
                                     ctx=ast.Load(),
                                 ),
                                 args=[ast.Constant(value=self.assembler_name)],
-                                keywords=[],
+                                keywords=self._py8dis_compat_render_kwargs(),
                             ),
                         ],
                         keywords=[],
@@ -279,19 +416,73 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
         )
         return [disasm, render_print]
 
+    def _render_text_expression(self) -> ast.Call:
+        """Build the expression ``str(d.disassemble().render("<asm>"))``.
+
+        Used as the RHS of ``output = go(print_output=False)`` and any
+        other context where the rendered text is consumed as a value
+        rather than printed implicitly.
+        """
+        return ast.Call(
+            func=ast.Name(id="str", ctx=ast.Load()),
+            args=[
+                ast.Call(
+                    func=ast.Attribute(
+                        value=ast.Call(
+                            func=ast.Attribute(
+                                value=ast.Name(id="d", ctx=ast.Load()),
+                                attr="disassemble",
+                                ctx=ast.Load(),
+                            ),
+                            args=[],
+                            keywords=[],
+                        ),
+                        attr="render",
+                        ctx=ast.Load(),
+                    ),
+                    args=[ast.Constant(value=self.assembler_name)],
+                    keywords=self._py8dis_compat_render_kwargs(),
+                ),
+            ],
+            keywords=[],
+        )
+
+    @staticmethod
+    def _py8dis_compat_render_kwargs() -> list[ast.keyword]:
+        """Renderer kwargs that make dasmos's output match py8dis's
+        defaults — what ported scripts expect by virtue of being
+        ports. The boundary marker labels use the legacy ``pydis_``
+        prefix and the byte-column inline annotation is enabled.
+        """
+        return [
+            ast.keyword(
+                arg="boundary_label_prefix",
+                value=ast.Constant(value="pydis_"),
+            ),
+            ast.keyword(
+                arg="byte_column",
+                value=ast.Constant(value=True),
+            ),
+        ]
+
     # -- per-method kwarg rewriting --------------------------------------
 
     def _transform_kwargs(self, method_name: str, node: ast.Call) -> None:
         """Apply per-method kwarg transformations after the
         ``foo(...)`` → ``d.foo(...)`` rewrite.
 
-        Currently:
-
         - ``comment(..., inline=True)`` →
           ``comment(..., align=Align.INLINE)`` (sweep memo C1).
           ``inline=False`` is silently dropped — it was the default in
           py8dis and corresponds to the dasmos default
           ``align=Align.BEFORE_LABEL``.
+        - ``subroutine(...)`` and ``banner(...)`` get py8dis-specific
+          kwargs stripped: ``hook=`` (no dasmos equivalent yet),
+          ``is_entry_point=`` (the True case is the new default;
+          the False case is rewritten upstream into a label + banner
+          pair), ``on_entry=`` / ``on_exit=`` (py8dis register-usage
+          docs not yet ported), ``at_binary_addr=`` (py8dis-specific),
+          and ``move_id=None`` (the default, redundant).
         """
         if method_name == "comment":
             new_kwargs: list[ast.keyword] = []
@@ -316,6 +507,81 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
                 new_kwargs.append(kw)
             node.keywords = new_kwargs
 
+        elif method_name in ("subroutine", "banner"):
+            # py8dis-specific kwargs that are either redundant in
+            # dasmos (defaults) or not yet supported here.
+            DROPPED = {"hook", "is_entry_point", "on_entry", "on_exit",
+                       "at_binary_addr"}
+            new_kwargs = []
+            for kw in node.keywords:
+                if kw.arg in DROPPED:
+                    continue
+                if (
+                    kw.arg == "move_id"
+                    and isinstance(kw.value, ast.Constant)
+                    and kw.value.value is None
+                ):
+                    continue
+                new_kwargs.append(kw)
+            node.keywords = new_kwargs
+
+    def _convert_subroutine_to_label_banner(
+        self, call: ast.Call,
+    ) -> list[ast.stmt]:
+        """Expand ``subroutine(addr, name, is_entry_point=False, ...)``
+        into ``[label(addr, name), banner(addr, title=..., description=...)]``.
+
+        The original idiom in py8dis combined the label and the
+        decorated-comment block into one call; dasmos splits them per
+        the C2/C3 sweep-memo recommendation. The porter materialises
+        both statements; the label() call is harmless even if the
+        driver also calls label() separately for the same address
+        (LabelManager is idempotent on duplicate names).
+        """
+        if len(call.args) < 1:
+            raise ValueError("subroutine() needs at least an address")
+        addr = call.args[0]
+        name: ast.expr | None = call.args[1] if len(call.args) > 1 else None
+
+        # Pass through kwargs except the ones we explicitly consume.
+        banner_kwargs: list[ast.keyword] = []
+        for kw in call.keywords:
+            if kw.arg in ("hook", "is_entry_point", "on_entry",
+                          "on_exit", "at_binary_addr"):
+                continue
+            if (
+                kw.arg == "move_id"
+                and isinstance(kw.value, ast.Constant)
+                and kw.value.value is None
+            ):
+                continue
+            banner_kwargs.append(kw)
+
+        # label(addr, name)  — only if a name was supplied.
+        stmts: list[ast.stmt] = []
+        if name is not None:
+            stmts.append(
+                ast.Expr(
+                    value=ast.Call(
+                        func=ast.Name(id="label", ctx=ast.Load()),
+                        args=[addr, name],
+                        keywords=[],
+                    ),
+                ),
+            )
+
+        # banner(addr, title=..., description=..., ...)
+        stmts.append(
+            ast.Expr(
+                value=ast.Call(
+                    func=ast.Name(id="banner", ctx=ast.Load()),
+                    args=[addr],
+                    keywords=banner_kwargs,
+                ),
+            ),
+        )
+        return stmts
+
     # -- helpers ---------------------------------------------------------
 
     @staticmethod
@@ -326,6 +592,16 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
         if isinstance(call.func, ast.Name):
             return call.func.id
         return None
+
+    @staticmethod
+    def _is_kw_constant(call: ast.Call, name: str, value) -> bool:
+        """True iff ``call`` has a keyword arg ``name`` whose value is
+        the literal constant ``value``.
+        """
+        for kw in call.keywords:
+            if kw.arg == name and isinstance(kw.value, ast.Constant):
+                return kw.value.value == value
+        return False
 
     @staticmethod
     def _mentions_align_inline(stmt: ast.stmt) -> bool:

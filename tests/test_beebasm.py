@@ -273,6 +273,83 @@ class TestRenderTinyProgram:
         assert "bne skip" in text
 
 
+class TestByteColumnAnnotation:
+    """``byte_column=True`` enables an inline annotation after each
+    instruction line: ``; <addr>: <hex-bytes>  <ascii>``. Off by
+    default (dasmos prefers a clean line); the porter and the py8dis-
+    parity tests opt in.
+    """
+
+    def test_default_off_no_byte_column_emitted(self, tmp_path):
+        # ``a9 2a 60`` = LDA #$2A; RTS at &8000.
+        d = _make_disassembler_with_program(tmp_path, b"\xa9\x2a\x60", 0x8000)
+        d.entry(0x8000)
+        text = str(d.disassemble().render("beebasm"))
+        # No address-then-hex-bytes annotation on the lda line.
+        for line in text.splitlines():
+            if "lda" in line:
+                assert "8000:" not in line, (
+                    f"unexpected byte column on default-off render: {line!r}"
+                )
+                break
+
+    def test_byte_column_emits_addr_bytes_ascii(self, tmp_path):
+        from dasmos.ext.renderers.beebasm import BeebasmRenderer
+        d = _make_disassembler_with_program(tmp_path, b"\xa9\x2a\x60", 0x8000)
+        d.entry(0x8000)
+        ir = d.disassemble()
+        text = str(ir.render(BeebasmRenderer(byte_column=True)))
+        # LDA #$2A is 2 bytes (a9 2a) at &8000; ASCII for 2A is '*'.
+        # The byte-column annotation contains the address, bytes, and
+        # an ASCII glyph for printable characters.
+        lda_line = next(l for l in text.splitlines() if "lda" in l)
+        assert "; &8000:" in lda_line
+        assert "a9 2a" in lda_line
+        assert "*" in lda_line  # 0x2A == '*' is printable ASCII
+        # RTS is 1 byte (60) at &8002; 0x60 = '`' which is printable.
+        rts_line = next(l for l in text.splitlines() if "rts" in l)
+        assert "; &8002:" in rts_line
+        assert "60" in rts_line
+
+    def test_byte_column_renders_dot_for_non_printable(self, tmp_path):
+        # 0x00, 0xFF, 0x1F are non-printable → ASCII column shows '.'.
+        from dasmos.ext.renderers.beebasm import BeebasmRenderer
+        # nop nop nop = 0xea 0xea 0xea (printable 'ê'? actually 0xea
+        # is non-printable in 7-bit ASCII).
+        d = _make_disassembler_with_program(tmp_path, b"\xea\xea\xea\x60", 0x8000)
+        d.entry(0x8000)
+        text = str(d.disassemble().render(BeebasmRenderer(byte_column=True)))
+        nop_line = next(l for l in text.splitlines() if "nop" in l and "8000:" in l)
+        # Single-byte non-printable opcode → ASCII '.' for it.
+        assert "ea" in nop_line
+        # The ASCII column should contain a '.' (the non-printable
+        # placeholder); other dots may appear in surrounding text so
+        # check the byte-column substring specifically.
+        post_addr = nop_line.split("&8000:")[1]
+        # Within the byte-annotation region there's one byte (ea) and
+        # one ascii char ('.').
+        assert "ea" in post_addr
+        assert "." in post_addr
+
+    def test_byte_column_coexists_with_inline_user_comment(
+        self, tmp_path,
+    ):
+        # When both byte_column AND a user inline comment are present,
+        # the byte column comes first (closer to the instruction) and
+        # the user comment trails.
+        from dasmos.core.annotations import Align
+        from dasmos.ext.renderers.beebasm import BeebasmRenderer
+        d = _make_disassembler_with_program(tmp_path, b"\xa9\x2a\x60", 0x8000)
+        d.entry(0x8000)
+        d.comment(0x8000, "load magic", align=Align.INLINE)
+        text = str(d.disassemble().render(BeebasmRenderer(byte_column=True)))
+        lda_line = next(l for l in text.splitlines() if "lda" in l)
+        # Byte column appears first (lower index); user comment after.
+        bc_idx = lda_line.index("&8000:")
+        user_idx = lda_line.index("load magic")
+        assert bc_idx < user_idx
+
+
 class TestPerAddressingModeFormatting:
     """Pin the operand syntax for each addressing mode the NMOS 6502
     plug-in produces. The shapes are conventional MOS-style; the

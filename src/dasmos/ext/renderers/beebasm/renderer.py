@@ -57,6 +57,17 @@ from dasmos.renderer import TextRenderer
 # py8dis's default.
 INLINE_COMMENT_COLUMN = 40
 
+# When ``byte_column`` is enabled, instructions are padded further so
+# the byte annotation has room before any user comment. Matches py8dis.
+INSTRUCTION_PAD_WITH_BYTE_COLUMN = 70
+
+# Total width occupied by a byte-column annotation
+# (``<addr>: <hex>  <ascii>``) — used when both byte column and user
+# comment are present on the same line. Roughly: ``&XXXX: `` (7) +
+# bytes section (8 = max 3 bytes "XX YY ZZ") + gap + ascii (3-char
+# field). Matches the visual width of py8dis's column.
+BYTE_COLUMN_TOTAL_WIDTH = 27
+
 # Banner separator width: a row of this many ``*`` characters,
 # prefixed by the comment prefix and a space, between the title and
 # the surrounding text. Matches py8dis's default of 87.
@@ -105,6 +116,7 @@ class BeebasmRenderer(TextRenderer):
         name: str = "beebasm",
         *,
         boundary_label_prefix: str | None = None,
+        byte_column: bool = False,
         **kwargs,
     ):
         super().__init__(name=name, **kwargs)
@@ -116,6 +128,11 @@ class BeebasmRenderer(TextRenderer):
             if boundary_label_prefix is not None
             else self.DEFAULT_BOUNDARY_LABEL_PREFIX
         )
+        # When True, attach a ``; <addr>: <hex bytes>  <ascii>``
+        # annotation to the first content line of every classification.
+        # Off by default — drivers that want a clean rendered listing
+        # leave it off; the porter and py8dis-parity tests opt in.
+        self.byte_column = byte_column
 
     @property
     def emit_boundary_labels(self) -> bool:
@@ -184,9 +201,23 @@ class BeebasmRenderer(TextRenderer):
         return f"{name} = {value}{suffix}"
 
     def disassembly_start(self) -> list[str]:
-        # The 65C02 ``cpu 1`` directive belongs here when the CPU is
-        # CMOS — defer until we expose a CPU-flavour hint on the IR.
+        # The CPU-specific ``cpu N`` directive (CMOS variants) is emitted
+        # from :meth:`render`, where the IR is in scope so we can read
+        # the CPU plug-in's name.
         return []
+
+    def cpu_directive_for(self, cpu_name: str) -> str | None:
+        """Return the beebasm ``cpu N`` directive for ``cpu_name``, or
+        ``None`` when no directive is needed (the default 6502).
+
+        Beebasm's CPU selector is documented at
+        <https://github.com/stardot/beebasm/blob/master/manual.md>:
+        ``cpu 0`` (default) selects the NMOS 6502; ``cpu 1`` enables
+        the CMOS 65C02 instruction set extensions.
+        """
+        if cpu_name == "cmos65c02":
+            return "cpu 1"
+        return None
 
     def disassembly_end(self) -> list[str]:
         # The ``save`` directive isn't emitted from here any more —
@@ -265,6 +296,10 @@ class BeebasmRenderer(TextRenderer):
         # the top of the output emits these (plus all required
         # out-of-range labels regardless of usage).
         self._used_external_labels: set[int] = set()
+        # Per-label use sites collected during the reference-tracking
+        # pre-pass (binary addresses of opcodes whose operand resolves
+        # to a name on this label). Keyed by runtime address.
+        self._label_references: dict[int, list[int]] = {}
 
     def render(self, ir: "IntermediateRepresentation") -> TextOutput:
         """Walk the IR's classifications in binary-address order and
@@ -284,12 +319,23 @@ class BeebasmRenderer(TextRenderer):
         lines: list[str] = []
         lines.extend(self.disassembly_start())
 
+        # CPU-flavour directive (e.g. ``cpu 1`` for 65C02).
+        cpu_directive = self.cpu_directive_for(ir.cpu.name)
+        if cpu_directive is not None:
+            lines.append(cpu_directive)
+
         try:
             load_start, load_end = ir.memory.entire_load_range()
         except Exception:
             # No data loaded — nothing to render.
             lines.extend(self.disassembly_end())
             return TextOutput("\n".join(lines) + "\n")
+
+        # Pre-pass: walk every classified opcode, resolve its operand
+        # to a target address, and record use sites against any label
+        # found there. The body walk below uses this to emit per-label
+        # xref summaries; the trailing frequency table also reads it.
+        self._compute_references(ir)
 
         # ORG + optional start marker (omitted when prefix is empty).
         lines.extend(self.code_start(load_start, load_end, first=True))
@@ -323,6 +369,11 @@ class BeebasmRenderer(TextRenderer):
             # beebasm has no native scoped-label syntax.
             label = ir.labels.get_label(runtime_addr)
             if label is not None:
+                # Emit the cross-reference summary above the label
+                # name(s) when this label is referenced from anywhere.
+                xref = self._format_inline_xref_summary(runtime_addr)
+                if xref is not None:
+                    lines.append(xref)
                 for name in sorted(label.explicit_name_texts()):
                     lines.append(self.inline_label(name))
 
@@ -337,19 +388,50 @@ class BeebasmRenderer(TextRenderer):
             # Emit the classification's text line(s).
             content_lines = self._render_classification(ir, binary_addr, classification)
 
-            # Append any INLINE comments to the last content line.
+            # Optional byte-column annotation on the first content
+            # line: ``; <addr>: <hex bytes>  <ascii>``. Provides the
+            # py8dis-style address+raw-bytes column for review/parity.
             inline_anns = ir.annotations.get_for_align(int(binary_addr), Align.INLINE)
-            if inline_anns and content_lines:
-                inline_text = "  ".join(
+            user_inline_text = None
+            if inline_anns:
+                user_inline_text = "  ".join(
                     self._render_annotation_inline(a) for a in inline_anns
                 )
+            if self.byte_column and content_lines:
+                runtime_addr_for_bc = int(
+                    ir.moves.b2r(BinaryAddr(int(binary_addr)))
+                )
+                byte_col_text = self._format_byte_column(
+                    ir, int(binary_addr), runtime_addr_for_bc,
+                    classification.length(),
+                )
+                first = content_lines[0]
+                if len(first) < INSTRUCTION_PAD_WITH_BYTE_COLUMN:
+                    first = first.ljust(INSTRUCTION_PAD_WITH_BYTE_COLUMN)
+                else:
+                    first = first + "  "
+                first = f"{first}{byte_col_text}"
+                # If the inline user comment is on the same (first==
+                # last) line, append it after the byte column so we
+                # don't double-attach it below.
+                if user_inline_text and len(content_lines) == 1:
+                    first = first.ljust(
+                        INSTRUCTION_PAD_WITH_BYTE_COLUMN + BYTE_COLUMN_TOTAL_WIDTH,
+                    ) + f"  {user_inline_text}"
+                    user_inline_text = None
+                content_lines[0] = first
+
+            # Append any INLINE user comment to the last content line
+            # (preserves multi-line equb behavior). When byte_column
+            # placed it on a single-line content already, user_inline_text
+            # is cleared above.
+            if user_inline_text and content_lines:
                 last = content_lines[-1]
-                # Pad to the inline-comment column if there's room.
                 if len(last) < INLINE_COMMENT_COLUMN:
                     last = last.ljust(INLINE_COMMENT_COLUMN)
                 else:
                     last = last + "  "
-                content_lines[-1] = f"{last}{inline_text}"
+                content_lines[-1] = f"{last}{user_inline_text}"
 
             lines.extend(content_lines)
 
@@ -364,13 +446,28 @@ class BeebasmRenderer(TextRenderer):
         lines.append(self._save_directive(load_start, load_end))
         lines.extend(self.disassembly_end())
 
+        # End-of-file label-reference frequency table.
+        freq_lines = self._build_label_frequency_table(ir)
+        if freq_lines:
+            lines.append("")
+            lines.extend(freq_lines)
+
+        # End-of-file stats block.
+        stats_lines = self._build_stats_block(ir)
+        if stats_lines:
+            lines.append("")
+            lines.extend(stats_lines)
+
         # Build the explicit-label table for out-of-range labels —
         # required ones always emit; optional ones only if used.
         # The table goes before the ORG, so prepend it now that the
-        # body has been rendered (and uses tracked).
+        # body has been rendered (and uses tracked). A
+        # ``; Memory locations`` header sits above non-empty tables to
+        # make the rendered output read as a memory map.
         table_lines = self._build_explicit_label_table(ir)
         if table_lines:
-            lines = table_lines + [""] + lines
+            header = [f"{self.comment_prefix()} Memory locations"]
+            lines = header + table_lines + [""] + lines
 
         return TextOutput("\n".join(lines) + "\n")
 
@@ -385,11 +482,16 @@ class BeebasmRenderer(TextRenderer):
 
         Names are aligned at the equals sign for readability.
         Sorted by address then by name for deterministic output.
+        Each entry carries an optional description (from the
+        ``description=`` kwarg of :meth:`Disassembler.label`); when
+        present it is emitted as a trailing ``;`` comment, with
+        embedded newlines collapsed to single spaces.
         """
-        entries: list[tuple[str, int]] = []
+        entries: list[tuple[str, int, str | None]] = []
         for runtime_addr_obj, label in ir.labels.items():
             runtime_addr = int(runtime_addr_obj)
             in_range = self._label_address_is_in_range(ir, runtime_addr)
+            description = label.description
 
             # Local labels go in the table regardless of whether
             # their address is in range — beebasm has no native
@@ -401,12 +503,21 @@ class BeebasmRenderer(TextRenderer):
                 for ll in ll_list
             })
             for name in local_names:
-                entries.append((name, runtime_addr))
+                entries.append((name, runtime_addr, description))
 
-            # Explicit names: in-range labels are emitted inline (skip
-            # in the table); out-of-range labels obey the
-            # required/optional rule.
-            if in_range:
+            # Explicit names: an in-range label whose address is the
+            # *start* of a classification is emitted inline as ``.name``
+            # by the body walk — skip the table. But a label whose
+            # address falls inside a multi-byte classification (e.g.
+            # the operand byte of a branch instruction, used as a base
+            # for indexed addressing) has no inline anchor — it goes
+            # in the table as ``name = &xxxx``. Out-of-range labels
+            # obey the required/optional rule as before.
+            inline_anchor = (
+                in_range
+                and self._label_address_is_classification_start(ir, runtime_addr)
+            )
+            if inline_anchor:
                 continue
             explicit_names = sorted({
                 name.text
@@ -415,21 +526,241 @@ class BeebasmRenderer(TextRenderer):
             })
             if not explicit_names:
                 continue
-            if not label.required and runtime_addr not in self._used_external_labels:
+            if (
+                not in_range
+                and not label.required
+                and runtime_addr not in self._used_external_labels
+            ):
                 continue
             for name in explicit_names:
-                entries.append((name, runtime_addr))
+                entries.append((name, runtime_addr, description))
 
         if not entries:
             return []
 
-        max_name_len = max(len(name) for name, _ in entries)
+        max_name_len = max(len(name) for name, _, _ in entries)
         # Sort: address ascending, then name for stable ordering.
         entries.sort(key=lambda e: (e[1], e[0]))
+        lines: list[str] = []
+        for name, addr, description in entries:
+            line = f"{name.ljust(max_name_len)} = {self.hex(addr)}"
+            if description:
+                line = f"{line}  {self.comment_prefix()} " + " ".join(
+                    description.split()
+                )
+            lines.append(line)
+        return lines
+
+    # -- cross-reference tracking + emission -----------------------------
+
+    def _compute_references(self, ir) -> None:
+        """Pre-pass: walk every classified opcode, resolve its operand
+        to a runtime target address, and record the use site against
+        any label found at that address.
+
+        Stored in :attr:`_label_references` keyed by runtime address.
+        Also populates :attr:`_used_external_labels` for out-of-range
+        labels — same set the body walk would populate via ``_addr_text``.
+        Re-running render on the same renderer instance starts from a
+        fresh map (``_reset_render_state`` clears it).
+        """
+        for binary_addr, classification in ir.classifications.iter_classified_starts():
+            if not isinstance(classification, Opcode):
+                continue
+            target = self._operand_label_target(ir, int(binary_addr), classification)
+            if target is None:
+                continue
+            label = ir.labels.get_label(target)
+            if label is None or not label.explicit_name_texts():
+                continue
+            self._label_references.setdefault(target, []).append(int(binary_addr))
+            if not self._label_address_is_in_range(ir, target):
+                self._used_external_labels.add(target)
+
+    def _operand_label_target(
+        self, ir, binary_addr: int, opcode: Opcode,
+    ) -> int | None:
+        """Return the runtime address an opcode's operand resolves to
+        for label-lookup purposes, or ``None`` if the operand is not
+        an address (immediate / no-operand) or is overridden by a
+        user expression at the operand position.
+        """
+        # User expression override at the operand byte → no label
+        # lookup happens at render time, so don't record a reference.
+        operand_addr = binary_addr + 1
+        if ir.expressions.get_or_none(operand_addr) is not None:
+            return None
+        kind = opcode.addressing_mode.operand_kind
+        if kind in (OperandKind.NONE, OperandKind.IMMEDIATE):
+            return None
+        if kind is OperandKind.ADDRESS_8:
+            return ir.memory.get_u8(operand_addr)
+        if kind in (OperandKind.ADDRESS_16, OperandKind.ADDRESS_16_INDIRECT):
+            return ir.memory.get_u16_le(operand_addr)
+        if kind is OperandKind.RELATIVE_OFFSET:
+            offset = ir.memory.get_u8(operand_addr)
+            if offset >= 0x80:
+                offset -= 0x100
+            return binary_addr + opcode.length() + offset
+        return None
+
+    def _format_inline_xref_summary(self, runtime_addr: int) -> str | None:
+        """Format the ``; &<addr> referenced N time(s) by &<r1>, …``
+        line for a label, or return ``None`` when the label has no
+        recorded references.
+        """
+        refs = self._label_references.get(runtime_addr)
+        if not refs:
+            return None
+        unique_refs = sorted(set(refs))
+        count = len(unique_refs)
+        word = "time" if count == 1 else "times"
+        ref_list = ", ".join(self.hex(r) for r in unique_refs)
+        return (
+            f"{self.comment_prefix()} {self.hex(runtime_addr)} "
+            f"referenced {count} {word} by {ref_list}"
+        )
+
+    # -- end-of-file stats block ----------------------------------------
+
+    def _build_stats_block(self, ir) -> list[str]:
+        """Build the trailing ``; Stats:`` block — one-glance summary
+        of the disassembly's composition. Mirrors the py8dis layout so
+        consumers comparing outputs see familiar shape; the numbers
+        come from walking the classification store.
+        """
+        code_bytes = 0
+        data_bytes = 0
+        instruction_count = 0
+        byte_count = 0
+        word_count = 0
+        string_byte_count = 0
+        string_count = 0
+        for _addr, c in ir.classifications.iter_classified_starts():
+            length = c.length()
+            if isinstance(c, Opcode):
+                code_bytes += length
+                instruction_count += 1
+            else:
+                data_bytes += length
+                if isinstance(c, Byte):
+                    byte_count += length
+                elif isinstance(c, Word):
+                    word_count += length
+                elif isinstance(c, String):
+                    string_byte_count += length
+                    string_count += 1
+                elif isinstance(c, Fill):
+                    byte_count += length
+        total = code_bytes + data_bytes
+        if total == 0:
+            return []
+        code_pct = 100.0 * code_bytes / total
+        data_pct = 100.0 * data_bytes / total
+        cp = self.comment_prefix()
         return [
-            f"{name.ljust(max_name_len)} = {self.hex(addr)}"
-            for name, addr in entries
+            f"{cp} Stats:",
+            f"{cp}     Total size (Code + Data) = {total} bytes",
+            f"{cp}     Code                     = {code_bytes} bytes ({code_pct:.0f}%)",
+            f"{cp}     Data                     = {data_bytes} bytes ({data_pct:.0f}%)",
+            f"{cp}",
+            f"{cp}     Number of instructions   = {instruction_count}",
+            f"{cp}     Number of data bytes     = {byte_count} bytes",
+            f"{cp}     Number of data words     = {word_count} bytes",
+            f"{cp}     Number of string bytes   = {string_byte_count} bytes",
+            f"{cp}     Number of strings        = {string_count}",
         ]
+
+    # -- byte-column inline annotation ----------------------------------
+
+    def _format_byte_column(
+        self, ir, binary_addr: int, runtime_addr: int, length: int,
+    ) -> str:
+        """Format the inline ``; <addr>: <hex bytes>  <ascii>``
+        annotation py8dis attaches to every line. Includes up to
+        :data:`BYTE_COLUMN_MAX_BYTES` bytes; truncated runs are marked
+        with ``...``.
+
+        ``binary_addr`` is where to read the bytes from;
+        ``runtime_addr`` is what to print as the address (so move-
+        relocated code shows its execution address, matching the
+        operand label resolution).
+        """
+        max_bytes = 3
+        actual_bytes_to_show = min(length, max_bytes)
+        bytes_values = [
+            ir.memory.get_u8(binary_addr + i)
+            for i in range(actual_bytes_to_show)
+            if ir.memory.is_loaded(binary_addr + i)
+        ]
+        hex_text = " ".join(self.hex2(v).removeprefix("&") for v in bytes_values)
+        if length > max_bytes:
+            hex_text = f"{hex_text}..."
+        # Pad bytes column to max width: 3 bytes ("XX YY ZZ") + ellipsis
+        # ("...") = 11 chars maximum.
+        hex_field = hex_text.ljust(11)
+        ascii_chars = "".join(
+            chr(v) if 0x20 <= v < 0x7f else "." for v in bytes_values
+        )
+        if length > max_bytes:
+            ascii_chars = f"{ascii_chars}..."
+        ascii_field = ascii_chars.ljust(6)
+        return (
+            f"{self.comment_prefix()} {self.hex(runtime_addr)}: "
+            f"{hex_field} {ascii_field}"
+        )
+
+    def _build_label_frequency_table(self, ir) -> list[str]:
+        """Build the ``; Label references by decreasing frequency:``
+        block emitted at the end of the output.
+
+        One line per label that has at least one reference, sorted by
+        reference count descending then name ascending. Each label
+        contributes one row per explicit name (so aliases all show).
+        When boundary labels are emitted and the load-start address
+        has any references, an alias row for the boundary-start name
+        also appears (so a memory-map-style summary shows both the
+        user's name and the synthetic boundary name at that address).
+        Counts are right-aligned at a column slightly wider than the
+        longest name for readability.
+        """
+        rows: list[tuple[str, int]] = []
+        for runtime_addr, refs in self._label_references.items():
+            label = ir.labels.get_label(runtime_addr)
+            if label is None:
+                continue
+            count = len(set(refs))
+            for name in sorted(label.explicit_name_texts()):
+                rows.append((name, count))
+        # Boundary-label aliases at the start/end of the loaded range.
+        if self.emit_boundary_labels:
+            try:
+                load_start, load_end = ir.memory.entire_load_range()
+            except Exception:
+                load_start = load_end = None
+            if load_start is not None:
+                start_refs = self._label_references.get(int(load_start), [])
+                if start_refs:
+                    rows.append(
+                        (self.boundary_start_label, len(set(start_refs))),
+                    )
+            if load_end is not None:
+                end_refs = self._label_references.get(int(load_end), [])
+                if end_refs:
+                    rows.append(
+                        (self.boundary_end_label, len(set(end_refs))),
+                    )
+        if not rows:
+            return []
+        rows.sort(key=lambda r: (-r[1], r[0]))
+        max_name_len = max(len(name) for name, _ in rows)
+        max_count_width = max(len(str(c)) for _, c in rows)
+        lines = [f"{self.comment_prefix()} Label references by decreasing frequency:"]
+        for name, count in rows:
+            label_part = f"{name}:".ljust(max_name_len + 2)
+            count_part = str(count).rjust(max_count_width)
+            lines.append(f"{self.comment_prefix()}     {label_part} {count_part}")
+        return lines
 
     # -- annotations ------------------------------------------------------
 
@@ -565,6 +896,11 @@ class BeebasmRenderer(TextRenderer):
             return f"({symbol},X)"
         if mode_name == "INDIRECT_INDEXED":  # (zp),Y
             return f"({symbol}),Y"
+        # 65C02 additions:
+        if mode_name == "ZP_INDIRECT":  # (zp)
+            return f"({symbol})"
+        if mode_name == "ABSOLUTE_INDIRECT_X":  # JMP (addr,X)
+            return f"({symbol},X)"
 
         raise ValueError(
             f"BeebasmRenderer does not know how to render addressing mode "
@@ -665,6 +1001,38 @@ class BeebasmRenderer(TextRenderer):
                 if ll.start_addr <= using_binary_addr < ll.end_addr:
                     return ll.name
         return None
+
+    def _label_address_is_classification_start(
+        self, ir, runtime_addr: int,
+    ) -> bool:
+        """True iff the runtime address has an inline anchor in the
+        body walk — i.e. it maps to the start of a classification, AND
+        the body walk's binary→runtime round-trip lands back on this
+        runtime address.
+
+        The second check matters under moves: a label at runtime
+        ``&F859`` (the binary source of a move) maps to binary
+        ``&F859``, but ``b2r(&F859)`` is the *move destination*
+        ``&0100``, not ``&F859`` — so the body walk would emit any
+        label found at runtime ``&0100`` there, missing the source-
+        address label entirely. Returning False here pushes the label
+        into the equate table where it gets a concrete ``= &xxxx``
+        anchor.
+        """
+        from dasmos.core.disassembly import INSIDE_A_CLASSIFICATION
+        from dasmos.core.memory import RuntimeAddr
+        binary_addr, _ = ir.moves.r2b(RuntimeAddr(runtime_addr))
+        if binary_addr is None:
+            return False
+        if int(ir.moves.b2r(binary_addr)) != runtime_addr:
+            return False
+        c = ir.classifications.get_classification(int(binary_addr))
+        # ``None`` = no classification at this byte (in-range but
+        # unclassified — rare; treat like "needs equate"). The
+        # ``INSIDE_A_CLASSIFICATION`` sentinel marks an interior byte
+        # — also no inline anchor. Only a Classification object means
+        # this is the start of one.
+        return c is not None and c is not INSIDE_A_CLASSIFICATION
 
     def _label_address_is_in_range(self, ir, runtime_addr: int) -> bool:
         """True iff the runtime address has a corresponding loaded

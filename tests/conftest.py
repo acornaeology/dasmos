@@ -49,6 +49,13 @@ def pytest_configure(config):
         "beebasm: requires the beebasm binary "
         "(set BEEBASM env var or put it in PATH)",
     )
+    config.addinivalue_line(
+        "markers",
+        "py8dis_parity: asserts content fidelity against the legacy "
+        "py8dis-fork reference output; deselect with "
+        "`-m 'not py8dis_parity'` once dasmos is intentionally allowed "
+        "to diverge.",
+    )
 
 
 def pytest_collection_modifyitems(config, items):

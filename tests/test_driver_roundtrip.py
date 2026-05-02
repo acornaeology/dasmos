@@ -851,6 +851,408 @@ class TestOptionalLabelsAndExternals:
         assert ".helper" in text
         assert "helper = " not in text
 
+    def test_external_label_description_renders_as_inline_comment(
+        self, roundtrip_via_beebasm,
+    ):
+        """A ``description=`` passed to ``d.label()`` for an out-of-
+        range address surfaces as an inline ``;`` comment trailing the
+        ``name = &xxxx`` definition. Multi-line descriptions are
+        collapsed to a single line.
+
+        Mirrors py8dis's rendering of label descriptions — the load-
+        bearing piece of annotation fidelity that distinguishes a
+        memory-map listing from a bare equate table.
+        """
+        source = """
+            org &8000
+        .start
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.label(
+                0x70, "userv",
+                description="User vector — JMPed through on OSBYTE 0.",
+            )
+            d.label(
+                0x80, "mem_ptr_lo",
+                description=(
+                    "Low byte of the indirect pointer.\n"
+                    "Paired with mem_ptr_hi."
+                ),
+            )
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # Description appears inline as a comment after the equate.
+        # The description text shows up verbatim (newline collapsed
+        # to space).
+        assert "User vector — JMPed through on OSBYTE 0." in text
+        assert (
+            "Low byte of the indirect pointer. Paired with mem_ptr_hi."
+            in text
+        )
+        # The description sits on the same line as the equate.
+        for line in text.splitlines():
+            if "userv" in line and "= &70" in line:
+                assert "; User vector" in line, (
+                    f"description not inline on equate line: {line!r}"
+                )
+                break
+        else:
+            raise AssertionError("userv equate line not found in output")
+
+    def test_memory_locations_header_above_equate_table(
+        self, roundtrip_via_beebasm,
+    ):
+        """When the equate table has at least one entry, a
+        ``; Memory locations`` header sits above it. Mirrors py8dis's
+        section header so the rendered output reads as a memory map
+        rather than a bare equate dump."""
+        source = """
+            org &8000
+        .start
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.label(0x70, "userv")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # Header appears, and appears BEFORE the equate.
+        header_idx = text.index("; Memory locations")
+        userv_idx = text.index("userv")
+        assert header_idx < userv_idx
+
+    def test_no_memory_locations_header_when_table_empty(
+        self, roundtrip_via_beebasm,
+    ):
+        # Without any out-of-range labels, no equate table → no header.
+        source = """
+            org &8000
+        .start
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        assert "Memory locations" not in text
+
+    def test_external_label_without_description_emits_bare_equate(
+        self, roundtrip_via_beebasm,
+    ):
+        # No regression: labels without a description still emit the
+        # bare ``name = &xxxx`` form (no trailing `;`).
+        source = """
+            org &8000
+        .start
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.label(0x70, "userv")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        for line in text.splitlines():
+            if "userv" in line and "= &70" in line:
+                # Bare equate — no comment after the value.
+                assert ";" not in line, (
+                    f"unexpected trailing comment: {line!r}"
+                )
+                break
+        else:
+            raise AssertionError("userv equate line not found")
+
+
+@pytest.mark.beebasm
+class TestSubroutineHooks:
+    """Driver feature: ``d.hook_subroutine(addr, name, hook)`` registers
+    a callable that the trace fires when it sees a JSR to ``addr``.
+
+    The hook decides where the trace continues after the JSR — most
+    commonly used for inline-string idioms where the bytes following
+    the JSR are payload data rather than the next instruction.
+
+    The bundled :func:`dasmos.hooks.stringhi_hook` ports py8dis's
+    behaviour: classify the bytes after the JSR as a String terminated
+    by a byte with bit 7 set; trace continues at the terminator (which
+    typically executes as a 1-byte NOP opcode).
+    """
+
+    def test_stringhi_hook_classifies_inline_string(
+        self, roundtrip_via_beebasm,
+    ):
+        # ``print_str`` is an out-of-range stub at &FE98 (mirrors the
+        # tube-client driver). A JSR to it is followed by an ASCII
+        # string terminated by &EA (NOP, bit 7 set), then code.
+        # After the inline string, execution continues at the &EA
+        # terminator (NOP, 1-byte opcode), then the rts.
+        source = """
+            org &8000
+        .start
+            jsr &fe98
+            equs "Hi", &ea
+            rts
+        save "step1.bin", start, P%
+        """
+
+        from dasmos.hooks import stringhi_hook
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.hook_subroutine(0xFE98, "print_str", stringhi_hook)
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # The "Hi" bytes are classified as a string (renders as equs).
+        # The &EA terminator is then traced as an opcode (nop).
+        assert "equs" in text and '"Hi"' in text
+        assert "nop" in text
+        assert "rts" in text
+
+    def test_hook_subroutine_creates_optional_label(self):
+        """The ``name`` argument registers an optional label at the
+        target address — same as ``optional_label(addr, name)``. This
+        means the JSR's operand resolves to the registered name."""
+        from dasmos.disassembler import Disassembler
+        from dasmos.hooks import stringhi_hook
+        d = Disassembler.create(cpu="nmos6502")
+        d.hook_subroutine(0xFE98, "print_str", stringhi_hook)
+        # Label appears in the label manager.
+        label = d.labels.get_label(0xFE98)
+        assert label is not None
+        assert "print_str" in label.explicit_name_texts()
+
+
+@pytest.mark.beebasm
+class TestCrossReferences:
+    """Driver feature: the renderer emits cross-reference annotations
+    that record how each label is used by other instructions:
+
+    - Inline summary above an in-range label:
+      ``; &xxxx referenced N time(s) by &yyyy, &zzzz, …``
+    - End-of-file frequency table:
+      ``; Label references by decreasing frequency:`` followed by
+      ``;     name:  N`` lines sorted by count descending.
+
+    Both data sources are populated from operand resolution: every
+    time an operand resolves to a label name, that use site is
+    recorded against the label."""
+
+    def test_inline_xref_summary_above_referenced_label(
+        self, roundtrip_via_beebasm,
+    ):
+        # ``helper`` is jsr'd from one site → the renderer emits
+        # ``; &<helper-addr> referenced 1 time by &<jsr-addr>``
+        # immediately above the inline ``.helper`` label.
+        source = """
+            org &8000
+        .start
+            jsr helper
+            rts
+        .helper
+            nop
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.label(0x8004, "helper")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # Find the .helper line and check what's right above it.
+        lines = text.splitlines()
+        helper_idx = next(
+            i for i, line in enumerate(lines) if line.strip() == ".helper"
+        )
+        prev = lines[helper_idx - 1]
+        # Singular: "1 time", not "1 times".
+        assert "; &8004 referenced 1 time by &8000" == prev.strip(), (
+            f"unexpected xref line above .helper: {prev!r}"
+        )
+
+    def test_inline_xref_plural_lists_all_sites(
+        self, roundtrip_via_beebasm,
+    ):
+        # ``loop_top`` is branched to from two sites → the summary
+        # uses "2 times" and lists both ref sites in address order.
+        source = """
+            org &8000
+        .start
+            ldx #5
+        .loop_top
+            dex
+            beq done
+            jmp loop_top
+        .done
+            jsr loop_top
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            # Layout (from beebasm): ldx #5 @8000(2), dex @8002(1),
+            # beq done @8003(2), jmp loop_top @8005(3), jsr loop_top
+            # @8008(3), rts @800b(1). Total 12 bytes.
+            d.label(0x8002, "loop_top")
+            d.label(0x8008, "done")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        lines = text.splitlines()
+        loop_idx = next(
+            i for i, line in enumerate(lines) if line.strip() == ".loop_top"
+        )
+        prev = lines[loop_idx - 1].strip()
+        # Plural form: jmp at &8005 and jsr at &8008 both reference
+        # loop_top.
+        assert prev.startswith("; &8002 referenced 2 times by &"), (
+            f"expected plural xref above .loop_top, got: {prev!r}"
+        )
+        assert "&8005" in prev
+        assert "&8008" in prev
+
+    def test_unreferenced_label_has_no_xref_summary(
+        self, roundtrip_via_beebasm,
+    ):
+        # ``orphan`` is defined but no operand resolves to it; no
+        # xref summary is emitted above it.
+        source = """
+            org &8000
+        .start
+            rts
+        .orphan
+            nop
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.entry(0x8001, name="orphan")  # so the trace covers it
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        lines = text.splitlines()
+        orphan_idx = next(
+            i for i, line in enumerate(lines) if line.strip() == ".orphan"
+        )
+        prev = lines[orphan_idx - 1].strip()
+        assert "referenced" not in prev, (
+            f"unexpected xref line above unreferenced .orphan: {prev!r}"
+        )
+
+    def test_end_of_file_frequency_table_descending(
+        self, roundtrip_via_beebasm,
+    ):
+        # Two labels with different reference counts — the frequency
+        # table at the end of the output sorts them in descending order.
+        source = """
+            org &8000
+        .start
+            jsr popular
+            jsr popular
+            jsr popular
+            jsr quiet
+            rts
+        .popular
+            rts
+        .quiet
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.label(0x800d, "popular")
+            d.label(0x800e, "quiet")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # The frequency-table header appears.
+        assert "; Label references by decreasing frequency:" in text
+        # `popular` (3 refs) appears before `quiet` (1 ref).
+        popular_pos = text.index("popular:")
+        quiet_pos = text.index("quiet:")
+        assert popular_pos < quiet_pos, (
+            "frequency table should list popular before quiet"
+        )
+        # Counts present.
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(";") and "popular:" in stripped:
+                assert stripped.endswith(" 3"), (
+                    f"expected popular count 3 in {stripped!r}"
+                )
+            elif stripped.startswith(";") and "quiet:" in stripped:
+                assert stripped.endswith(" 1"), (
+                    f"expected quiet count 1 in {stripped!r}"
+                )
+
+    def test_unreferenced_label_omitted_from_frequency_table(
+        self, roundtrip_via_beebasm,
+    ):
+        # An unreferenced label doesn't pollute the frequency table.
+        source = """
+            org &8000
+        .start
+            jsr used
+            rts
+        .used
+            rts
+        .orphan
+            nop
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.entry(0x8005, name="orphan")
+            d.label(0x8004, "used")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # Find the frequency table section.
+        if "Label references by decreasing frequency" in text:
+            table = text.split("Label references by decreasing frequency:")[1]
+            assert "orphan" not in table, (
+                "orphan should not appear in the frequency table"
+            )
+
+    def test_stats_block_emitted_at_end(self, roundtrip_via_beebasm):
+        """End-of-file ``; Stats:`` block summarises the disassembly:
+        total size, code/data split, instruction count, byte/word/
+        string counts. Useful as a quick orientation when reviewing
+        the output and as a parity marker against py8dis."""
+        source = """
+            org &8000
+        .start
+            lda #&42
+            rts
+        .data
+            equb &01, &02
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.label(0x8003, "data")
+            d.byte(0x8003, 2)
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # Header line and at least one of the keyword summaries.
+        assert "; Stats:" in text
+        assert "Total size" in text
+        assert "Code" in text
+        assert "Data" in text
+        assert "instructions" in text
+
 
 @pytest.mark.beebasm
 class TestMoveContext:
