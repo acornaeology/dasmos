@@ -362,6 +362,60 @@ binary.
 - The first concrete CI fixture is `econet-bridge-variant_1.rom`
   (8 KB, NMOS 6502).
 
+### D-021: Opcode is renderer-agnostic; mnemonic choice belongs to the renderer
+
+**Status**: accepted; the `Opcode` dataclass and supporting enums
+landed on `dasmos.cpu` ahead of the NMOS 6502 plug-in port.
+
+**Context**: 6502 assemblers split into two distinct schools of
+mnemonic notation, both Acorn-blessed:
+
+- **MOS standard / Beebasm / acme / ca65 / xa** — addressing mode is
+  in the operand syntax: `LDA #imm`, `LDA (zp),Y`, `JMP (addr)`.
+- **Acorn MASM / ADE / UADE** — addressing mode is encoded in the
+  mnemonic itself: `LDAIM` (immediate), `LDAIY` (indirect-indexed
+  Y), `LDAIX` (indexed-indirect X), `LDAA` (accumulator), `JMI`
+  (JMP indirect).
+
+Discussion threads at
+<https://www.stardot.org.uk/forums/viewtopic.php?t=31169> and
+<https://www.stardot.org.uk/forums/viewtopic.php?t=24548> document
+the split and trace it back to Microsoft BASIC for 6502 (1978) being
+cross-assembled on a PDP-10 with MACRO-10, which couldn't be
+modified — addressing modes had to be encoded as macro names.
+
+The user observed that some MASM mnemonics are wholesale different
+from the canonical form (`JMI` for `JMP (indirect)`), not just
+suffix additions. A simple suffix-rewriter would be wrong; a
+per-`(operation, addressing_mode)` lookup table is correct.
+
+**Decision**: The `Opcode` dataclass in the IR carries
+``operation``, ``addressing_mode``, ``flow_control``, ``cycles`` —
+no mnemonic string. Each CPU plug-in defines its own ``Operation``
+and ``AddressingMode`` enums (the Python enum members carry the
+canonical lowercase MOS form as their ``value``). Renderers
+translate `(operation, addressing_mode)` to their preferred
+mnemonic via a per-pair lookup table that falls back to
+``Opcode.default_mnemonic()`` (the canonical form) for unspecified
+pairs.
+
+**Consequences**:
+
+- The IR is honest about what it knows: structural information
+  about an instruction, not a guess at how an assembler spells it.
+- Adding a new renderer-syntax variant (a future Acorn MASM
+  renderer, a ca65 variant, …) is a data-only change: provide a
+  sparse override table.
+- A renderer can render the same opcode byte differently when
+  rendering through its own and through a downstream assembler with
+  different conventions; the IR doesn't constrain it.
+- The pin in `tests/test_cpu.py::TestRendererMnemonicOverride`
+  demonstrates `(JMP, INDIRECT) → JMI` as the canonical
+  test-the-shape example.
+- The user's hypothesis about "having a default mnemonic for
+  `__repr__` and `__str__`" is satisfied by ``default_mnemonic()``
+  on the dataclass.
+
 ### D-020: Decompose deferred concerns into separate manager classes (not on `Disassembler` directly)
 
 **Status**: accepted; implementation deferred.

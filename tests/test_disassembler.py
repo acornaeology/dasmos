@@ -15,7 +15,7 @@ import pytest
 from dasmos.core.classification import Byte, Fill, String, Word
 from dasmos.core.memory import BinaryAddr, RuntimeAddr
 from dasmos.core.move import BASE_MOVE_ID
-from dasmos.cpu import Cpu
+from dasmos.cpu import Cpu, Opcode
 from dasmos.disassembler import Disassembler, DisassemblerError
 from dasmos.ir import IntermediateRepresentation
 from dasmos.output import TextOutput
@@ -29,7 +29,8 @@ from dasmos.renderer import Renderer
 
 class _StubCpu(Cpu):
     """A bare-bones Cpu subclass exposing only what the orchestration
-    skeleton currently consults: the address-space size.
+    skeleton currently consults: the address-space size and an empty
+    opcode table (the trace loop is added in a later port).
     """
 
     def __init__(self, name: str = "stub", address_space_size: int = 0x10000):
@@ -39,6 +40,9 @@ class _StubCpu(Cpu):
     @property
     def address_space_size(self) -> int:
         return self._size
+
+    def opcodes(self) -> dict[int, Opcode]:
+        return {}
 
 
 class _StubRenderer(Renderer):
