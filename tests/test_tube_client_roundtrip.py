@@ -152,14 +152,20 @@ class TestTubeClientPorterEndToEnd:
 #        in the equate table (``; &xxxx referenced N times by …``
 #        below each ``name = &xxxx`` whose label has references).
 #
-# Remaining 1 token:
-#   - ``sub_cfe15``: py8dis synthesises a *base* auto-label so
-#     other mid-instruction labels can be expressed as offsets
-#     (e.g. ``nmi1_transfer_addr = sub_cfe15+1``). dasmos emits the
-#     mid-instruction labels as bare equates instead. Closing this
-#     would land with an "express as offset" rendering pass —
-#     deferred as it's a substantial feature for one token.
-MAX_COMMENT_TOKENS_DROPPED = 5
+#    0 — after the offset-base synthesis: the Disassembler
+#        synthesises an auto-label at the start of any classification
+#        that contains a mid-instruction label (in non-moved
+#        regions), and the renderer emits the mid-instruction labels
+#        as ``<name> = <base>+<offset>`` inline under the base.
+#        Mirrors py8dis's ``nmi1_transfer_addr = sub_cfe15+1``
+#        idiom. The xref summary above each offset definition
+#        contributes the binary-hex tokens that py8dis emits in the
+#        same position. Inside moved regions the trick is skipped
+#        (the body walk anchors labels at the move-DEST runtime, so
+#        a +offset from there would resolve wrong) — those mid-
+#        instruction labels stay as literal hex equates, matching
+#        py8dis.
+MAX_COMMENT_TOKENS_DROPPED = 0
 
 _COMMENT_TOKEN_RE = re.compile(r"[a-z_][a-z_0-9]{3,}")
 

@@ -461,6 +461,38 @@ class BeebasmRenderer(TextRenderer):
                     lines.append(xref)
                 for name in sorted(label.explicit_name_texts()):
                     lines.append(self.inline_label(name))
+                # Mid-instruction labels INSIDE this classification's
+                # span get expressed as ``<midname> = <base>+<offset>``
+                # right under the inline base label — matches py8dis's
+                # synthesised-base trick (``nmi1_transfer_addr =
+                # sub_cfe15+1``). Skipped inside a moved region: the
+                # base label there is anchored at the move-dest
+                # runtime, so a ``+offset`` from it would resolve to
+                # the WRONG address; py8dis keeps moved-region mid-
+                # instr labels as literal hex equates instead.
+                base_names = sorted(label.explicit_name_texts())
+                if base_names and active_move is None:
+                    base_name = base_names[0]
+                    for off in range(1, classification.length()):
+                        inner_binary = int(binary_addr) + off
+                        # Use the natural runtime address (binary_addr)
+                        # for the inner-label lookup — labels at
+                        # mid-instruction positions are registered
+                        # against their natural runtime, not the
+                        # b2r-translated one.
+                        inner_label = ir.labels.get_label(inner_binary)
+                        if inner_label is None:
+                            continue
+                        # Xref summary above the offset definition,
+                        # so a reader can see who references the
+                        # mid-instruction address.
+                        inner_xref = self._format_inline_xref_summary(
+                            inner_label, inner_binary,
+                        )
+                        if inner_xref is not None:
+                            lines.append(inner_xref)
+                        for inner_name in sorted(inner_label.explicit_name_texts()):
+                            lines.append(f"{inner_name} = {base_name}+{off}")
 
             # Emit AFTER_LABEL annotations at this address.
             for ann in ir.annotations.get_for_align(int(binary_addr), Align.AFTER_LABEL):
@@ -631,6 +663,14 @@ class BeebasmRenderer(TextRenderer):
                 and self._label_address_is_classification_start(ir, runtime_addr)
             )
             if inline_anchor:
+                continue
+            # Mid-instruction labels with a named base are emitted
+            # inline under the base as ``name = base+offset`` — skip
+            # the equate table to avoid double-definition.
+            if (
+                in_range
+                and self._label_has_inline_offset_base(ir, runtime_addr)
+            ):
                 continue
             explicit_names = sorted({
                 name.text
@@ -1296,6 +1336,44 @@ class BeebasmRenderer(TextRenderer):
                 if ll.start_addr <= using_binary_addr < ll.end_addr:
                     return ll.name
         return None
+
+    def _label_has_inline_offset_base(self, ir, runtime_addr: int) -> bool:
+        """True iff the runtime address is inside a multi-byte
+        classification AND that classification's start has an explicit
+        name AND the label sits at its NATURAL runtime (not a move-
+        dest variant — those can't reach an inline anchor). The body
+        walk emits ``<name> = <base>+<offset>`` for such labels right
+        under the base, so they shouldn't also appear in the equate
+        table.
+        """
+        from dasmos.core.disassembly import INSIDE_A_CLASSIFICATION
+        from dasmos.core.memory import BinaryAddr, RuntimeAddr
+        binary_loc, _ = ir.moves.r2b(RuntimeAddr(runtime_addr))
+        if binary_loc is None:
+            return False
+        binary_addr = int(binary_loc)
+        # Mid-instruction labels inside moved regions (where b2r
+        # doesn't round-trip) get literal-hex equates instead.
+        if int(ir.moves.b2r(BinaryAddr(binary_addr))) != runtime_addr:
+            return False
+        c = ir.classifications.get_classification(binary_addr)
+        if c is not INSIDE_A_CLASSIFICATION:
+            return False
+        start = binary_addr - 1
+        while start >= 0:
+            sc = ir.classifications.get_classification(start)
+            if sc is None:
+                return False
+            if sc is not INSIDE_A_CLASSIFICATION:
+                break
+            start -= 1
+        if start < 0:
+            return False
+        start_runtime = int(ir.moves.b2r(BinaryAddr(start)))
+        base_label = ir.labels.get_label(start_runtime)
+        return (
+            base_label is not None and bool(base_label.explicit_name_texts())
+        )
 
     def _label_address_is_classification_start(
         self, ir, runtime_addr: int,
