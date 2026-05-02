@@ -8,7 +8,7 @@ dynamic = ["version"]
 authors = [
     { name = "Robert Smallshire", email = "rob@sixty-north.com" },
 ]
-description = "Pluggable tracing disassembler with CPU and assembler-syntax extension points."
+description = "Pluggable tracing disassembler with CPU, renderer and environment extension points."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -41,14 +41,18 @@ Homepage = "https://github.com/acornaeology/dasmos"
 Repository = "https://github.com/acornaeology/dasmos"
 Issues = "https://github.com/acornaeology/dasmos/issues"
 
-# Extension points. CPU and assembler plug-ins are registered under
-# these namespaces; built-in entries follow the ext/<plural>/<name>:<UniformSymbol>
-# alias convention. No built-ins ship in the initial scaffold — entries
-# get added here as concrete CPUs (NMOS 6502, CMOS 65C02, MC6809, …) and
-# assemblers (Beebasm, JSON, …) land.
+# Extension points. CPU, renderer and environment plug-ins are
+# registered under these namespaces; built-in entries follow the
+# ext/<plural>/<name>:<UniformSymbol> alias convention. No built-ins
+# ship in the initial scaffold — entries get added here as concrete
+# CPUs (NMOS 6502, CMOS 65C02, MC6809, …), renderers (Beebasm, JSON,
+# ca65, …) and environments (acorn-bbc-model-b, acorn-mos-1_20, …)
+# land.
 [project.entry-points."dasmos.cpu"]
 
-[project.entry-points."dasmos.assembler"]
+[project.entry-points."dasmos.renderer"]
+
+[project.entry-points."dasmos.environment"]
 
 [tool.setuptools]
 package-dir = { "" = "src" }

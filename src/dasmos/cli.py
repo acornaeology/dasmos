@@ -15,12 +15,12 @@ from asyoulikeit import (
 )
 
 from dasmos import __version__
-from dasmos.assembler import (
-    ASSEMBLER_NAMESPACE,
-    assembler_names,
-    describe_assembler,
-)
 from dasmos.cpu import CPU_NAMESPACE, cpu_names, describe_cpu
+from dasmos.renderer import (
+    RENDERER_NAMESPACE,
+    describe_renderer,
+    renderer_names,
+)
 
 
 @click.group()
@@ -61,34 +61,34 @@ def describe_cpu_command(name: str) -> Reports:
     )))
 
 
-@cli.command(name="list-assemblers")
+@cli.command(name="list-renderers")
 @report_output(reports={
-    "assemblers": "Registered assembler-syntax plug-ins with one-line descriptions.",
+    "renderers": "Registered renderer plug-ins with one-line descriptions.",
 })
-def list_assemblers_command() -> Reports:
-    """List the available assembler-syntax plug-ins."""
+def list_renderers_command() -> Reports:
+    """List the available renderer plug-ins."""
     table = (
-        TableContent(title=f"Assemblers registered under {ASSEMBLER_NAMESPACE!r}")
+        TableContent(title=f"Renderers registered under {RENDERER_NAMESPACE!r}")
         .add_column("name", "Name")
         .add_column("description", "Description")
     )
-    for name in sorted(assembler_names()):
+    for name in sorted(renderer_names()):
         table.add_row(
             name=name,
-            description=describe_assembler(name, single_line=True),
+            description=describe_renderer(name, single_line=True),
         )
-    return Reports(assemblers=Report(data=table))
+    return Reports(renderers=Report(data=table))
 
 
-@cli.command(name="describe-assembler")
+@cli.command(name="describe-renderer")
 @click.argument("name")
 @report_output(reports={
-    "assembler": "The full description of one registered assembler plug-in.",
+    "renderer": "The full description of one registered renderer plug-in.",
 })
-def describe_assembler_command(name: str) -> Reports:
-    """Describe a specific assembler plug-in."""
-    return Reports(assembler=Report(data=ScalarContent(
-        value=describe_assembler(name),
+def describe_renderer_command(name: str) -> Reports:
+    """Describe a specific renderer plug-in."""
+    return Reports(renderer=Report(data=ScalarContent(
+        value=describe_renderer(name),
         title=name,
     )))
 
