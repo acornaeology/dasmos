@@ -46,10 +46,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from dasmos.core.annotations import Align, Annotation, Comment
 from dasmos.core.classification import Byte, Fill, String, Word
 from dasmos.cpu import Opcode, OperandKind
 from dasmos.output import TextOutput
 from dasmos.renderer import TextRenderer
+
+# Trailing column for inline comments. A future config knob; matches
+# py8dis's default.
+INLINE_COMMENT_COLUMN = 40
 
 if TYPE_CHECKING:
     from dasmos.ir import IntermediateRepresentation
@@ -211,6 +216,10 @@ class BeebasmRenderer(TextRenderer):
             if not (int(load_start) <= int(binary_addr) < int(load_end)):
                 continue
 
+            # Emit BEFORE_LABEL annotations at this address.
+            for ann in ir.annotations.get_for_align(int(binary_addr), Align.BEFORE_LABEL):
+                lines.append(self._render_annotation(ann))
+
             # Emit any inline labels at this address (sorted for
             # deterministic output).
             label = ir.labels.get_label(int(binary_addr))
@@ -218,14 +227,61 @@ class BeebasmRenderer(TextRenderer):
                 for name in sorted(label.all_names()):
                     lines.append(self.inline_label(name))
 
+            # Emit AFTER_LABEL annotations at this address.
+            for ann in ir.annotations.get_for_align(int(binary_addr), Align.AFTER_LABEL):
+                lines.append(self._render_annotation(ann))
+
+            # Emit BEFORE_LINE annotations at this address.
+            for ann in ir.annotations.get_for_align(int(binary_addr), Align.BEFORE_LINE):
+                lines.append(self._render_annotation(ann))
+
             # Emit the classification's text line(s).
-            lines.extend(self._render_classification(ir, binary_addr, classification))
+            content_lines = self._render_classification(ir, binary_addr, classification)
+
+            # Append any INLINE comments to the last content line.
+            inline_anns = ir.annotations.get_for_align(int(binary_addr), Align.INLINE)
+            if inline_anns and content_lines:
+                inline_text = "  ".join(
+                    self._render_annotation_inline(a) for a in inline_anns
+                )
+                last = content_lines[-1]
+                # Pad to the inline-comment column if there's room.
+                if len(last) < INLINE_COMMENT_COLUMN:
+                    last = last.ljust(INLINE_COMMENT_COLUMN)
+                else:
+                    last = last + "  "
+                content_lines[-1] = f"{last}{inline_text}"
+
+            lines.extend(content_lines)
+
+            # Emit AFTER_LINE annotations at this address.
+            for ann in ir.annotations.get_for_align(int(binary_addr), Align.AFTER_LINE):
+                lines.append(self._render_annotation(ann))
 
         # End marker + save directive.
         lines.append(self.inline_label("pydis_end"))
         lines.extend(self.disassembly_end())
 
         return TextOutput("\n".join(lines) + "\n")
+
+    # -- annotations ------------------------------------------------------
+
+    def _render_annotation(self, ann) -> str:
+        """Render a Comment or Annotation as a standalone line."""
+        if isinstance(ann, Comment):
+            indent = " " * (ann.indent * 4) if ann.indent else ""
+            return f"{indent}{self.comment_prefix()} {ann.text}"
+        if isinstance(ann, Annotation):
+            return ann.text
+        raise TypeError(f"unknown annotation type: {type(ann).__name__}")
+
+    def _render_annotation_inline(self, ann) -> str:
+        """Render a Comment or Annotation as the inline (trailing) form."""
+        if isinstance(ann, Comment):
+            return f"{self.comment_prefix()} {ann.text}"
+        if isinstance(ann, Annotation):
+            return ann.text
+        raise TypeError(f"unknown annotation type: {type(ann).__name__}")
 
     # -- per-classification rendering -------------------------------------
 

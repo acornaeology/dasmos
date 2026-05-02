@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 from dasmos.output import Output
 
 if TYPE_CHECKING:
+    from dasmos.core.annotations import AnnotationStore
     from dasmos.core.classification import ExpressionRegistry
     from dasmos.core.config import Config
     from dasmos.core.disassembly import ClassificationStore
@@ -75,6 +76,10 @@ class IntermediateRepresentation:
     @property
     def expressions(self) -> "ExpressionRegistry":
         return self._disassembler.expressions
+
+    @property
+    def annotations(self) -> "AnnotationStore":
+        return self._disassembler.annotations
 
     @property
     def config(self) -> "Config":

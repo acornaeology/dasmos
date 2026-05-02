@@ -6,6 +6,7 @@ from :mod:`dasmos` rather than reaching into sub-modules.
 
 __version__ = "0.1.0"
 
+from dasmos.core.annotations import Align, Annotation, AnnotationStore, Comment
 from dasmos.cpu import (
     Cpu,
     CpuExtensionError,
@@ -32,6 +33,10 @@ from dasmos.renderer import (
 )
 
 __all__ = [
+    "Align",
+    "Annotation",
+    "AnnotationStore",
+    "Comment",
     "Cpu",
     "CpuExtensionError",
     "DasmosError",

@@ -31,6 +31,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
+from dasmos.core.annotations import Align, AnnotationStore, Comment
 from dasmos.core.classification import Byte, ExpressionRegistry, Fill, String, Word
 from dasmos.core.config import Config
 from dasmos.core.disassembly import (
@@ -67,6 +68,7 @@ class Disassembler:
         self._labels = LabelManager(self._moves)
         self._classifications = ClassificationStore()
         self._expressions = ExpressionRegistry()
+        self._annotations = AnnotationStore()
         self._entry_points: list[BinaryAddr] = []
         self._traced: set[int] = set()
         self._disassembled = False
@@ -111,6 +113,10 @@ class Disassembler:
     @property
     def expressions(self) -> ExpressionRegistry:
         return self._expressions
+
+    @property
+    def annotations(self) -> AnnotationStore:
+        return self._annotations
 
     @property
     def config(self) -> Config:
@@ -207,6 +213,48 @@ class Disassembler:
         """
         self._raise_if_disassembled("expr")
         self._expressions.add(binary_addr, expression)
+
+    # -- driver-script API: comments / annotations ----------------------
+
+    def comment(
+        self,
+        runtime_addr,
+        text: str,
+        *,
+        align: Align = Align.BEFORE_LABEL,
+        word_wrap: bool = True,
+        indent: int = 0,
+        move_id: int | None = None,
+    ) -> None:
+        """Attach a comment at ``runtime_addr``.
+
+        ``align`` controls where the comment is rendered relative to
+        the code line — ``BEFORE_LABEL`` (the default) puts it on
+        its own line above any labels at the address; ``INLINE``
+        appends it to the code line itself; the other positions
+        (``AFTER_LABEL``, ``BEFORE_LINE``, ``AFTER_LINE``) cover
+        less-common arrangements.
+
+        The runtime address is resolved to a binary address via the
+        active-move stack on the move manager, or via the explicit
+        ``move_id`` if given.
+        """
+        self._raise_if_disassembled("comment")
+        if move_id is None:
+            binary_loc = self._moves.r2b_checked(runtime_addr)
+        else:
+            from dasmos.core.memory import RuntimeAddr
+            binary_addr, _ = self._moves.r2b(
+                RuntimeAddr(runtime_addr), specific_move_id=move_id,
+            )
+            if binary_addr is None:
+                raise DisassemblerError(
+                    f"runtime address 0x{int(runtime_addr):x} not in move {move_id}"
+                )
+        self._annotations.add(
+            binary_loc.binary_addr if move_id is None else binary_addr,
+            Comment(text=text, align=align, word_wrap=word_wrap, indent=indent),
+        )
 
     # -- the trace + render entry point ---------------------------------
 

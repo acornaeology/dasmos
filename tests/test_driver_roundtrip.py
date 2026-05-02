@@ -317,6 +317,159 @@ class TestAddressingModesViaSource:
 
 
 @pytest.mark.beebasm
+class TestComments:
+    """Driver feature: ``d.comment()`` — attach human commentary to
+    a binary address. Comments don't affect the assembled bytes
+    (beebasm strips them), so the round-trip property holds; we
+    additionally assert that the comment text reaches the rendered
+    output at the right relative position.
+    """
+
+    def test_before_label_comment_appears_above_line(
+        self, roundtrip_via_beebasm,
+    ):
+        source = """
+            org &8000
+        .start
+            lda #&42
+            rts
+        save "step1.bin", start, P%
+        """
+        from dasmos import Align
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.comment(0x8000, "load the magic number")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        assert "; load the magic number" in text
+        # Comment is on its own line above the label/code.
+        comment_idx = text.index("; load the magic number")
+        label_idx = text.index(".start")
+        assert comment_idx < label_idx
+
+    def test_inline_comment_appears_after_line(
+        self, roundtrip_via_beebasm,
+    ):
+        source = """
+            org &8000
+        .start
+            lda #&42
+            rts
+        save "step1.bin", start, P%
+        """
+        from dasmos import Align
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.comment(0x8000, "magic number", align=Align.INLINE)
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # The inline comment lives on the same line as the LDA.
+        for line in text.splitlines():
+            if "lda #&42" in line:
+                assert "; magic number" in line
+                break
+        else:
+            raise AssertionError("LDA line not found in rendered output")
+
+    def test_multiple_comments_at_same_address_preserve_order(
+        self, roundtrip_via_beebasm,
+    ):
+        source = """
+            org &8000
+        .start
+            lda #&42
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.comment(0x8000, "first")
+            d.comment(0x8000, "second")
+            d.comment(0x8000, "third")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # Three lines, in insertion order, before the .start label.
+        first_idx = text.index("; first")
+        second_idx = text.index("; second")
+        third_idx = text.index("; third")
+        label_idx = text.index(".start")
+        assert first_idx < second_idx < third_idx < label_idx
+
+    def test_after_label_comment_between_label_and_code(
+        self, roundtrip_via_beebasm,
+    ):
+        source = """
+            org &8000
+        .start
+            lda #&42
+            rts
+        save "step1.bin", start, P%
+        """
+        from dasmos import Align
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.comment(0x8000, "between", align=Align.AFTER_LABEL)
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # The comment is between .start and lda.
+        label_idx = text.index(".start")
+        comment_idx = text.index("; between")
+        lda_idx = text.index("lda #&42")
+        assert label_idx < comment_idx < lda_idx
+
+    def test_after_line_comment_below_code(self, roundtrip_via_beebasm):
+        source = """
+            org &8000
+        .start
+            lda #&42
+            rts
+        save "step1.bin", start, P%
+        """
+        from dasmos import Align
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.comment(0x8000, "trailing block", align=Align.AFTER_LINE)
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        lda_idx = text.index("lda #&42")
+        comment_idx = text.index("; trailing block")
+        rts_idx = text.index("rts")
+        assert lda_idx < comment_idx < rts_idx
+
+    def test_comments_at_different_addresses(
+        self, roundtrip_via_beebasm,
+    ):
+        source = """
+            org &8000
+        .start
+            lda #&42
+            jsr helper
+            rts
+        .helper
+            nop
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.label(0x8005, "helper")
+            d.comment(0x8000, "the entry point")
+            d.comment(0x8002, "calls the helper")
+            d.comment(0x8005, "the helper subroutine")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        assert "; the entry point" in text
+        assert "; calls the helper" in text
+        assert "; the helper subroutine" in text
+
+
+@pytest.mark.beebasm
 class TestMultipleLoads:
     """A driver can load multiple binaries into one Disassembler."""
 
