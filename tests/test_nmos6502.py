@@ -120,19 +120,19 @@ class TestSpotCheckedOpcodes:
         assert op.operation is Operation.LDA
         assert op.addressing_mode is AddressingMode.IMMEDIATE
         assert op.flow_control is FlowControl.SEQUENTIAL
-        assert op.length == 2
+        assert op.length() == 2
 
     def test_lda_zero_page(self):
         op = OPCODES[0xA5]
         assert op.operation is Operation.LDA
         assert op.addressing_mode is AddressingMode.ZERO_PAGE
-        assert op.length == 2
+        assert op.length() == 2
 
     def test_lda_absolute(self):
         op = OPCODES[0xAD]
         assert op.operation is Operation.LDA
         assert op.addressing_mode is AddressingMode.ABSOLUTE
-        assert op.length == 3
+        assert op.length() == 3
 
     def test_lda_indirect_indexed(self):
         # (zp),Y form

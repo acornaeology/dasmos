@@ -282,6 +282,11 @@ class MemoryImage:
         end = max(e for _, e in self._load_ranges)
         return BinaryAddr(start), BinaryAddr(end)
 
+    @property
+    def load_ranges(self) -> list[tuple[BinaryAddr, BinaryAddr]]:
+        """A snapshot of every ``[start, end)`` range loaded so far."""
+        return list(self._load_ranges)
+
 
 class RuntimeView:
     """Read-through view of a :class:`MemoryImage` indexed by

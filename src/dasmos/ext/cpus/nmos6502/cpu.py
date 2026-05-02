@@ -124,7 +124,7 @@ class AddressingMode(Enum):
     ABSOLUTE           = ("absolute",           2, OperandKind.ADDRESS_16)
     ABSOLUTE_X         = ("absolute_x",         2, OperandKind.ADDRESS_16)
     ABSOLUTE_Y         = ("absolute_y",         2, OperandKind.ADDRESS_16)
-    INDIRECT           = ("indirect",           2, OperandKind.ADDRESS_16)   # JMP (addr)
+    INDIRECT           = ("indirect",           2, OperandKind.ADDRESS_16_INDIRECT)   # JMP (addr)
     INDEXED_INDIRECT   = ("indexed_indirect",   1, OperandKind.ADDRESS_8)    # (zp,X)
     INDIRECT_INDEXED   = ("indirect_indexed",   1, OperandKind.ADDRESS_8)    # (zp),Y
     RELATIVE           = ("relative",           1, OperandKind.RELATIVE_OFFSET)  # branches

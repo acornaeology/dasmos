@@ -115,6 +115,7 @@ class TestOperandKind:
             "IMMEDIATE",
             "ADDRESS_8",
             "ADDRESS_16",
+            "ADDRESS_16_INDIRECT",
             "RELATIVE_OFFSET",
         }
 
@@ -177,8 +178,9 @@ class TestOpcode:
             addressing_mode=_FakeAddressingMode.ABSOLUTE,
             flow_control=FlowControl.SEQUENTIAL,
         )
-        # 1 opcode byte + 2 operand bytes
-        assert op.length == 3
+        # 1 opcode byte + 2 operand bytes (length() is a method,
+        # matching the Classification ABC contract).
+        assert op.length() == 3
 
     def test_length_for_implied_is_one(self):
         op = Opcode(
@@ -186,7 +188,17 @@ class TestOpcode:
             addressing_mode=_FakeAddressingMode.IMPLIED,
             flow_control=FlowControl.RETURN,
         )
-        assert op.length == 1
+        assert op.length() == 1
+
+    def test_is_code_is_true(self):
+        op = Opcode(
+            operation=_FakeOperation.LDA,
+            addressing_mode=_FakeAddressingMode.ABSOLUTE,
+            flow_control=FlowControl.SEQUENTIAL,
+        )
+        # Opcodes always represent code (overrides the Classification
+        # ABC default of False for data subclasses).
+        assert op.is_code() is True
 
     def test_default_mnemonic_returns_operation_value(self):
         op = Opcode(

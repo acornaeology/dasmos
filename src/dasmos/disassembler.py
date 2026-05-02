@@ -27,14 +27,18 @@ Per ``docs/design/decisions.md``:
 
 from __future__ import annotations
 
+from collections import deque
 from pathlib import Path
 from typing import Any
 
 from dasmos.core.classification import Byte, ExpressionRegistry, Fill, String, Word
 from dasmos.core.config import Config
-from dasmos.core.disassembly import ClassificationStore
+from dasmos.core.disassembly import (
+    ClassificationError,
+    ClassificationStore,
+)
 from dasmos.core.labels import LabelManager
-from dasmos.core.memory import MemoryImage
+from dasmos.core.memory import BinaryAddr, MemoryImage
 from dasmos.core.move import MoveManager
 from dasmos.cpu import Cpu, create_cpu
 from dasmos.exceptions import DasmosError
@@ -63,6 +67,8 @@ class Disassembler:
         self._labels = LabelManager(self._moves)
         self._classifications = ClassificationStore()
         self._expressions = ExpressionRegistry()
+        self._entry_points: list[BinaryAddr] = []
+        self._traced: set[int] = set()
         self._disassembled = False
 
     # -- factory ---------------------------------------------------------
@@ -131,6 +137,25 @@ class Disassembler:
         """
         return self._moves.using(move_id)
 
+    # -- driver-script API: entry points --------------------------------
+
+    def entry(self, runtime_addr, name: str | None = None, **label_kwargs):
+        """Register a code entry point at ``runtime_addr``.
+
+        The trace loop will start here. If ``name`` is given, also
+        defines a label at the same runtime address (any extra kwargs
+        are forwarded to :meth:`label`).
+
+        The runtime address is resolved to a binary address via the
+        active-move stack on the move manager — entry points outside
+        any move identity-map.
+        """
+        self._raise_if_disassembled("entry")
+        binary_loc = self._moves.r2b_checked(runtime_addr)
+        self._entry_points.append(binary_loc.binary_addr)
+        if name is not None:
+            self.label(runtime_addr, name, **label_kwargs)
+
     # -- driver-script API: labels --------------------------------------
 
     def label(self, runtime_addr, name: str, **kwargs):
@@ -190,20 +215,88 @@ class Disassembler:
 
         One-shot: calling twice raises :class:`DisassemblerError`.
 
-        The trace loop and the leftover-classification pass are added
-        in a subsequent port (task #18 continues from here once the
-        first concrete CPU plug-in lands; for now ``disassemble`` just
-        builds the IR over whatever the user has registered).
+        The trace follows control flow from every registered entry
+        point, classifying each instruction. Bytes loaded but not
+        reached by trace (and not pre-classified by the user) are
+        marked as :class:`~dasmos.core.classification.Byte` by the
+        leftover pass.
         """
         if self._disassembled:
             raise DisassemblerError(
                 "disassemble() has already been called on this Disassembler"
             )
-        # TODO (task #16-#18): run the trace loop here.
-        # TODO (task #16-#18): classify_leftovers as Byte() to fill any
-        #     loaded-but-unclassified bytes.
+        self._trace()
+        self._classify_leftovers()
         self._disassembled = True
         return IntermediateRepresentation(self)
+
+    # -- internals: trace loop ------------------------------------------
+
+    def _trace(self) -> None:
+        """Walk control flow from every registered entry point.
+
+        For each binary address visited:
+
+        - look up the opcode byte in the CPU's instruction table;
+        - if recognised, classify the address span (skipping if the
+          user has manually classified any of the bytes already);
+        - compute the next addresses via
+          :meth:`Opcode.next_addresses`;
+        - enqueue any that fall inside loaded memory.
+
+        Visited addresses are tracked so the trace terminates on
+        cycles. Addresses outside loaded memory, undefined opcodes,
+        and operand bytes that aren't loaded all silently terminate
+        their respective trace paths.
+        """
+        opcodes = self._cpu.opcodes()
+        pending: deque[int] = deque(int(a) for a in self._entry_points)
+
+        while pending:
+            addr = pending.popleft()
+            if addr in self._traced:
+                continue
+            self._traced.add(addr)
+
+            if not self._memory.is_loaded(addr):
+                continue
+            opcode_byte = self._memory.get_u8(addr)
+            opcode = opcodes.get(opcode_byte)
+            if opcode is None:
+                # Undefined opcode — terminate this path.
+                continue
+
+            # Classify (skip if any byte in the range is already
+            # classified — could be a manual byte() call or a prior
+            # trace path overlapping us).
+            if not self._classifications.is_classified(addr, opcode.length()):
+                try:
+                    self._classifications.add_classification(addr, opcode)
+                except ClassificationError:
+                    # Defensive — is_classified should have caught
+                    # this. Continue tracing regardless.
+                    pass
+
+            # Continue tracing whether we classified or not — the
+            # control flow is determined by the opcode, not by who
+            # owns the classification record.
+            for next_addr in opcode.next_addresses(self._memory, addr):
+                if 0 <= next_addr < self._memory.address_space_size:
+                    pending.append(next_addr)
+
+    def _classify_leftovers(self) -> None:
+        """Mark every loaded-but-unclassified byte as a 1-byte
+        :class:`~dasmos.core.classification.Byte`.
+
+        Iterates all loaded ranges; any byte not already classified
+        (either by trace or by a user driver-script call) becomes a
+        ``Byte(1)``. This guarantees the renderer sees a complete
+        classification of the loaded image.
+        """
+        for start, end in self._memory.load_ranges:
+            for addr in range(int(start), int(end)):
+                if self._memory.is_loaded(addr) and not self._classifications.is_classified(addr):
+                    self._classifications.add_classification(addr, Byte(1))
 
     # -- internals ------------------------------------------------------
 

@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol, Type, runtime_checkable
 
+from dasmos.core.classification import Classification
 from dasmos.extension import (
     Extension,
     ExtensionError,
@@ -96,7 +97,13 @@ class OperandKind(Enum):
     """An 8-bit address (zero-page)."""
 
     ADDRESS_16 = "address_16"
-    """A 16-bit address (absolute, indirect, etc.)."""
+    """A 16-bit address (absolute)."""
+
+    ADDRESS_16_INDIRECT = "address_16_indirect"
+    """A 16-bit address that is itself a *pointer* — the actual target
+    is found by reading two bytes at that address. Used by the 6502's
+    ``JMP (addr)`` and the 65C02's ``JMP (addr,X)``.
+    """
 
     RELATIVE_OFFSET = "relative_offset"
     """A signed 8-bit offset added to the program counter at the
@@ -120,8 +127,12 @@ class AddressingModeMember(Protocol):
 
 
 @dataclass(frozen=True)
-class Opcode:
-    """An entry in a CPU's instruction table.
+class Opcode(Classification):
+    """An entry in a CPU's instruction table — and itself a
+    :class:`~dasmos.core.classification.Classification` so it can be
+    stored in the :class:`~dasmos.core.disassembly.ClassificationStore`
+    alongside :class:`~dasmos.core.classification.Byte`,
+    :class:`~dasmos.core.classification.Word`, etc.
 
     Renderer-agnostic: carries the abstract ``operation`` and
     ``addressing_mode`` enum members plus a CPU-agnostic
@@ -146,12 +157,16 @@ class Opcode:
         """
         return self.addressing_mode.operand_length
 
-    @property
     def length(self) -> int:
         """Total bytes consumed by this instruction (opcode byte +
-        operand bytes).
+        operand bytes). Method form for parity with the other
+        :class:`Classification` subclasses.
         """
         return 1 + self.operand_length
+
+    def is_code(self, binary_addr=None) -> bool:
+        """Opcodes always represent code."""
+        return True
 
     def default_mnemonic(self) -> str:
         """Canonical mnemonic for this operation, used by ``__repr__``
@@ -172,6 +187,90 @@ class Opcode:
             f"{self.addressing_mode.name}, "
             f"{self.flow_control.name})"
         )
+
+    def next_addresses(self, memory, binary_addr: int) -> list[int]:
+        """Compute the next binary addresses to trace from this opcode
+        located at ``binary_addr``.
+
+        Returns one or two addresses according to flow control:
+
+        - ``SEQUENTIAL`` → ``[fall_through]``.
+        - ``JUMP`` → ``[target]`` if the target is computable;
+          otherwise ``[]``.
+        - ``SUBROUTINE_CALL`` → ``[fall_through, target]`` (target
+          omitted if not computable; ``fall_through`` is where
+          execution returns to after the called routine).
+        - ``CONDITIONAL_BRANCH`` → ``[fall_through, target]``
+          (target omitted if not computable).
+        - ``RETURN`` / ``BREAK`` / ``UNDEFINED`` → ``[]`` (control
+          terminates here).
+
+        Targets that depend on memory the engine can't read
+        (e.g. ``JMP (addr)`` where the pointer's bytes aren't
+        loaded) are silently dropped — the trace path narrows but
+        doesn't fail.
+
+        ``memory`` is the :class:`~dasmos.core.memory.MemoryImage`;
+        ``binary_addr`` is the binary address of the opcode byte
+        (an ``int`` for ergonomics, internally interpreted as a
+        :class:`~dasmos.core.memory.BinaryAddr`).
+        """
+        fall_through = binary_addr + self.length()
+
+        flow = self.flow_control
+        if flow is FlowControl.SEQUENTIAL:
+            return [fall_through]
+        if flow in (FlowControl.RETURN, FlowControl.BREAK, FlowControl.UNDEFINED):
+            return []
+        # All remaining flow kinds need the operand interpreted as a
+        # control-flow target.
+        target = self._compute_target(memory, binary_addr)
+        if flow is FlowControl.JUMP:
+            return [target] if target is not None else []
+        # SUBROUTINE_CALL and CONDITIONAL_BRANCH both fall through.
+        if target is not None:
+            return [fall_through, target]
+        return [fall_through]
+
+    def _compute_target(self, memory, binary_addr: int) -> int | None:
+        """Decode the operand into a control-flow target address.
+
+        Returns ``None`` if the addressing mode doesn't yield a
+        target (e.g. immediate operands on a misuse) or the bytes
+        aren't loaded.
+        """
+        operand_addr = binary_addr + 1
+        kind = self.addressing_mode.operand_kind
+
+        if kind is OperandKind.RELATIVE_OFFSET:
+            if not memory.is_loaded(operand_addr):
+                return None
+            offset = memory.get_u8(operand_addr)
+            if offset >= 0x80:
+                offset -= 0x100  # two's-complement signed
+            return binary_addr + self.length() + offset
+
+        if kind is OperandKind.ADDRESS_16:
+            if not memory.is_loaded(operand_addr, 2):
+                return None
+            return memory.get_u16_le(operand_addr)
+
+        if kind is OperandKind.ADDRESS_8:
+            if not memory.is_loaded(operand_addr):
+                return None
+            return memory.get_u8(operand_addr)
+
+        if kind is OperandKind.ADDRESS_16_INDIRECT:
+            # Operand is a pointer to the target.
+            if not memory.is_loaded(operand_addr, 2):
+                return None
+            ptr = memory.get_u16_le(operand_addr)
+            if not memory.is_loaded(ptr, 2):
+                return None
+            return memory.get_u16_le(ptr)
+
+        # OperandKind.NONE / IMMEDIATE: no target to follow.
+        return None
 
 
 class Cpu(Extension):

@@ -9,12 +9,17 @@ __version__ = "0.1.0"
 from dasmos.cpu import (
     Cpu,
     CpuExtensionError,
+    FlowControl,
+    Opcode,
+    OperandKind,
     cpu_names,
     create_cpu,
     describe_cpu,
 )
+from dasmos.disassembler import Disassembler, DisassemblerError
 from dasmos.exceptions import DasmosError
 from dasmos.extension import Extension, ExtensionError
+from dasmos.ir import IntermediateRepresentation
 from dasmos.output import Output, StructuredOutput, TextOutput
 from dasmos.renderer import (
     Renderer,
@@ -30,8 +35,14 @@ __all__ = [
     "Cpu",
     "CpuExtensionError",
     "DasmosError",
+    "Disassembler",
+    "DisassemblerError",
     "Extension",
     "ExtensionError",
+    "FlowControl",
+    "IntermediateRepresentation",
+    "Opcode",
+    "OperandKind",
     "Output",
     "Renderer",
     "RendererExtensionError",
