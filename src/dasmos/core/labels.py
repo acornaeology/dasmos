@@ -127,17 +127,44 @@ class Label:
         self.emit_opportunities.add(move_id)
 
     def all_names(self) -> set[str]:
-        """Every name and expression for this label, flattened."""
+        """Every name and expression for this label, flattened.
+
+        This is the union of :meth:`explicit_name_texts`,
+        :meth:`local_label_names`, and the expression strings —
+        everything that could conceivably refer to this address. For
+        rendering, ``explicit_name_texts`` is usually what the
+        renderer wants, since local labels are scoped (rendered as
+        explicit-table entries) and expressions are use-site forms.
+        """
         result: set[str] = set()
-        for name_list in self.explicit_names.values():
-            for name in name_list:
-                result.add(name.text)
-        for ll_list in self.local_labels.values():
-            for ll in ll_list:
-                result.add(ll.name)
+        result.update(self.explicit_name_texts())
+        result.update(self.local_label_names())
         for expr_list in self.expressions.values():
             result.update(expr_list)
         return result
+
+    def explicit_name_texts(self) -> set[str]:
+        """The explicit-name strings only (no local-label names, no
+        expressions). The renderer uses this for inline label
+        emission, since local labels are emitted as explicit
+        ``name = &xxxx`` definitions in the table at the top of the
+        output rather than inline.
+        """
+        return {
+            name.text
+            for name_list in self.explicit_names.values()
+            for name in name_list
+        }
+
+    def local_label_names(self) -> set[str]:
+        """The local-label names only (across all move_ids and all
+        scopes).
+        """
+        return {
+            ll.name
+            for ll_list in self.local_labels.values()
+            for ll in ll_list
+        }
 
     def all_names_by_move_id(self) -> dict[int, set[str]]:
         result: dict[int, set[str]] = defaultdict(set)

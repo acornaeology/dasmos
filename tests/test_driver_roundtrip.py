@@ -588,6 +588,99 @@ class TestExpressionOverrides:
 
 
 @pytest.mark.beebasm
+class TestLocalLabels:
+    """Driver feature: ``d.local_label(addr, name, start, end)`` —
+    define a name at ``addr`` that's used as the operand symbol only
+    when the using site falls within ``[start, end)``.
+
+    Beebasm has no native local-label syntax, so we express scoped
+    names as explicit ``name = &xxxx`` definitions in the table at
+    the top of the output. The renderer's operand resolution prefers
+    the local name when in scope; outside the scope, the explicit
+    name (if any) or the literal hex appears instead.
+    """
+
+    def test_local_label_used_in_scope(self, roundtrip_via_beebasm):
+        # JMP at &8000 jumps to &8003; local label "loop" at &8003 has
+        # scope [&8000, &8003) — covers the JMP's using site.
+        source = """
+            org &8000
+        .start
+            jmp here
+        .here
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            # Local label "loop" at &8003 valid in [&8000, &8003)
+            # which includes the JMP's address.
+            d.local_label(0x8003, "loop", 0x8000, 0x8003)
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # Local label gets an explicit definition in the table.
+        assert "loop" in text
+        # And the JMP operand uses the local name (in scope).
+        assert "jmp loop" in text
+
+    def test_local_label_out_of_scope_uses_other_name_or_hex(
+        self, roundtrip_via_beebasm,
+    ):
+        # The local label is at &8004 with scope [&8005, &800A); the
+        # JMP at &8000 is OUT of scope, so the local name is not used.
+        # Without an explicit name at &8004, the operand falls back to
+        # the literal hex address.
+        source = """
+            org &8000
+        .start
+            jmp here
+        .here
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            # &8000 is NOT in [&8005, &800A).
+            d.local_label(0x8003, "loop", 0x8005, 0x800A)
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # Local label still gets a table entry…
+        assert "loop = &8003" in text
+        # …but the JMP operand uses the literal hex (using site
+        # &8000 is out of scope).
+        assert "jmp &8003" in text
+
+    def test_local_label_overrides_explicit_name_in_scope(
+        self, roundtrip_via_beebasm,
+    ):
+        # Two names at &8003: explicit "global_target" + local "loop"
+        # in scope [&8000, &8003). The JMP within scope uses "loop";
+        # an external reference (out of scope) would use "global_target".
+        source = """
+            org &8000
+        .start
+            jmp here
+        .here
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.label(0x8003, "global_target")
+            d.local_label(0x8003, "loop", 0x8000, 0x8003)
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # JMP in scope -> local name wins.
+        assert "jmp loop" in text
+        # The explicit name still appears at the inline classification
+        # (not in the operand of this JMP).
+        assert ".global_target" in text
+
+
+@pytest.mark.beebasm
 class TestOptionalLabelsAndExternals:
     """Driver feature: ``d.label()`` and ``d.optional_label()`` for
     out-of-range addresses (zero-page workspace, OS calls, hardware

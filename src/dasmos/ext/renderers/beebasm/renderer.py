@@ -318,9 +318,12 @@ class BeebasmRenderer(TextRenderer):
             # Emit any inline labels at this address (sorted for
             # deterministic output). Labels are keyed by RUNTIME
             # address — see D-006 / the move-manager design.
+            # Local labels are NOT emitted inline — they appear only
+            # in the explicit-definition table at the top, since
+            # beebasm has no native scoped-label syntax.
             label = ir.labels.get_label(runtime_addr)
             if label is not None:
-                for name in sorted(label.all_names()):
+                for name in sorted(label.explicit_name_texts()):
                     lines.append(self.inline_label(name))
 
             # Emit AFTER_LABEL annotations at this address.
@@ -386,18 +389,35 @@ class BeebasmRenderer(TextRenderer):
         entries: list[tuple[str, int]] = []
         for runtime_addr_obj, label in ir.labels.items():
             runtime_addr = int(runtime_addr_obj)
-            # In-range labels (whose runtime address has a loaded
-            # binary byte, possibly via a move) are emitted inline;
-            # skip them here.
-            if self._label_address_is_in_range(ir, runtime_addr):
+            in_range = self._label_address_is_in_range(ir, runtime_addr)
+
+            # Local labels go in the table regardless of whether
+            # their address is in range — beebasm has no native
+            # local-label syntax, so we express the scoped name as
+            # an explicit definition.
+            local_names = sorted({
+                ll.name
+                for ll_list in label.local_labels.values()
+                for ll in ll_list
+            })
+            for name in local_names:
+                entries.append((name, runtime_addr))
+
+            # Explicit names: in-range labels are emitted inline (skip
+            # in the table); out-of-range labels obey the
+            # required/optional rule.
+            if in_range:
                 continue
-            names = sorted(label.all_names())
-            if not names:
+            explicit_names = sorted({
+                name.text
+                for name_list in label.explicit_names.values()
+                for name in name_list
+            })
+            if not explicit_names:
                 continue
-            # Required labels always emit; optional ones only if used.
             if not label.required and runtime_addr not in self._used_external_labels:
                 continue
-            for name in names:
+            for name in explicit_names:
                 entries.append((name, runtime_addr))
 
         if not entries:
@@ -556,6 +576,9 @@ class BeebasmRenderer(TextRenderer):
     ) -> str:
         """Resolve the unwrapped operand symbol — expression / label /
         hex literal — without applying mode-specific punctuation.
+
+        ``binary_addr`` is the address of the opcode byte; passed
+        through to label lookup for local-label scope checking.
         """
         # 1. User-supplied expression takes precedence over everything.
         expr = ir.expressions.get_or_none(operand_addr)
@@ -563,6 +586,7 @@ class BeebasmRenderer(TextRenderer):
             return expr
 
         kind = opcode.addressing_mode.operand_kind
+        using_addr = int(binary_addr)
 
         if kind is OperandKind.IMMEDIATE:
             # Immediate values aren't addresses; no label lookup.
@@ -570,40 +594,77 @@ class BeebasmRenderer(TextRenderer):
 
         if kind is OperandKind.ADDRESS_8:
             v = ir.memory.get_u8(operand_addr)
-            return self._addr_text(ir, v, width=8)
+            return self._addr_text(ir, v, width=8, using_binary_addr=using_addr)
 
         if kind in (OperandKind.ADDRESS_16, OperandKind.ADDRESS_16_INDIRECT):
             v = ir.memory.get_u16_le(operand_addr)
-            return self._addr_text(ir, v, width=16)
+            return self._addr_text(ir, v, width=16, using_binary_addr=using_addr)
 
         if kind is OperandKind.RELATIVE_OFFSET:
             offset = ir.memory.get_u8(operand_addr)
             if offset >= 0x80:
                 offset -= 0x100
             target = int(binary_addr) + opcode.length() + offset
-            return self._addr_text(ir, target, width=16)
+            return self._addr_text(
+                ir, target, width=16, using_binary_addr=using_addr,
+            )
 
         # Defensive — the mode-name dispatch in _render_operand
         # should have caught NONE before we got here.
         raise ValueError(f"unresolvable operand kind: {kind}")
 
-    def _addr_text(self, ir, addr: int, *, width: int) -> str:
-        """Render an address operand: a label name if one is registered,
-        otherwise the appropriate hex literal.
+    def _addr_text(
+        self,
+        ir,
+        addr: int,
+        *,
+        width: int,
+        using_binary_addr: int | None = None,
+    ) -> str:
+        """Render an address operand: a label name if one is
+        registered, otherwise the appropriate hex literal.
 
-        When the label resolves to an out-of-range address (no
-        loaded byte for it, even via a move), the runtime address is
-        recorded so the explicit-label table at the top of the output
-        can include it.
+        ``using_binary_addr`` is the binary address of the
+        instruction that's referencing ``addr`` (typically the opcode
+        byte). It's used for **local-label scope checking**: if a
+        local label exists at ``addr`` and ``using_binary_addr`` is
+        within its scope, the local label name wins over any explicit
+        name at ``addr``.
+
+        When the label resolves to an out-of-range address (no loaded
+        byte for it, even via a move), the runtime address is recorded
+        so the explicit-label table at the top of the output can
+        include it.
         """
         label = ir.labels.get_label(addr)
         if label is not None:
-            names = sorted(label.all_names())
+            # Prefer a local label whose scope contains the using
+            # site. Local labels are scoped — they only contribute a
+            # name when the using site is in their range.
+            if using_binary_addr is not None:
+                local_name = self._local_label_in_scope(label, using_binary_addr)
+                if local_name is not None:
+                    return local_name
+            # Fall back to the first explicit name. We deliberately
+            # exclude local labels here — those are out of scope and
+            # have no business naming this operand.
+            names = sorted(label.explicit_name_texts())
             if names:
                 if not self._label_address_is_in_range(ir, addr):
                     self._used_external_labels.add(addr)
                 return names[0]
         return self.hex2(addr) if width == 8 else self.hex4(addr)
+
+    @staticmethod
+    def _local_label_in_scope(label, using_binary_addr: int) -> str | None:
+        """If any local label on ``label`` has a scope containing
+        ``using_binary_addr``, return its name. Otherwise ``None``.
+        """
+        for ll_list in label.local_labels.values():
+            for ll in ll_list:
+                if ll.start_addr <= using_binary_addr < ll.end_addr:
+                    return ll.name
+        return None
 
     def _label_address_is_in_range(self, ir, runtime_addr: int) -> bool:
         """True iff the runtime address has a corresponding loaded
