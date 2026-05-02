@@ -588,6 +588,178 @@ class TestExpressionOverrides:
 
 
 @pytest.mark.beebasm
+class TestOptionalLabelsAndExternals:
+    """Driver feature: ``d.label()`` and ``d.optional_label()`` for
+    out-of-range addresses (zero-page workspace, OS calls, hardware
+    registers). The renderer emits a ``name = &xxxx`` table at the
+    top of the output for any label whose address has no loaded byte
+    behind it.
+
+    - Required labels (the default ``d.label()``) always appear in
+      the table — they're documentation about the address-space layout.
+    - Optional labels (``d.optional_label()``) appear only if the
+      generated disassembly actually references them — keeping the
+      output uncluttered.
+    """
+
+    def test_required_external_label_always_appears_in_table(
+        self, roundtrip_via_beebasm,
+    ):
+        # Even if not referenced, a required label for an out-of-range
+        # address (zero-page) shows up in the explicit-definition table.
+        source = """
+            org &8000
+        .start
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            # &70 is zero page — not in the loaded range.
+            d.label(0x70, "userv")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        assert "userv = &70" in text
+
+    def test_optional_external_label_omitted_when_unused(
+        self, roundtrip_via_beebasm,
+    ):
+        # The optional label is registered but the disassembly doesn't
+        # reference it — so the renderer omits it.
+        source = """
+            org &8000
+        .start
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.optional_label(0xFFEE, "oswrch")
+            d.optional_label(0xFFE0, "osrdch")
+            d.optional_label(0xFFF4, "osbyte")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        assert "oswrch" not in text
+        assert "osrdch" not in text
+        assert "osbyte" not in text
+
+    def test_optional_external_label_appears_when_used(
+        self, roundtrip_via_beebasm,
+    ):
+        # The disassembled program calls JSR &FFEE; the label
+        # registered there gets emitted in the table AND used as the
+        # operand symbol.
+        source = """
+            org &8000
+        .start
+            jsr &ffee
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.optional_label(0xFFEE, "oswrch")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # Table entry + operand both use the label name.
+        assert "oswrch = &ffee" in text
+        assert "jsr oswrch" in text
+
+    def test_mixed_required_and_optional_externals(
+        self, roundtrip_via_beebasm,
+    ):
+        import re
+
+        source = """
+            org &8000
+        .start
+            jsr &ffee     ; calls oswrch (used)
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            # Required: always emit.
+            d.label(0x70, "userv")
+            d.label(0xFC00, "fred")
+            # Optional: emit only the ones referenced.
+            d.optional_label(0xFFEE, "oswrch")  # referenced by JSR
+            d.optional_label(0xFFE0, "osrdch")  # not referenced
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # Required externals appear regardless of usage. The names are
+        # padded for alignment so use a regex tolerant of whitespace.
+        assert re.search(r"^userv\s*= &70\b", text, re.MULTILINE)
+        assert re.search(r"^fred\s*= &fc00\b", text, re.MULTILINE)
+        # Used optional appears.
+        assert re.search(r"^oswrch\s*= &ffee\b", text, re.MULTILINE)
+        # Unused optional doesn't.
+        assert "osrdch" not in text
+
+    def test_table_aligns_equals_signs_at_max_name_width(
+        self, roundtrip_via_beebasm,
+    ):
+        # Multiple required externals with different name lengths get
+        # their equals signs aligned in the table for readability.
+        source = """
+            org &8000
+        .start
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.label(0x70, "a")
+            d.label(0x71, "longer")
+            d.label(0x72, "longest_one")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # All three lines have their `=` at the same column. Easiest
+        # check: each line's `=` is at index >= 11 (longest name).
+        for needle in ("a", "longer", "longest_one"):
+            for line in text.splitlines():
+                if line.startswith(needle + " ") or line.startswith(needle + "="):
+                    eq_idx = line.index("=")
+                    assert eq_idx == len("longest_one") + 1, (
+                        f"line {line!r} has = at index {eq_idx}, "
+                        f"expected {len('longest_one') + 1}"
+                    )
+                    break
+            else:
+                raise AssertionError(f"line for {needle!r} not found in:\n{text}")
+
+    def test_in_range_label_does_not_appear_in_table(
+        self, roundtrip_via_beebasm,
+    ):
+        # A label whose runtime address IS loaded is emitted inline
+        # only — never in the explicit table.
+        source = """
+            org &8000
+        .start
+            jsr helper
+            rts
+        .helper
+            nop
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.label(0x8004, "helper")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # Inline form yes; explicit-definition form no.
+        assert ".helper" in text
+        assert "helper = " not in text
+
+
+@pytest.mark.beebasm
 class TestMoveContext:
     """Driver feature: ``d.add_move()`` + ``d.using_move()`` — tell
     the disassembler that some bytes loaded at one address actually

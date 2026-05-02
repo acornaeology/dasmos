@@ -255,17 +255,32 @@ class BeebasmRenderer(TextRenderer):
 
     # -- the rendering walk ------------------------------------------------
 
+    def _reset_render_state(self) -> None:
+        """Reset per-render tracking state. Called at the start of
+        every :meth:`render` call so the renderer is reusable across
+        multiple IRs.
+        """
+        # Runtime addresses of out-of-range labels we resolved to a
+        # name during operand rendering. The explicit-label table at
+        # the top of the output emits these (plus all required
+        # out-of-range labels regardless of usage).
+        self._used_external_labels: set[int] = set()
+
     def render(self, ir: "IntermediateRepresentation") -> TextOutput:
         """Walk the IR's classifications in binary-address order and
         emit a beebasm source listing.
 
-        Emits ``ORG`` at the start of the loaded range, the marker
-        labels (``{boundary_label_prefix}start`` /
+        Emits an explicit-label table for out-of-range labels (the
+        ``name = &xxxx`` block at the top), then ``ORG`` at the start
+        of the loaded range, the marker labels
+        (``{boundary_label_prefix}start`` /
         ``{boundary_label_prefix}end``) so the trailing ``save``
         directive bounds exactly the disassembled range, and the
         per-classification line(s) for each entry in the
         :class:`ClassificationStore`.
         """
+        self._reset_render_state()
+
         lines: list[str] = []
         lines.extend(self.disassembly_start())
 
@@ -346,7 +361,55 @@ class BeebasmRenderer(TextRenderer):
         lines.append(self._save_directive(load_start, load_end))
         lines.extend(self.disassembly_end())
 
+        # Build the explicit-label table for out-of-range labels —
+        # required ones always emit; optional ones only if used.
+        # The table goes before the ORG, so prepend it now that the
+        # body has been rendered (and uses tracked).
+        table_lines = self._build_explicit_label_table(ir)
+        if table_lines:
+            lines = table_lines + [""] + lines
+
         return TextOutput("\n".join(lines) + "\n")
+
+    def _build_explicit_label_table(self, ir) -> list[str]:
+        """Return ``name = &xxxx`` definition lines for out-of-range
+        labels:
+
+        - All required out-of-range labels (every name).
+        - Optional out-of-range labels whose runtime address was
+          looked up by name during operand resolution (recorded in
+          :attr:`_used_external_labels`).
+
+        Names are aligned at the equals sign for readability.
+        Sorted by address then by name for deterministic output.
+        """
+        entries: list[tuple[str, int]] = []
+        for runtime_addr_obj, label in ir.labels.items():
+            runtime_addr = int(runtime_addr_obj)
+            # In-range labels (whose runtime address has a loaded
+            # binary byte, possibly via a move) are emitted inline;
+            # skip them here.
+            if self._label_address_is_in_range(ir, runtime_addr):
+                continue
+            names = sorted(label.all_names())
+            if not names:
+                continue
+            # Required labels always emit; optional ones only if used.
+            if not label.required and runtime_addr not in self._used_external_labels:
+                continue
+            for name in names:
+                entries.append((name, runtime_addr))
+
+        if not entries:
+            return []
+
+        max_name_len = max(len(name) for name, _ in entries)
+        # Sort: address ascending, then name for stable ordering.
+        entries.sort(key=lambda e: (e[1], e[0]))
+        return [
+            f"{name.ljust(max_name_len)} = {self.hex(addr)}"
+            for name, addr in entries
+        ]
 
     # -- annotations ------------------------------------------------------
 
@@ -527,13 +590,34 @@ class BeebasmRenderer(TextRenderer):
     def _addr_text(self, ir, addr: int, *, width: int) -> str:
         """Render an address operand: a label name if one is registered,
         otherwise the appropriate hex literal.
+
+        When the label resolves to an out-of-range address (no
+        loaded byte for it, even via a move), the runtime address is
+        recorded so the explicit-label table at the top of the output
+        can include it.
         """
         label = ir.labels.get_label(addr)
         if label is not None:
             names = sorted(label.all_names())
             if names:
+                if not self._label_address_is_in_range(ir, addr):
+                    self._used_external_labels.add(addr)
                 return names[0]
         return self.hex2(addr) if width == 8 else self.hex4(addr)
+
+    def _label_address_is_in_range(self, ir, runtime_addr: int) -> bool:
+        """True iff the runtime address has a corresponding loaded
+        byte — directly or via a move.
+
+        Out-of-range labels (zero-page workspace, OS-call vectors,
+        hardware registers) get emitted as ``name = &xxxx`` definitions
+        at the top of the output rather than inline at a classification.
+        """
+        from dasmos.core.memory import RuntimeAddr
+        binary_addr, _ = ir.moves.r2b(RuntimeAddr(runtime_addr))
+        if binary_addr is None:
+            return False
+        return ir.memory.is_loaded(int(binary_addr))
 
     def _render_byte(self, ir, binary_addr, c: Byte) -> list[str]:
         """Render a Byte block as one or more ``equb`` lines."""

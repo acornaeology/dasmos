@@ -171,6 +171,22 @@ class Disassembler:
         self._raise_if_disassembled("label")
         return self._labels.add_label(runtime_addr, name, **kwargs)
 
+    def optional_label(self, runtime_addr, name: str, **kwargs):
+        """Define a label that the renderer emits only if it's
+        referenced.
+
+        Typical use: registering names for many out-of-range
+        addresses (zero-page workspace, OS calls, hardware registers)
+        without cluttering the rendered output with definitions for
+        the ones that aren't actually referenced. Required labels
+        (the default :meth:`label`) are always emitted; optional
+        labels are emitted only when used.
+        """
+        self._raise_if_disassembled("optional_label")
+        return self._labels.add_label(
+            runtime_addr, name, is_optional=True, **kwargs,
+        )
+
     def local_label(self, runtime_addr, name: str, start_addr, end_addr, **kwargs):
         """Define a label scoped to ``[start_addr, end_addr)``."""
         self._raise_if_disassembled("local_label")
