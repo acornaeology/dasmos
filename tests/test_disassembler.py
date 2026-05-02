@@ -297,13 +297,12 @@ class TestIR:
         assert isinstance(out, TextOutput)
         assert "rendered_cpu" in str(out)
 
-    def test_render_with_string_requires_registered_plugin(self):
-        # No real renderers registered yet (beebasm etc. land in #17).
+    def test_render_with_unknown_string_raises(self):
         d = Disassembler(cpu=_StubCpu())
         ir = d.disassemble()
         from dasmos.renderer import RendererExtensionError
         with pytest.raises(RendererExtensionError):
-            ir.render("beebasm")
+            ir.render("ca65_doesnt_exist_yet")
 
     def test_render_can_be_called_multiple_times(self):
         # Multiple renderers per IR — D-009.

@@ -265,6 +265,13 @@ class Disassembler:
             if opcode is None:
                 # Undefined opcode — terminate this path.
                 continue
+            if not self._memory.is_loaded(addr, opcode.length()):
+                # The opcode byte is loaded but its operand isn't —
+                # we can't safely classify (and the renderer would
+                # crash trying to read the operand). Terminate this
+                # path; the opcode byte falls through to the leftover
+                # pass as a Byte(1).
+                continue
 
             # Classify (skip if any byte in the range is already
             # classified — could be a manual byte() call or a prior

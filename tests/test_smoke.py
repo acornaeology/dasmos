@@ -50,9 +50,9 @@ def test_nmos6502_cpu_plugin_is_registered() -> None:
     assert "nmos6502" in cpu_names()
 
 
-def test_no_built_in_renderers_yet() -> None:
-    # First concrete renderer (Beebasm) lands with task #17.
-    assert renderer_names() == []
+def test_beebasm_renderer_plugin_is_registered() -> None:
+    # The first concrete renderer plug-in. Test gets updated as more land.
+    assert "beebasm" in renderer_names()
 
 
 def test_extension_errors_inherit_from_base() -> None:

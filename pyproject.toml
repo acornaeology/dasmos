@@ -52,6 +52,7 @@ Issues = "https://github.com/acornaeology/dasmos/issues"
 nmos6502 = "dasmos.ext.cpus.nmos6502:Cpu"
 
 [project.entry-points."dasmos.renderer"]
+beebasm = "dasmos.ext.renderers.beebasm:Renderer"
 
 [project.entry-points."dasmos.environment"]
 

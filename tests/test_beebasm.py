@@ -1,0 +1,381 @@
+"""Unit tests for the Beebasm renderer.
+
+Covers lexical building blocks, the per-classification rendering of
+opcodes / bytes / words / fills / strings, the per-addressing-mode
+operand formatting, label use in operands, and — when the ``beebasm``
+binary is available — a real round-trip: the rendered text is fed
+through beebasm and the resulting binary is compared byte-for-byte
+against the disassembler's input.
+
+The round-trip property is the load-bearing acceptance criterion for
+the dasmos disassembly path. Any future renderer change that breaks
+it is a real defect.
+"""
+
+import os
+import shutil
+import subprocess
+
+import pytest
+
+from dasmos.disassembler import Disassembler
+from dasmos.ext.renderers.beebasm import BeebasmRenderer
+from dasmos.output import TextOutput
+from dasmos.renderer import create_renderer
+
+
+# ---------------------------------------------------------------------------
+# Locating beebasm for the round-trip tests
+# ---------------------------------------------------------------------------
+
+def _find_beebasm() -> str | None:
+    """Return a path to the ``beebasm`` binary if one can be found,
+    else ``None``.
+
+    Honours the ``BEEBASM`` environment variable (CI uses it), then
+    falls back to ``PATH``, then to the user's known checkout at
+    ``/Users/rjs/Code/beebasm/beebasm``.
+    """
+    env = os.environ.get("BEEBASM")
+    if env and os.path.isfile(env) and os.access(env, os.X_OK):
+        return env
+    found = shutil.which("beebasm")
+    if found:
+        return found
+    fallback = "/Users/rjs/Code/beebasm/beebasm"
+    if os.path.isfile(fallback) and os.access(fallback, os.X_OK):
+        return fallback
+    return None
+
+
+BEEBASM = _find_beebasm()
+needs_beebasm = pytest.mark.skipif(
+    BEEBASM is None,
+    reason="beebasm binary not found (set BEEBASM env var or put it in PATH)",
+)
+
+
+# ---------------------------------------------------------------------------
+# Plug-in registration
+# ---------------------------------------------------------------------------
+
+
+class TestPluginRegistration:
+
+    def test_loadable_via_stevedore(self):
+        r = create_renderer("beebasm")
+        assert isinstance(r, BeebasmRenderer)
+        assert r.name == "beebasm"
+
+    def test_supports_nmos6502(self):
+        r = BeebasmRenderer()
+        assert "nmos6502" in r.cpus_supported()
+
+
+# ---------------------------------------------------------------------------
+# Lexical building blocks
+# ---------------------------------------------------------------------------
+
+
+class TestLexicalSyntax:
+
+    def setup_method(self):
+        self.r = BeebasmRenderer()
+
+    def test_hex_uses_ampersand_prefix(self):
+        assert self.r.hex2(0xab) == "&ab"
+        assert self.r.hex4(0x1234) == "&1234"
+
+    def test_byte_word_string_prefixes(self):
+        assert self.r.byte_prefix() == "equb "
+        assert self.r.word_prefix() == "equw "
+        assert self.r.string_prefix() == "equs "
+
+    def test_comment_prefix(self):
+        assert self.r.comment_prefix() == ";"
+
+    def test_inline_label_uses_dot_prefix(self):
+        assert self.r.inline_label("foo") == ".foo"
+
+    def test_explicit_label_uses_equals(self):
+        assert self.r.explicit_label("foo", "&1234") == "foo = &1234"
+
+    def test_explicit_label_with_offset(self):
+        assert self.r.explicit_label("foo", "&1234", offset=2) == "foo = &1234+2"
+
+    def test_explicit_label_alignment(self):
+        out = self.r.explicit_label("foo", "&1234", align_column=10)
+        assert out == "foo        = &1234"
+
+    def test_explicit_a_for_accumulator(self):
+        # Beebasm wants ``ROL A``, not just ``ROL``.
+        assert BeebasmRenderer().explicit_a is True
+
+    def test_fill_directive_emits_for_next_loop(self):
+        out = BeebasmRenderer().fill_directive(0xAA, 16)
+        assert out == ["for _dasmos_fill%, 1, 16 : equb &aa : next"]
+
+    def test_save_directive_uses_pydis_markers(self):
+        # Default save form references the pydis_start / pydis_end
+        # marker labels that render() emits around the loaded range.
+        out = BeebasmRenderer().disassembly_end()
+        assert "save pydis_start, pydis_end" in out
+
+    def test_save_directive_with_filename(self):
+        r = BeebasmRenderer()
+        r.set_output_filename("output.bin")
+        out = r.disassembly_end()
+        assert any("output.bin" in line for line in out)
+
+
+# ---------------------------------------------------------------------------
+# End-to-end rendering against a tiny program
+# ---------------------------------------------------------------------------
+
+
+def _make_disassembler_with_program(tmp_path, binary_bytes, load_addr=0x8000):
+    binpath = tmp_path / "p.bin"
+    binpath.write_bytes(binary_bytes)
+    d = Disassembler.create(cpu="nmos6502")
+    d.load(binpath, load_addr)
+    return d
+
+
+class TestRenderTinyProgram:
+
+    def test_empty_ir_produces_no_org_just_save(self, tmp_path):
+        # Without any load(), the renderer can't even emit ORG.
+        d = Disassembler.create(cpu="nmos6502")
+        ir = d.disassemble()
+        text = str(ir.render("beebasm"))
+        assert "save pydis_start, pydis_end" in text
+        assert "org" not in text  # nothing loaded
+
+    def test_renders_org_and_save_around_loaded_range(self, tmp_path):
+        d = _make_disassembler_with_program(tmp_path, b"\x60", 0x8000)
+        d.entry(0x8000)
+        text = str(ir := d.disassemble().render("beebasm")).strip()
+        assert "org &8000" in text
+        assert ".pydis_start" in text
+        assert ".pydis_end" in text
+        assert "save pydis_start, pydis_end" in text
+
+    def test_renders_simple_lda_rts(self, tmp_path):
+        # 0x8000: LDA #$2A   (a9 2a)
+        # 0x8002: RTS        (60)
+        d = _make_disassembler_with_program(tmp_path, b"\xa9\x2a\x60", 0x8000)
+        d.entry(0x8000)
+        text = str(d.disassemble().render("beebasm"))
+        assert "lda #&2a" in text
+        assert "rts" in text
+
+    def test_renders_label_at_inline_definition(self, tmp_path):
+        d = _make_disassembler_with_program(tmp_path, b"\x60", 0x8000)
+        d.entry(0x8000, name="start")
+        text = str(d.disassemble().render("beebasm"))
+        assert ".start" in text
+
+    def test_label_used_in_operand(self, tmp_path):
+        # 0x8000: JSR target  (20 04 80)
+        # 0x8003: RTS         (60)
+        # 0x8004: NOP target: (ea)
+        # 0x8005: RTS         (60)
+        d = _make_disassembler_with_program(
+            tmp_path, b"\x20\x04\x80\x60\xea\x60", 0x8000,
+        )
+        d.entry(0x8000, name="start")
+        d.label(0x8004, "target")
+        text = str(d.disassemble().render("beebasm"))
+        assert "jsr target" in text  # label used in operand
+        assert ".target" in text     # label defined inline
+
+    def test_branch_uses_label_when_available(self, tmp_path):
+        # 0x8000: BNE +1 (d0 01) — target = 0x8003
+        # 0x8002: RTS    (60)
+        # 0x8003: NOP    (ea)
+        # 0x8004: RTS    (60)
+        d = _make_disassembler_with_program(
+            tmp_path, b"\xd0\x01\x60\xea\x60", 0x8000,
+        )
+        d.entry(0x8000)
+        d.label(0x8003, "skip")
+        text = str(d.disassemble().render("beebasm"))
+        assert "bne skip" in text
+
+
+class TestPerAddressingModeFormatting:
+    """Pin the operand syntax for each addressing mode the NMOS 6502
+    plug-in produces. The shapes are conventional MOS-style; the
+    BeebasmRenderer wraps them with `&` for hex.
+    """
+
+    def setup_method(self):
+        # A common Disassembler is fine; we only render the operand text.
+        self.d = Disassembler.create(cpu="nmos6502")
+
+    def _render(self, tmp_path, bytes_, opcode_addr=0x8000, load_addr=0x8000):
+        binpath = tmp_path / "p.bin"
+        binpath.write_bytes(bytes_)
+        d = Disassembler.create(cpu="nmos6502")
+        d.load(binpath, load_addr)
+        d.entry(opcode_addr)
+        ir = d.disassemble()
+        return str(ir.render("beebasm"))
+
+    def test_immediate(self, tmp_path):
+        text = self._render(tmp_path, b"\xa9\x2a\x60")  # LDA #$2A; RTS
+        assert "lda #&2a" in text
+
+    def test_zero_page(self, tmp_path):
+        text = self._render(tmp_path, b"\xa5\x42\x60")  # LDA &42; RTS
+        assert "lda &42" in text
+
+    def test_zero_page_x(self, tmp_path):
+        text = self._render(tmp_path, b"\xb5\x42\x60")  # LDA &42,X; RTS
+        assert "lda &42,X" in text
+
+    def test_absolute(self, tmp_path):
+        text = self._render(tmp_path, b"\xad\x34\x12\x60")  # LDA &1234; RTS
+        assert "lda &1234" in text
+
+    def test_absolute_x(self, tmp_path):
+        text = self._render(tmp_path, b"\xbd\x34\x12\x60")
+        assert "lda &1234,X" in text
+
+    def test_absolute_y(self, tmp_path):
+        text = self._render(tmp_path, b"\xb9\x34\x12\x60")
+        assert "lda &1234,Y" in text
+
+    def test_indirect_jmp(self, tmp_path):
+        # JMP (&1234); ... — the trace reads a pointer it can't
+        # follow (1234 not in loaded mem) but the renderer still
+        # produces the right text.
+        text = self._render(tmp_path, b"\x6c\x34\x12")
+        assert "jmp (&1234)" in text
+
+    def test_indexed_indirect(self, tmp_path):
+        # LDA (&42,X); RTS
+        text = self._render(tmp_path, b"\xa1\x42\x60")
+        assert "lda (&42,X)" in text
+
+    def test_indirect_indexed(self, tmp_path):
+        # LDA (&42),Y; RTS
+        text = self._render(tmp_path, b"\xb1\x42\x60")
+        assert "lda (&42),Y" in text
+
+    def test_implied(self, tmp_path):
+        text = self._render(tmp_path, b"\x60")  # RTS
+        assert "    rts" in text
+
+    def test_accumulator_with_explicit_a(self, tmp_path):
+        # Beebasm wants ``rol A``; explicit_a=True on BeebasmRenderer.
+        text = self._render(tmp_path, b"\x2a\x60")  # ROL A; RTS
+        assert "rol A" in text
+
+
+# ---------------------------------------------------------------------------
+# THE round-trip: render → beebasm → binary equality
+# ---------------------------------------------------------------------------
+
+
+@needs_beebasm
+class TestBeebasmRoundTrip:
+    """Real round-trip through the actual beebasm assembler. The
+    rendered source is fed to ``beebasm``, the resulting binary is
+    compared byte-for-byte to the disassembler's input. This is the
+    correctness oracle for the whole disassembly path.
+    """
+
+    def _round_trip(self, tmp_path, original_bytes, load_addr=0x8000,
+                    entries=None, labels=None, byte_classifications=None):
+        """Disassemble ``original_bytes`` at ``load_addr``, render via
+        BeebasmRenderer, run through beebasm, return the produced
+        binary bytes.
+        """
+        binpath = tmp_path / "in.bin"
+        binpath.write_bytes(original_bytes)
+
+        d = Disassembler.create(cpu="nmos6502")
+        d.load(binpath, load_addr)
+        for addr in (entries or [load_addr]):
+            d.entry(addr)
+        for addr, name in (labels or []):
+            d.label(addr, name)
+        for addr, length in (byte_classifications or []):
+            d.byte(addr, length)
+        ir = d.disassemble()
+
+        renderer = BeebasmRenderer()
+        renderer.set_output_filename(str(tmp_path / "out.bin"))
+        text = str(ir.render(renderer))
+
+        asm_path = tmp_path / "src.asm"
+        asm_path.write_text(text)
+
+        result = subprocess.run(
+            [BEEBASM, "-i", str(asm_path)],
+            capture_output=True, text=True, cwd=str(tmp_path),
+        )
+        assert result.returncode == 0, (
+            f"beebasm failed:\n=== source ===\n{text}\n"
+            f"=== stdout ===\n{result.stdout}\n=== stderr ===\n{result.stderr}"
+        )
+
+        out_path = tmp_path / "out.bin"
+        return out_path.read_bytes()
+
+    def test_lda_rts_round_trips(self, tmp_path):
+        original = b"\xa9\x2a\x60"  # LDA #$2A; RTS
+        produced = self._round_trip(tmp_path, original)
+        assert produced == original
+
+    def test_jsr_with_label_round_trips(self, tmp_path):
+        # 0x8000: JSR &8004
+        # 0x8003: RTS
+        # 0x8004: NOP
+        # 0x8005: RTS
+        original = b"\x20\x04\x80\x60\xea\x60"
+        produced = self._round_trip(
+            tmp_path, original,
+            labels=[(0x8004, "target")],
+        )
+        assert produced == original
+
+    def test_branch_round_trips(self, tmp_path):
+        # 0x8000: BNE +1; 0x8002: RTS; 0x8003: NOP; 0x8004: RTS
+        original = b"\xd0\x01\x60\xea\x60"
+        produced = self._round_trip(tmp_path, original)
+        assert produced == original
+
+    def test_data_bytes_round_trip(self, tmp_path):
+        # 0x8000: RTS, then four arbitrary data bytes (leftover-pass
+        # classifies as Byte(1)).
+        original = b"\x60\x99\x00\xff\x42"
+        produced = self._round_trip(tmp_path, original)
+        assert produced == original
+
+    def test_indirect_jmp_round_trips(self, tmp_path):
+        # JMP (&1234) where the indirect target is outside loaded
+        # memory — beebasm just assembles the bytes back as written.
+        original = b"\x6c\x34\x12"
+        produced = self._round_trip(tmp_path, original)
+        assert produced == original
+
+    def test_each_addressing_mode_round_trips(self, tmp_path):
+        # A program that exercises every common 6502 addressing mode.
+        # JMP skips past three byte-data bytes to the RTS at 0x8019.
+        original = (
+            b"\xa9\x42"          # 8000 LDA #$42
+            b"\xa5\x10"          # 8002 LDA $10
+            b"\xb5\x20"          # 8004 LDA $20,X
+            b"\xad\x00\x90"      # 8006 LDA $9000
+            b"\xbd\x00\x91"      # 8009 LDA $9100,X
+            b"\xb9\x00\x92"      # 800c LDA $9200,Y
+            b"\xa1\x30"          # 800f LDA ($30,X)
+            b"\xb1\x40"          # 8011 LDA ($40),Y
+            b"\x4c\x19\x80"      # 8013 JMP $8019 (skip the data)
+            b"\x99\x99\x99"      # 8016-8018 unreached data
+            b"\x60"              # 8019 RTS
+        )
+        produced = self._round_trip(tmp_path, original)
+        assert produced == original

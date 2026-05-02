@@ -240,6 +240,26 @@ class TestTraceLoop:
         rts = ir.classifications.get_classification(0x8006)
         assert isinstance(rts, Opcode) and rts.operation is Operation.RTS
 
+    def test_trace_terminates_when_operand_bytes_unloaded(self, tmp_path):
+        # 0x8000: 0xAD (LDA $XXXX — needs 2 operand bytes)
+        # but only 0x8000 and 0x8001 are loaded. The trace must NOT
+        # classify the partial instruction (the renderer would crash
+        # later trying to read the operand). Both bytes get the
+        # leftover Byte(1) treatment.
+        binary = tmp_path / "p.bin"
+        binary.write_bytes(b"\xad\x00")  # 2 bytes — opcode wants 3
+        d = Disassembler.create(cpu="nmos6502")
+        d.load(binary, 0x8000)
+        d.entry(0x8000)
+        ir = d.disassemble()
+
+        # Both bytes are leftover Byte(1) — no Opcode classification.
+        for addr in (0x8000, 0x8001):
+            c = ir.classifications.get_classification(addr)
+            assert isinstance(c, Byte), (
+                f"0x{addr:04x} should have been left as Byte; got {c!r}"
+            )
+
     def test_trace_terminates_on_undefined_opcode(self, tmp_path):
         # 0x8000: $03 (an undocumented opcode; py8dis omits it)
         # 0x8001: RTS (60)  ← unreached because trace terminated at $03
