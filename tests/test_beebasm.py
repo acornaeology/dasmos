@@ -115,11 +115,25 @@ class TestLexicalSyntax:
         out = BeebasmRenderer().fill_directive(0xAA, 16)
         assert out == ["for _dasmos_fill%, 1, 16 : equb &aa : next"]
 
-    def test_save_directive_uses_pydis_markers(self):
-        # Default save form references the pydis_start / pydis_end
+    def test_save_directive_uses_default_dasmos_prefix(self):
+        # Default save form references the dasmos_start / dasmos_end
         # marker labels that render() emits around the loaded range.
+        # Prefix is configurable via the constructor.
         out = BeebasmRenderer().disassembly_end()
+        assert "save dasmos_start, dasmos_end" in out
+
+    def test_save_directive_with_pydis_prefix_for_compat(self):
+        # Constructing with the legacy py8dis prefix lets dasmos
+        # produce text that matches py8dis-fork output line-for-line
+        # — useful for diffing during the migration.
+        r = BeebasmRenderer(boundary_label_prefix="pydis_")
+        out = r.disassembly_end()
         assert "save pydis_start, pydis_end" in out
+
+    def test_boundary_labels_are_derived_from_prefix(self):
+        r = BeebasmRenderer(boundary_label_prefix="my_marker_")
+        assert r.boundary_start_label == "my_marker_start"
+        assert r.boundary_end_label == "my_marker_end"
 
     def test_save_directive_with_filename(self):
         r = BeebasmRenderer()
@@ -148,7 +162,7 @@ class TestRenderTinyProgram:
         d = Disassembler.create(cpu="nmos6502")
         ir = d.disassemble()
         text = str(ir.render("beebasm"))
-        assert "save pydis_start, pydis_end" in text
+        assert "save dasmos_start, dasmos_end" in text
         assert "org" not in text  # nothing loaded
 
     def test_renders_org_and_save_around_loaded_range(self, tmp_path):
@@ -156,9 +170,25 @@ class TestRenderTinyProgram:
         d.entry(0x8000)
         text = str(ir := d.disassemble().render("beebasm")).strip()
         assert "org &8000" in text
+        assert ".dasmos_start" in text
+        assert ".dasmos_end" in text
+        assert "save dasmos_start, dasmos_end" in text
+
+    def test_pydis_compat_mode_renders_legacy_marker_labels(self, tmp_path):
+        # Renderer instance configured for py8dis-output compatibility
+        # produces .pydis_start / .pydis_end / save references — useful
+        # for byte-for-byte text comparison against the original
+        # py8dis fork's output during migration validation.
+        from dasmos.ext.renderers.beebasm import BeebasmRenderer
+        d = _make_disassembler_with_program(tmp_path, b"\x60", 0x8000)
+        d.entry(0x8000)
+        ir = d.disassemble()
+        renderer = BeebasmRenderer(boundary_label_prefix="pydis_")
+        text = str(ir.render(renderer))
         assert ".pydis_start" in text
         assert ".pydis_end" in text
         assert "save pydis_start, pydis_end" in text
+        assert ".dasmos_start" not in text  # default prefix not present
 
     def test_renders_simple_lda_rts(self, tmp_path):
         # 0x8000: LDA #$2A   (a9 2a)

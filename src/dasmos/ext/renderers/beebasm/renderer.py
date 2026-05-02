@@ -81,10 +81,40 @@ class BeebasmRenderer(TextRenderer):
     ``foo = &XXXX`` for explicit labels.
     """
 
-    def __init__(self, name: str = "beebasm", **kwargs):
+    #: Default prefix used for the inline boundary labels that bracket
+    #: the loaded region (``{prefix}start`` / ``{prefix}end``). Beebasm's
+    #: ``save`` directive references these so the produced binary
+    #: covers exactly the disassembled byte range. Override via the
+    #: constructor's ``boundary_label_prefix`` keyword to use a
+    #: different prefix — e.g. ``"pydis_"`` for byte-for-byte text
+    #: compatibility with py8dis-fork output during migration testing.
+    DEFAULT_BOUNDARY_LABEL_PREFIX = "dasmos_"
+
+    def __init__(
+        self,
+        name: str = "beebasm",
+        *,
+        boundary_label_prefix: str | None = None,
+        **kwargs,
+    ):
         super().__init__(name=name, **kwargs)
         # Beebasm wants ``ROL A`` (explicit accumulator), not just ``ROL``.
         self.explicit_a = True
+        self.boundary_label_prefix = (
+            boundary_label_prefix
+            if boundary_label_prefix is not None
+            else self.DEFAULT_BOUNDARY_LABEL_PREFIX
+        )
+
+    @property
+    def boundary_start_label(self) -> str:
+        """The ``.label`` placed at the start of the loaded region."""
+        return f"{self.boundary_label_prefix}start"
+
+    @property
+    def boundary_end_label(self) -> str:
+        """The ``.label`` placed one past the end of the loaded region."""
+        return f"{self.boundary_label_prefix}end"
 
     # -- lexical building blocks ------------------------------------------
 
@@ -132,14 +162,16 @@ class BeebasmRenderer(TextRenderer):
         return []
 
     def disassembly_end(self) -> list[str]:
-        # ``save pydis_start, pydis_end`` matches py8dis. The
-        # boundary labels are emitted by render() around the loaded
-        # range so beebasm produces a binary identical in size.
+        # ``save <start>, <end>`` references the boundary labels
+        # render() emits around the loaded range, so beebasm produces
+        # a binary identical in size. The label prefix is
+        # configurable — see DEFAULT_BOUNDARY_LABEL_PREFIX.
         out: list[str] = [""]
+        save_args = f"{self.boundary_start_label}, {self.boundary_end_label}"
         if self.output_filename is not None:
-            out.append(f'save "{self.output_filename}", pydis_start, pydis_end')
+            out.append(f'save "{self.output_filename}", {save_args}')
         else:
-            out.append("save pydis_start, pydis_end")
+            out.append(f"save {save_args}")
         return out
 
     def code_start(self, start_addr, end_addr, first: bool) -> list[str]:
@@ -186,8 +218,9 @@ class BeebasmRenderer(TextRenderer):
         """Walk the IR's classifications in binary-address order and
         emit a beebasm source listing.
 
-        Emits ``ORG`` at the start of the loaded range, marker labels
-        ``pydis_start`` / ``pydis_end`` so the trailing ``save``
+        Emits ``ORG`` at the start of the loaded range, the marker
+        labels (``{boundary_label_prefix}start`` /
+        ``{boundary_label_prefix}end``) so the trailing ``save``
         directive bounds exactly the disassembled range, and the
         per-classification line(s) for each entry in the
         :class:`ClassificationStore`.
@@ -204,7 +237,7 @@ class BeebasmRenderer(TextRenderer):
 
         # ORG + start marker.
         lines.extend(self.code_start(load_start, load_end, first=True))
-        lines.append(self.inline_label("pydis_start"))
+        lines.append(self.inline_label(self.boundary_start_label))
 
         # Walk classifications in order. Anything between classified
         # addresses is unclassified-loaded data (already covered by
@@ -259,7 +292,7 @@ class BeebasmRenderer(TextRenderer):
                 lines.append(self._render_annotation(ann))
 
         # End marker + save directive.
-        lines.append(self.inline_label("pydis_end"))
+        lines.append(self.inline_label(self.boundary_end_label))
         lines.extend(self.disassembly_end())
 
         return TextOutput("\n".join(lines) + "\n")
