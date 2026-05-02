@@ -93,12 +93,19 @@ class TestConstruction:
         d = Disassembler.create(cpu=cpu)
         assert d.cpu is cpu
 
-    def test_factory_with_string_requires_registered_plugin(self):
-        # No real CPU plug-ins are registered yet (cpu6502 etc. land
-        # in task #16). The string lookup raises until that's done.
+    def test_factory_with_string_resolves_via_stevedore(self):
+        # nmos6502 is registered; the factory should find it and
+        # build a working Disassembler.
+        d = Disassembler.create(cpu="nmos6502")
+        assert d.cpu.name == "nmos6502"
+        assert d.cpu.address_space_size == 0x10000
+        # And the opcode table is populated.
+        assert len(d.cpu.opcodes()) == 151
+
+    def test_factory_with_unknown_string_raises(self):
         from dasmos.cpu import CpuExtensionError
         with pytest.raises(CpuExtensionError):
-            Disassembler.create(cpu="nmos6502")
+            Disassembler.create(cpu="z80_doesnt_exist_yet")
 
 
 # ---------------------------------------------------------------------------

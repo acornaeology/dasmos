@@ -49,6 +49,7 @@ Issues = "https://github.com/acornaeology/dasmos/issues"
 # ca65, …) and environments (acorn-bbc-model-b, acorn-mos-1_20, …)
 # land.
 [project.entry-points."dasmos.cpu"]
+nmos6502 = "dasmos.ext.cpus.nmos6502:Cpu"
 
 [project.entry-points."dasmos.renderer"]
 

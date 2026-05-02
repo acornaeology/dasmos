@@ -48,16 +48,37 @@ class _FakeAddressingMode(Enum):
     the abstract Opcode shape relies on. The ``name`` is the Python
     identifier (IMPLIED, ABSOLUTE, …); renderers translate to
     syntactic form themselves.
+
+    Note the leading string in each value tuple: it makes each
+    member's value unique. Without it, Python collapses
+    same-value members into aliases (so ``ABSOLUTE`` and ``INDIRECT``,
+    which both have ``(2, ADDRESS_16)``, would be the same member).
+    Real CPU plug-ins follow the same pattern — see
+    :class:`dasmos.ext.cpus.nmos6502.AddressingMode`.
     """
 
-    IMPLIED = (0, OperandKind.NONE)
-    IMMEDIATE = (1, OperandKind.IMMEDIATE)
-    ABSOLUTE = (2, OperandKind.ADDRESS_16)
-    INDIRECT = (2, OperandKind.ADDRESS_16)
+    IMPLIED   = ("implied",   0, OperandKind.NONE)
+    IMMEDIATE = ("immediate", 1, OperandKind.IMMEDIATE)
+    ABSOLUTE  = ("absolute",  2, OperandKind.ADDRESS_16)
+    INDIRECT  = ("indirect",  2, OperandKind.ADDRESS_16)
 
-    def __init__(self, operand_length: int, operand_kind: OperandKind):
+    def __init__(self, _label: str, operand_length: int, operand_kind: OperandKind):
         self.operand_length = operand_length
         self.operand_kind = operand_kind
+
+
+class TestAddressingModeAliasingHazard:
+    """Regression-pin for the bug uncovered while porting the NMOS
+    6502 table: enum members with identical value tuples collapse
+    into aliases, silently merging distinct addressing modes.
+    """
+
+    def test_absolute_and_indirect_are_distinct(self):
+        # The bug had ABSOLUTE and INDIRECT collapse because they
+        # had the same (operand_length, operand_kind) tuple. Adding
+        # a unique leading label keeps them distinct.
+        assert _FakeAddressingMode.ABSOLUTE is not _FakeAddressingMode.INDIRECT
+        assert _FakeAddressingMode.ABSOLUTE != _FakeAddressingMode.INDIRECT
 
 
 # ---------------------------------------------------------------------------
