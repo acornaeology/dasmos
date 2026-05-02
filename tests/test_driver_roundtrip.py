@@ -588,6 +588,140 @@ class TestExpressionOverrides:
 
 
 @pytest.mark.beebasm
+class TestMoveContext:
+    """Driver feature: ``d.add_move()`` + ``d.using_move()`` — tell
+    the disassembler that some bytes loaded at one address actually
+    execute at a different runtime address (e.g. ROM code copied to
+    RAM at boot).
+
+    For the simplest case — moved code that doesn't reference its
+    own runtime addresses — the round-trip property holds without
+    any pseudopc emission in the renderer. The byte sequence stays
+    the same; only the names attached via ``with d.using_move(id):``
+    change.
+
+    A richer test (with code that DOES reference its own runtime
+    address — branches, JSRs into the moved region) needs proper
+    pseudopc-style rendering and lands when ADFS-style relocation
+    drivers do (deferred per ADFS port plan).
+    """
+
+    def test_add_move_returns_move_id(self, tmp_path):
+        # Pure API test — no beebasm round-trip needed.
+        from dasmos.disassembler import Disassembler
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(b"\xa0\x00\x60")
+        d = Disassembler.create(cpu="nmos6502")
+        d.load(bin_path, 0x8000)
+        move_id = d.add_move(
+            dest_runtime_addr=0x100,
+            src_binary_addr=0x8000,
+            length=3,
+        )
+        # First non-base move id is 1.
+        assert move_id == 1
+        assert d.moves.is_valid_move_id(move_id)
+
+    def test_using_move_pushes_and_pops(self, tmp_path):
+        from dasmos.disassembler import Disassembler
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(b"\xa0\x00\x60")
+        d = Disassembler.create(cpu="nmos6502")
+        d.load(bin_path, 0x8000)
+        move_id = d.add_move(0x100, 0x8000, 3)
+        assert d.moves.active_move_ids == []
+        with d.using_move(move_id):
+            assert d.moves.active_move_ids == [move_id]
+        assert d.moves.active_move_ids == []
+
+    def test_label_inside_using_move_appears_at_moved_address(
+        self, roundtrip_via_beebasm,
+    ):
+        # The simplest end-to-end move test:
+        #   - bytes loaded at &8000 (the source address)
+        #   - the driver claims they actually execute at &100 (e.g.
+        #     zero-page-relative, or copied to RAM at boot)
+        #   - using_move(...) wraps the entry registration so the
+        #     trace seeds and labels resolve via the move
+        #   - the LDY #0 / RTS contains no address references, so
+        #     the rebuilt bytes are identical regardless of the
+        #     label value.
+        source = """
+            org &8000
+        .anywhere
+            ldy #0
+            rts
+        save "step1.bin", anywhere, P%
+        """
+
+        def configure(d):
+            # The label "zp_handler" exists at runtime &100; the move
+            # tells dasmos that the bytes at binary &8000 are what
+            # implements it.
+            move_id = d.add_move(
+                dest_runtime_addr=0x100,
+                src_binary_addr=0x8000,
+                length=3,
+            )
+            with d.using_move(move_id):
+                d.entry(0x100, name="zp_handler")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # The renderer surfaces the runtime-address label at the
+        # binary classification's position.
+        assert ".zp_handler" in text
+
+    def test_label_via_using_move_with_explicit_move_id_kwarg(
+        self, roundtrip_via_beebasm,
+    ):
+        # Same flow but with explicit move_id= passed to entry()
+        # rather than going through the with-block context.
+        # ADFS uses both forms — see commands-sweep memo §3.
+        source = """
+            org &8000
+        .anywhere
+            ldx #0
+            rts
+        save "step1.bin", anywhere, P%
+        """
+
+        def configure(d):
+            move_id = d.add_move(
+                dest_runtime_addr=0x200,
+                src_binary_addr=0x8000,
+                length=3,
+            )
+            # No 'with' block — pass move_id directly to label().
+            d.entry(0x8000)  # entry seed at binary
+            d.label(0x200, "explicit_handler", move_id=move_id)
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        assert ".explicit_handler" in text
+
+    def test_comment_inside_using_move_routes_to_moved_address(
+        self, roundtrip_via_beebasm,
+    ):
+        # A comment registered inside a using_move block should attach
+        # to the binary location corresponding to the runtime address.
+        source = """
+            org &8000
+        .anywhere
+            nop
+            rts
+        save "step1.bin", anywhere, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000)
+            move_id = d.add_move(0x100, 0x8000, 2)
+            with d.using_move(move_id):
+                d.comment(0x100, "this code runs at zero-page-ish")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        assert "; this code runs at zero-page-ish" in text
+
+
+@pytest.mark.beebasm
 class TestSubroutineAndBanner:
     """Driver features: ``subroutine()`` (semantic — entry point +
     optional label + optional banner) and ``banner()`` (visual only —

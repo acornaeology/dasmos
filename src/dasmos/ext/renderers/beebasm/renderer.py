@@ -48,6 +48,7 @@ from typing import TYPE_CHECKING
 
 from dasmos.core.annotations import Align, Annotation, Banner, Comment
 from dasmos.core.classification import Byte, Fill, String, Word
+from dasmos.core.memory import BinaryAddr
 from dasmos.cpu import Opcode, OperandKind
 from dasmos.output import TextOutput
 from dasmos.renderer import TextRenderer
@@ -290,13 +291,19 @@ class BeebasmRenderer(TextRenderer):
             if not (int(load_start) <= int(binary_addr) < int(load_end)):
                 continue
 
+            # Map binary → runtime so label lookups work even when
+            # this byte belongs to a relocation. Without a move,
+            # b2r is the identity.
+            runtime_addr = int(ir.moves.b2r(BinaryAddr(int(binary_addr))))
+
             # Emit BEFORE_LABEL annotations at this address.
             for ann in ir.annotations.get_for_align(int(binary_addr), Align.BEFORE_LABEL):
                 lines.extend(self._render_annotation(ann))
 
             # Emit any inline labels at this address (sorted for
-            # deterministic output).
-            label = ir.labels.get_label(int(binary_addr))
+            # deterministic output). Labels are keyed by RUNTIME
+            # address — see D-006 / the move-manager design.
+            label = ir.labels.get_label(runtime_addr)
             if label is not None:
                 for name in sorted(label.all_names()):
                     lines.append(self.inline_label(name))
