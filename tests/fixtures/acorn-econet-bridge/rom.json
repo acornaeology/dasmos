@@ -1,0 +1,18 @@
+{
+    "title": "Acorn Econet Bridge Variant 1",
+    "size": 8192,
+    "md5": "d5328f517902a4d2659e302acfc0882f",
+    "sha256": "abbbfbe70db02d4919b441f5b887d1b69c7f090706a2b376eeaca51b5d8e33ac",
+    "links": [
+        {
+            "label": "Disassembly source on GitHub",
+            "url": "https://github.com/acornaeology/acorn-econet-bridge/blob/master/versions/econet-bridge-variant_1/output/econet-bridge-variant_1.asm",
+            "icon": "github"
+        },
+        {
+            "label": "Acorn Econet Bridge in The BBC Micro ROM Library",
+            "url": "https://tobylobster.github.io/rom_library/?md5=d5328f517902a4d2659e302acfc0882f",
+            "icon": "chip"
+        }
+    ]
+}
