@@ -1,6 +1,6 @@
 # dasmos
 
-A pluggable tracing disassembler for retro CPUs, version `0.1.0`.
+A pluggable tracing disassembler for retro CPUs, version `{{ version }}`.
 
 <p align="center">
   <a href="https://pypi.org/project/dasmos/"><img src="https://img.shields.io/pypi/v/dasmos.svg" alt="PyPI"></a>
@@ -35,19 +35,7 @@ from source per matrix cell so the round-trip is part of the gate.
 
 ```console
 $ dasmos --help
-Usage: dasmos [OPTIONS] COMMAND [ARGS]...
-
-  A pluggable tracing disassembler.
-
-Options:
-  --version  Show the version and exit.
-  --help     Show this message and exit.
-
-Commands:
-  describe-cpu       Describe a specific CPU plug-in.
-  describe-renderer  Describe a specific renderer plug-in.
-  list-cpus          List the available CPU plug-ins.
-  list-renderers     List the available renderer plug-ins.
+{{ help_top }}
 ```
 
 The CLI commands inherit a uniform `--as display | tsv | json` story
@@ -62,24 +50,12 @@ packages register additional entries the same way.
 
 ```console
 $ dasmos list-cpus
-                      CPUs registered under 'dasmos.cpu'                       
-┏━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ Name      ┃ Description                                                     ┃
-┡━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
-│ cmos65c02 │ The CMOS 65C02 — NMOS 6502 superset with 8 new mnemonics, 2 new │
-│ nmos6502  │ The classic NMOS 6502.                                          │
-└───────────┴─────────────────────────────────────────────────────────────────┘
+{{ list_cpus }}
 ```
 
 ```console
 $ dasmos list-renderers
-      Renderers registered under      
-          'dasmos.renderer'           
-┏━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ Name    ┃ Description              ┃
-┡━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━┩
-│ beebasm │ Beebasm-syntax renderer. │
-└─────────┴──────────────────────────┘
+{{ list_renderers }}
 ```
 
 `describe-cpu` (and the matching `describe-renderer`) shows the full
@@ -87,47 +63,12 @@ docstring of a single plug-in:
 
 ```console
 $ dasmos describe-cpu nmos6502
-The classic NMOS 6502.
-
-16-bit address space; the 56 documented mnemonics across 13
-addressing modes; 151 documented opcodes (undocumented opcodes
-deliberately omitted).
+{{ describe_nmos6502 }}
 ```
 
 ```console
 $ dasmos list-cpus --help
-Usage: dasmos list-cpus [OPTIONS]
-
-  List the available CPU plug-ins.
-
-  Produces reports:
-    cpus  Registered CPU (processor) plug-ins with one-line descriptions.
-
-Options:
-  Report Output Options: 
-    --no-reports              Suppress all report output. The handler still runs
-                              (useful for action commands whose reports are
-                              incidental); only rendering is skipped. Mutually
-                              exclusive with --report and --all-reports.
-    --all-reports             Render every report the handler returns,
-                              regardless of the command's default_reports.
-                              Useful for commands whose default is a subset (or
-                              silent) but where you want the full picture this
-                              time. Mutually exclusive with --report and --no-
-                              reports.
-    --report [cpus]           Report name(s) to display (can be specified
-                              multiple times). Shows all if omitted. Valid
-                              values: cpus.
-    --header / --no-header    Include column headers in output. Overrides each
-                              report's default. Format-specific: TSV prefixes
-                              first cell with '#', display omits
-                              headers/title/caption, JSON ignores this flag.
-    --detailed / --essential  Include detailed columns or only essential
-                              columns. Auto-detects based on output format if
-                              not specified.
-    --as [display|json|tsv]   Output format for tabular data. Defaults to
-                              'display' for terminals, 'tsv' for pipes.
-  --help                      Show this message and exit.
+{{ help_list_cpus }}
 ```
 
 ## Programmatic API

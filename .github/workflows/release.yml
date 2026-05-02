@@ -26,11 +26,16 @@ jobs:
     # the exact same test surface against the built wheel.
     uses: ./.github/workflows/test.yml
 
+  readme-check:
+    # Same gate ci.yml runs on every push — a v-tag with a stale
+    # README is held back from PyPI.
+    uses: ./.github/workflows/readme-check.yml
+
   publish-pypi:
     name: Publish to PyPI
-    # The test gate must pass before publication. If it fails, this
+    # Both gates must pass before publication. If either fails, this
     # job does not run.
-    needs: [test]
+    needs: [test, readme-check]
     runs-on: ubuntu-latest
     # The `pypi` GitHub deployment environment is the gate for the
     # PYPI_TOKEN secret (and/or trusted-publishing OIDC config).

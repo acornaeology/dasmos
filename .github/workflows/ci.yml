@@ -9,3 +9,8 @@ on:
 jobs:
   test:
     uses: ./.github/workflows/test.yml
+
+  readme-check:
+    # Belt-and-braces against contributors who bypass the pre-commit
+    # hook. Same job is reused by release.yml as a publication gate.
+    uses: ./.github/workflows/readme-check.yml

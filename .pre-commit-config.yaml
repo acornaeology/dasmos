@@ -1,0 +1,16 @@
+repos:
+  - repo: local
+    hooks:
+      - id: generate-readme-check
+        name: README.md is in sync with the generator
+        entry: uv run python scripts/generate_readme.py --check
+        language: system
+        pass_filenames: false
+        files: |
+          (?x)^(
+            README\.md
+            | scripts/generate_readme\.py
+            | scripts/readme_template\.md\.j2
+            | src/dasmos/.*\.py
+            | pyproject\.toml
+          )$
