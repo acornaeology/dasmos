@@ -265,3 +265,130 @@ the first thing a new user sees.
 - **Phase 3 (polish):** C7, C8, C9, C10. Defensible later.
 
 Phase 1 alone delivers the bulk of the API improvement.
+
+---
+
+## Supplement: wider-sweep findings (acorn-adfs, acorn-nfs)
+
+The first sweep (sections 1–6 above) covered only `acorn-econet-bridge`
+and `acorn-6502-tube-client`. A second sweep added the two larger
+sibling projects and revised the priorities. Key findings:
+
+### Driver sizes
+
+| Project | Driver | Lines |
+|---|---|---:|
+| `acorn-econet-bridge` (original) | `versions/econet-bridge-variant_1/disassemble/disasm_econet_bridge_variant_1.py` | 3,153 |
+| `acorn-6502-tube-client` (original) | `versions/tube-6502-client-1.10/disassemble/disasm_tube_6502_client_110.py` | 2,247 |
+| `acorn-adfs` (new) | `versions/adfs-1.30/disassemble/disasm_adfs_130.py` | **12,553** |
+| `acorn-nfs` (new) | `versions/anfs-4.21_variant_1/disassemble/disasm_anfs_421_variant_1.py` | **15,743** |
+
+The new drivers are 4–7× larger and exercise patterns the original
+sample didn't.
+
+### Updated four-driver idiom catalog (top 8)
+
+| Function | Econet | Tube | ADFS | NFS | **Total** |
+|---|---:|---:|---:|---:|---:|
+| `comment()` | 1,123 | 852 | 6,988 | 7,550 | **16,513** |
+| `label()` | 187 | 226 | 1,438 | 1,284 | **3,135** |
+| `subroutine()` | 48 | 84 | 254 | 423 | **809** |
+| `entry()` | 3 | 58 | 340 | 133 | **534** |
+| `byte()` | 1 | 12 | 114 | 40 | **167** |
+| `expr()` | 3 | 9 | 10 | 35 | **57** |
+| `word()` | 3 | 5 | 14 | 3 | **25** |
+| `hook_subroutine()` | 0 | 1 | 6 | 5 | **12** |
+
+The `comment + label + subroutine` triplet now accounts for ~97.5%
+of the top-10 calls (was ~80% in the partial sample).
+
+### `with move_id:` is load-bearing in ADFS
+
+The verdict that flipped. Counts:
+
+- Econet: 0
+- Tube: 0
+- ADFS: **4 `with move_id:` statements + 53 `move_id=` parameter uses**
+- NFS: 0
+
+ADFS uses three NMI-handler variants copied to the same runtime
+address `&0D0A` from different binary offsets. Representative pattern
+(`disasm_adfs_130.py:907–917`):
+
+```python
+nmi_main_move_id = move(0x0D00, 0xBC79, 0x49)
+with nmi_main_move_id:
+    entry(0x0D00)
+    entry(0x0D0A)
+    label(0x0D1A, "nmi_check_status_error")
+    entry(0x0D1A)
+```
+
+…followed later by:
+
+```python
+comment(0x0D0A, "Read byte from transfer address",
+        inline=True, move_id=nmi_write_move_id)
+```
+
+Without `with move_id:` (or its replacement), py8dis would conflate
+the three variants. **Conclusion:** the move-context surface (C6) is
+load-bearing for non-trivial relocation patterns, not optional. The
+dasmos `MoveManager.using()` design (already in `core/move.py`)
+matches this correctly; the driver-API port (#19) needs to surface
+`d.using_move(move_id)` and the `move_id=` parameter on label /
+comment / expr / classification methods.
+
+### `data_banner()` in NFS confirms the subroutine/banner split
+
+NFS uses `data_banner()` 16 times (the existing helper that wraps
+`subroutine(..., is_entry_point=False, hook=None)`). Direct evidence
+that the **C2 split (subroutine / banner) and C3 (drop the
+`is_entry_point=False` idiom) are HIGH priority** — the
+data-vs-subroutine ambiguity is papered over by a helper today
+rather than fixed at the surface.
+
+### Dict-form `expr()` confirmed unused
+
+Zero `expr(addr, {...})` calls across any of the four drivers. **C7
+stays LOW** — keep the split on the to-do list (still right design)
+but no urgency.
+
+### Revised priorities
+
+| # | Change | Was | **Now** |
+|---|---|---|---|
+| C1 | Unify comment functions | HIGH | **HIGH** |
+| C2 | Split subroutine/banner | HIGH | **HIGH** |
+| C3 | Drop `is_entry_point=False` idiom | HIGH | **HIGH** |
+| C4 | Strengthen ordering hazards | MEDIUM | MEDIUM |
+| C5 | Fold `init` + `load` | MEDIUM | MEDIUM |
+| C6 | First-class `with d.using_move(id)` + `move_id=` parameter | MEDIUM | **HIGH** |
+| C7 | Split `expr` str/dict | LOW | LOW |
+| C8 | Mark byte/word/fill as advanced | LOW | LOW |
+| C9 | Promote expression DSL | LOW | LOW |
+| C10 | Add `d.reset()` | LOW | LOW |
+
+### Revised execution order
+
+- **Phase 1:** C1, C2, C3, C4 — unchanged.
+- **Phase 2:** **C6 first** (the move-context surface; load-bearing in ADFS), then C5.
+- **Phase 3:** C7, C8, C9, C10 — unchanged.
+
+Phase 1 + Phase 2 (with C6 elevated) gives the dasmos driver API
+robust support for relocations and clean comment/banner semantics
+before any of the polish work. ADFS's relocation patterns are the
+acceptance criterion for C6 being correct.
+
+### Implication: `move_id=` parameter is a first-class API surface
+
+A consequence of C6's elevation: every method on `Disassembler` that
+operates on an address — `label()`, `local_label()`, `expr_label()`,
+`comment()`, `expr()`, the classification methods — must accept a
+`move_id=` keyword argument that overrides the active-move stack for
+that single call. ADFS's pattern of comments-after-the-with-block
+(`comment(0x0D0A, "...", move_id=nmi_write_move_id)`) requires this.
+
+This is mostly already true at the manager level (`LabelManager.add_label`
+accepts `move_id=`); it just needs to be threaded through the
+`Disassembler` flat methods consistently.
