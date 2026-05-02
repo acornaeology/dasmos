@@ -12,6 +12,18 @@ This memo is the input for the dasmos driver-script API design (task
 recommendation here is a proposal for the user to sign off before
 implementation.
 
+> **Coverage gap.** This first sweep covered only two of the four
+> sibling projects. The user noted afterwards that `acorn-adfs` and
+> `acorn-nfs` exercise patterns the surveyed drivers don't — in
+> particular complex `move()` arrangements that use the
+> `with move_id:` context manager. The "LOW PRIORITY" verdict on the
+> move-context smell (S4 below) and on dict-form `expr()` (S3) is
+> therefore unsafe and should be reconsidered after a second sweep
+> over those two projects. **All identified smells will be addressed
+> in the dasmos driver API regardless** of how heavily they're
+> exercised in the surveyed drivers — the priority labels just guided
+> sequencing, not whether to fix.
+
 ---
 
 ## 1. Public surface inventory

@@ -50,6 +50,8 @@ shaped the ports.
 | py8dis module | Plan |
 |---|---|
 | `mainformatter.py` (282 lines) | Port to `dasmos.core.formatter`, now unblocked by the renderer abstract base. Some functions move to the orchestration layer. |
+| `markdown_asm.py` (333 lines) | Port to `dasmos.core.markdown`. mistletoe-based CommonMark + GFM tables → plaintext; handles the custom `[label](address:HEX[?hex])` link form. Used by `TextRenderer` (e.g. Beebasm) to flatten `d.comment()` markdown to asm text; `StructuredRenderer` (e.g. Json) keeps the markdown source intact. Adds `mistletoe` as a runtime dependency. |
+| `comment.py` (67 lines) | The `Comment` and `Annotation` classes referenced by the disassembly engine. Port alongside the `AnnotationStore` manager class. |
 | `cpu.py` (the abstract CPU base) | Reshape into a thinner `dasmos.core.cpu` base — pure data + small queries, no trace loop. |
 | `cpu6502.py` (1,495 lines) | Port to `dasmos.ext.cpus.nmos6502`. Heaviest single port. |
 | `cpu65C02.py` (143 lines) | Thin extension on top of `nmos6502`. |
