@@ -83,29 +83,32 @@ jobs:
           path: beebasm-src
 
       - name: Build beebasm (cmake)
-        # CMake handles all three OSes uniformly. The built binary
-        # lands under build/ on Linux/macOS and under build/Release/
-        # on Windows MSBuild generators; we move it to a stable
-        # location so the next step can put it on PATH.
+        # Beebasm's CMakeLists.txt targets g++ specifically: it uses
+        # the GCC-style warning flag ``-W`` (synonym for ``-Wextra``)
+        # and links against ``stdc++``. Per beebasm's README, Windows
+        # builds are expected to use MinGW, not MSVC.
         #
-        # Beebasm's CMakeLists.txt unconditionally adds GCC-style
-        # warning flags via ``add_compile_options(-Wall -W ...)``.
-        # MSVC reads ``-W`` as the warning-level prefix and fails
-        # with ``cl : command line  error D8004: '/W' requires an
-        # argument``. We don't care about beebasm's warnings in CI —
-        # we just want the binary — so we strip the line on every OS
-        # for parity (the build is exercised by upstream beebasm
-        # already with proper warning flags).
+        # On Windows we therefore force CMake to use the MinGW
+        # Makefiles generator so it picks the runner's preinstalled
+        # g++ instead of MSBuild + cl. With MinGW the same toolchain
+        # path applies as on Linux/macOS — beebasm's flags work
+        # unchanged.
+        #
+        # The built binary lands under ``build/`` on every OS once
+        # we're on g++; we copy it to a stable ``$HOME/bin`` so the
+        # next step can put it on PATH.
         shell: bash
         run: |
           cd beebasm-src
-          sed -i.bak '/^add_compile_options/d' CMakeLists.txt
-          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cmake -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+          else
+            cmake -B build -DCMAKE_BUILD_TYPE=Release
+          fi
           cmake --build build --config Release
           mkdir -p "$HOME/bin"
-          if   [ -f build/Release/beebasm.exe ]; then cp build/Release/beebasm.exe "$HOME/bin/"
-          elif [ -f build/beebasm.exe        ]; then cp build/beebasm.exe         "$HOME/bin/"
-          elif [ -f build/beebasm            ]; then cp build/beebasm             "$HOME/bin/"
+          if   [ -f build/beebasm.exe ]; then cp build/beebasm.exe "$HOME/bin/"
+          elif [ -f build/beebasm     ]; then cp build/beebasm     "$HOME/bin/"
           else
             echo "Could not locate the built beebasm binary under build/"
             ls -la build/
