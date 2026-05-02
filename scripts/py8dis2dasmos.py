@@ -469,6 +469,17 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
                 arg="byte_column_format",
                 value=ast.Constant(value="py8dis"),
             ),
+            # py8dis chunks Byte / Word blocks more aggressively than
+            # dasmos's defaults — 12 bytes / 6 words per row vs 8 / 4.
+            # Match for parity.
+            ast.keyword(
+                arg="default_byte_cols",
+                value=ast.Constant(value=12),
+            ),
+            ast.keyword(
+                arg="default_word_cols",
+                value=ast.Constant(value=6),
+            ),
         ]
 
     # -- per-method kwarg rewriting --------------------------------------

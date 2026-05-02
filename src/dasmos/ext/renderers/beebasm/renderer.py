@@ -121,6 +121,8 @@ class BeebasmRenderer(TextRenderer):
         boundary_label_prefix: str | None = None,
         byte_column: bool = False,
         byte_column_format: str = "dasmos",
+        default_byte_cols: int = 8,
+        default_word_cols: int = 4,
         show_auto_label_footer: bool = True,
         **kwargs,
     ):
@@ -153,6 +155,13 @@ class BeebasmRenderer(TextRenderer):
                 f"{self.BYTE_COLUMN_FORMATS!r}, got {byte_column_format!r}"
             )
         self.byte_column_format = byte_column_format
+        # Default chunking widths for ``Byte`` / ``Word`` blocks
+        # whose own ``cols()`` is None (the typical case for blocks
+        # registered without an explicit cols=). Chosen to match
+        # py8dis when the porter sets ``default_byte_cols=12`` and
+        # ``default_word_cols=6`` for its py8dis-compat preset.
+        self.default_byte_cols = default_byte_cols
+        self.default_word_cols = default_word_cols
         # When True, emit the trailing ``; Automatically generated
         # labels:`` footer block listing every label whose explicit
         # name was synthesised by the Disassembler's auto-label pass.
@@ -474,35 +483,47 @@ class BeebasmRenderer(TextRenderer):
                     self._render_annotation_inline(a) for a in inline_anns
                 )
             if self.byte_column and content_lines:
-                runtime_addr_for_bc = int(
-                    ir.moves.b2r(BinaryAddr(int(binary_addr)))
-                )
-                byte_col_text = self._format_byte_column(
-                    ir, int(binary_addr), runtime_addr_for_bc,
-                    classification.length(),
-                    active_move=active_move,
-                    active_move_id=active_move_id,
-                )
-                first = content_lines[0]
-                if len(first) < INSTRUCTION_PAD_WITH_BYTE_COLUMN:
-                    first = first.ljust(INSTRUCTION_PAD_WITH_BYTE_COLUMN)
-                else:
-                    first = first + "  "
-                first = f"{first}{byte_col_text}"
-                # If the inline user comment is on the same (first==
-                # last) line, append it after the byte column so we
-                # don't double-attach it below.
-                if user_inline_text and len(content_lines) == 1:
-                    first = first.ljust(
-                        INSTRUCTION_PAD_WITH_BYTE_COLUMN + BYTE_COLUMN_TOTAL_WIDTH,
-                    ) + f"  {user_inline_text}"
-                    user_inline_text = None
-                content_lines[0] = first
+                # Multi-line equb / equw blocks get one byte-column
+                # annotation PER row, each showing the bytes of that
+                # row. The user inline comment still goes on the last
+                # row, AFTER its byte column.
+                line_byte_counts = self._line_byte_counts(classification)
+                cumulative = 0
+                for idx in range(len(content_lines)):
+                    line_binary = int(binary_addr) + cumulative
+                    line_byte_count = (
+                        line_byte_counts[idx]
+                        if idx < len(line_byte_counts)
+                        else classification.length() - cumulative
+                    )
+                    runtime_for_bc = int(
+                        ir.moves.b2r(BinaryAddr(line_binary))
+                    )
+                    byte_col_text = self._format_byte_column(
+                        ir, line_binary, runtime_for_bc, line_byte_count,
+                        active_move=active_move,
+                        active_move_id=active_move_id,
+                    )
+                    text = content_lines[idx]
+                    if len(text) < INSTRUCTION_PAD_WITH_BYTE_COLUMN:
+                        text = text.ljust(INSTRUCTION_PAD_WITH_BYTE_COLUMN)
+                    else:
+                        text = text + "  "
+                    text = f"{text}{byte_col_text}"
+                    is_last = idx == len(content_lines) - 1
+                    if is_last and user_inline_text:
+                        text = text.ljust(
+                            INSTRUCTION_PAD_WITH_BYTE_COLUMN
+                            + BYTE_COLUMN_TOTAL_WIDTH,
+                        ) + f"  {user_inline_text}"
+                        user_inline_text = None
+                    content_lines[idx] = text
+                    cumulative += line_byte_count
 
             # Append any INLINE user comment to the last content line
             # (preserves multi-line equb behavior). When byte_column
-            # placed it on a single-line content already, user_inline_text
-            # is cleared above.
+            # placed it on the last line above, user_inline_text is
+            # cleared.
             if user_inline_text and content_lines:
                 last = content_lines[-1]
                 if len(last) < INLINE_COMMENT_COLUMN:
@@ -854,6 +875,38 @@ class BeebasmRenderer(TextRenderer):
         return lines
 
     # -- byte-column inline annotation ----------------------------------
+
+    def _line_byte_counts(self, classification) -> list[int]:
+        """How many bytes does each rendered content line cover?
+
+        Mirrors how :meth:`_render_byte` / :meth:`_render_word` /
+        :meth:`_render_string` chunk the underlying classification
+        into rows. Body walk uses this to attach a byte-column
+        annotation per row (matching py8dis: every ``equb`` row gets
+        its own ``; <addr>: <bytes>  <ascii>``).
+        """
+        if isinstance(classification, Byte):
+            cols = classification.cols() or self.default_byte_cols
+            n = classification.length()
+            full_rows = n // cols
+            tail = n - full_rows * cols
+            counts = [cols] * full_rows
+            if tail:
+                counts.append(tail)
+            return counts
+        if isinstance(classification, Word):
+            cols = classification.cols() or self.default_word_cols
+            n_bytes = classification.length()
+            n_words = n_bytes // 2
+            row_bytes = cols * 2
+            full_rows = n_words // cols
+            tail_words = n_words - full_rows * cols
+            counts = [row_bytes] * full_rows
+            if tail_words:
+                counts.append(tail_words * 2)
+            return counts
+        # Opcode / String / Fill — one row covering the whole length.
+        return [classification.length()]
 
     def _format_byte_column(
         self,
