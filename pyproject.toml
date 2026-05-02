@@ -1,0 +1,95 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dasmos"
+dynamic = ["version"]
+authors = [
+    { name = "Robert Smallshire", email = "rob@sixty-north.com" },
+]
+description = "Pluggable tracing disassembler with CPU and assembler-syntax extension points."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Disassemblers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "asyoulikeit>=1.1",
+    "click>=8.0",
+    "stevedore",
+]
+
+[project.scripts]
+dasmos = "dasmos.cli:cli"
+
+[project.urls]
+Homepage = "https://github.com/acornaeology/dasmos"
+Repository = "https://github.com/acornaeology/dasmos"
+Issues = "https://github.com/acornaeology/dasmos/issues"
+
+# Extension points. CPU and assembler plug-ins are registered under
+# these namespaces; built-in entries follow the ext/<plural>/<name>:<UniformSymbol>
+# alias convention. No built-ins ship in the initial scaffold — entries
+# get added here as concrete CPUs (NMOS 6502, CMOS 65C02, MC6809, …) and
+# assemblers (Beebasm, JSON, …) land.
+[project.entry-points."dasmos.cpu"]
+
+[project.entry-points."dasmos.assembler"]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.dynamic]
+version = { attr = "dasmos.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+dasmos = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[dependency-groups]
+test = [
+    "pytest>=8",
+]
+docs = [
+    "sphinx>=8",
+    "sphinx-rtd-theme>=2",
+    "sphinx-copybutton>=0.5",
+]
+dev = [
+    "bump-my-version>=0.28",
+    "jinja2>=3.1",
+    "pre-commit>=3",
+    { include-group = "test" },
+]
+
+[tool.bumpversion]
+current_version = "0.1.0"
+parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"
+serialize = ["{major}.{minor}.{patch}"]
+tag = true
+commit = true
+message = "Bump version: {current_version} → {new_version}"
+tag_name = "v{new_version}"
+tag_message = "Bump version: {current_version} → {new_version}"
+files = [
+    { filename = "src/dasmos/__init__.py" },
+]

@@ -1,0 +1,41 @@
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Packaging / build artifacts
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Lock files belong to applications, not libraries. dasmos is a
+# library: consumers should resolve their own versions against our
+# declared constraints. Locally-generated uv.lock is fine; don't
+# commit it.
+uv.lock
+
+# Sphinx build output
+docs/_build/
+
+# Test, coverage, type-check, lint caches
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+.pyright/
+
+# Editors / IDEs
+.vscode/
+.idea/
