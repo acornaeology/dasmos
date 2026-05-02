@@ -28,6 +28,13 @@ def test_extension_base_classes_are_distinct() -> None:
     assert Cpu is not Renderer
 
 
+def test_cpu_base_is_abstract() -> None:
+    # Cpu has at least one abstract method (address_space_size).
+    import pytest
+    with pytest.raises(TypeError):
+        Cpu(name="oops")  # type: ignore[abstract]
+
+
 def test_kind_strings() -> None:
     assert Cpu.kind() == "cpu"
     assert Renderer.kind() == "renderer"

@@ -8,8 +8,17 @@ behaviour the disassembly core needs to follow control flow.
 The initial target set is NMOS 6502, CMOS 65C02 and MC6809, with
 ambitions to grow into the wider Acorn lineage (Z80, 80186, 32016,
 ARM1/2/3/610/710).
+
+Per ``docs/design/decisions.md`` D-006, the Cpu plug-in is **pure
+data + small queries** — it does not own the trace loop. The
+abstract methods declared here are the minimum the orchestrator
+(:class:`~dasmos.disassembler.Disassembler`) needs to wire the model
+together; the richer protocol (opcode tables, addressing modes,
+per-instruction trace semantics, CpuState) lands when the first
+concrete plug-in (NMOS 6502) is ported.
 """
 
+from abc import abstractmethod
 from typing import Type
 
 from dasmos.extension import (
@@ -36,6 +45,17 @@ class Cpu(Extension):
     @classmethod
     def _kind(cls) -> str:
         return KIND
+
+    @property
+    @abstractmethod
+    def address_space_size(self) -> int:
+        """The number of distinct addressable bytes for this CPU.
+
+        ``0x10000`` for 16-bit address spaces (6502, 6809, Z80);
+        larger for 32-bit CPUs to come (ARM, 32016). The orchestrator
+        uses this when sizing its :class:`~dasmos.core.memory.MemoryImage`
+        and :class:`~dasmos.core.move.MoveManager`.
+        """
 
 
 class CpuExtensionError(ExtensionError):

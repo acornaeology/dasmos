@@ -119,6 +119,11 @@ class MoveManager:
         self._cache: dict[RuntimeAddr, set[int]] | None = None
 
     @property
+    def address_space_size(self) -> int:
+        """The address-space size this manager was constructed with."""
+        return self._address_space_size
+
+    @property
     def active_move_ids(self) -> list[int]:
         """A snapshot of the active-move stack; outermost first."""
         return list(self._active_move_ids)
