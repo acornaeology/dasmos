@@ -662,6 +662,16 @@ class BeebasmRenderer(TextRenderer):
                     description.split()
                 )
             lines.append(line)
+            # If this address has tracked references, follow the equate
+            # with a ``; &xxxx referenced N times by …`` summary —
+            # mirrors py8dis. The body walk would normally emit this
+            # inline, but mid-instruction labels (which dominate this
+            # table) have no inline body-walk anchor.
+            label_at_addr = ir.labels.get_label(addr)
+            if label_at_addr is not None:
+                xref = self._format_inline_xref_summary(label_at_addr, addr)
+                if xref is not None:
+                    lines.append(xref)
         return lines
 
     # -- cross-reference emission ---------------------------------------
@@ -1068,6 +1078,13 @@ class BeebasmRenderer(TextRenderer):
         comment line, then the description. Description text is
         emitted with explicit line breaks preserved (no word-wrap in
         this first cut — that lands with the markdown_asm port).
+
+        ``on_entry`` / ``on_exit`` register-usage dicts (when present)
+        each render as a ``; On Entry:`` / ``; On Exit:`` sub-block,
+        with one ``;     <REG>: <description>`` line per dict entry —
+        matching py8dis's banner format. The dict round-trips through
+        the IR as structured data so a future JSON renderer can emit
+        it as a real dict.
         """
         prefix = self.comment_prefix()
         sep = f"{prefix} " + ("*" * BANNER_SEPARATOR_WIDTH)
@@ -1082,6 +1099,19 @@ class BeebasmRenderer(TextRenderer):
                     out.append(f"{prefix} {line}")
                 else:
                     out.append(prefix)
+        for label_text, mapping in (
+            ("On Entry:", banner.on_entry),
+            ("On Exit:", banner.on_exit),
+        ):
+            if not mapping:
+                continue
+            if out and out[-1] != prefix:
+                out.append(prefix)
+            out.append(f"{prefix} {label_text}")
+            for key, value in mapping.items():
+                # Match py8dis: register names render uppercase; the
+                # value text is whatever the user supplied.
+                out.append(f"{prefix}     {key.upper()}: {value}")
         return out
 
     # -- per-classification rendering -------------------------------------

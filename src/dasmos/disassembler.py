@@ -435,6 +435,8 @@ class Disassembler:
         *,
         title: str = "",
         description: str = "",
+        on_entry: dict[str, str] | None = None,
+        on_exit: dict[str, str] | None = None,
         align: Align = Align.BEFORE_LABEL,
         move_id: int | None = None,
     ) -> None:
@@ -455,7 +457,11 @@ class Disassembler:
         binary_addr = self._resolve_to_binary_addr(runtime_addr, move_id)
         self._annotations.add(
             binary_addr,
-            Banner(title=title, description=description, align=align),
+            Banner(
+                title=title, description=description,
+                on_entry=on_entry, on_exit=on_exit,
+                align=align,
+            ),
         )
 
     def subroutine(
@@ -465,6 +471,8 @@ class Disassembler:
         *,
         title: str = "",
         description: str = "",
+        on_entry: dict[str, str] | None = None,
+        on_exit: dict[str, str] | None = None,
         move_id: int | None = None,
     ) -> None:
         """Register a code entry point at ``runtime_addr``.
@@ -485,10 +493,13 @@ class Disassembler:
         self._entry_points.append(binary_addr)
         if name is not None:
             self._labels.add_label(runtime_addr, name, move_id=move_id)
-        if title or description:
+        if title or description or on_entry or on_exit:
             self._annotations.add(
                 binary_addr,
-                Banner(title=title, description=description),
+                Banner(
+                    title=title, description=description,
+                    on_entry=on_entry, on_exit=on_exit,
+                ),
             )
 
     # -- the trace + render entry point ---------------------------------

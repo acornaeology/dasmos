@@ -527,8 +527,12 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
         elif method_name in ("subroutine", "banner"):
             # py8dis-specific kwargs that are either redundant in
             # dasmos (defaults) or not yet supported here.
-            DROPPED = {"hook", "is_entry_point", "on_entry", "on_exit",
-                       "at_binary_addr"}
+            # ``on_entry`` / ``on_exit`` are STRUCTURED data (dicts of
+            # register → description) — passed through to the dasmos
+            # API so renderers can format them appropriately (the
+            # beebasm renderer folds them into the banner block; a
+            # JSON renderer would emit them as a real dict).
+            DROPPED = {"hook", "is_entry_point", "at_binary_addr"}
             new_kwargs = []
             for kw in node.keywords:
                 if kw.arg in DROPPED:

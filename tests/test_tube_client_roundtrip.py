@@ -140,28 +140,26 @@ class TestTubeClientPorterEndToEnd:
 #        ``sub_c<addr>``, ``loop_c<addr>``) and the trailing
 #        ``; Automatically generated labels:`` footer.
 #   26 — after broadening the comment-text extractor to keep every
-#        ``;``-introduced chunk (so the byte column contributes to
-#        the corpus) and adding the ``"py8dis"`` byte-column format
-#        (bare binary hex with ``:<runtime>[<move_id>]`` suffix
-#        inside relocated blocks; porter sets it).
+#        ``;``-introduced chunk and adding the ``"py8dis"`` byte-
+#        column format.
+#   12 — after multi-line equb/equw byte-column annotations and
+#        configurable cols defaults (porter sets 12 / 6).
+#    8 — after threading ``on_entry`` / ``on_exit`` through
+#        ``Disassembler.subroutine`` / ``banner`` and rendering
+#        them as ``; On Entry:`` / ``; On Exit:`` sub-blocks of the
+#        banner (porter no longer drops these kwargs).
+#    1 — after emitting xref summaries for mid-instruction labels
+#        in the equate table (``; &xxxx referenced N times by …``
+#        below each ``name = &xxxx`` whose label has references).
 #
-# Remaining contributors:
-#   - Multi-line equb byte-column annotations: py8dis emits one
-#     byte-column line per ``equb …`` row inside a multi-row block,
-#     each with its own ``<addr>: ff ff ff... ...``. dasmos emits
-#     just one annotation on the first line. Brings in the bare-hex
-#     tokens for the ``&fec3``/``&fecf``/… block and the ``&ff0c``…
-#     ``&fffb`` table.
-#   - py8dis emits xref summaries (``; &xxxx referenced N times by
-#     …``) for in-range mid-instruction labels (e.g. ``&fdff``,
-#     ``&fe02``); dasmos doesn't visit those during the body walk so
-#     no summary is emitted.
-#   - ``sub_cfe15`` — auto-label heuristic disagrees with py8dis on
-#     a single address.
-#   - ``excluding``/``restored``/``returned``/``were`` — words from
-#     a few comments in the original driver that dasmos renders via
-#     a different (still-correct) path.
-MAX_COMMENT_TOKENS_DROPPED = 30
+# Remaining 1 token:
+#   - ``sub_cfe15``: py8dis synthesises a *base* auto-label so
+#     other mid-instruction labels can be expressed as offsets
+#     (e.g. ``nmi1_transfer_addr = sub_cfe15+1``). dasmos emits the
+#     mid-instruction labels as bare equates instead. Closing this
+#     would land with an "express as offset" rendering pass —
+#     deferred as it's a substantial feature for one token.
+MAX_COMMENT_TOKENS_DROPPED = 5
 
 _COMMENT_TOKEN_RE = re.compile(r"[a-z_][a-z_0-9]{3,}")
 

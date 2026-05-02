@@ -111,6 +111,8 @@ class Banner:
 
     title: str = ""
     description: str = ""
+    on_entry: Optional[dict[str, str]] = None
+    on_exit: Optional[dict[str, str]] = None
     align: Align = Align.BEFORE_LABEL
     auto_generated: bool = False
     priority: Optional[int] = None
