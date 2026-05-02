@@ -470,6 +470,150 @@ class TestComments:
 
 
 @pytest.mark.beebasm
+class TestSubroutineAndBanner:
+    """Driver features: ``subroutine()`` (semantic — entry point +
+    optional label + optional banner) and ``banner()`` (visual only —
+    decorated comment block, no entry-point registration).
+
+    These are the dasmos C2/C3 split of py8dis's overloaded
+    ``subroutine(addr, name, ..., is_entry_point=False)`` idiom — see
+    ``docs/design/commands-sweep-memo.md``.
+    """
+
+    def test_subroutine_registers_entry_and_label(
+        self, roundtrip_via_beebasm,
+    ):
+        # subroutine() is the all-in-one for code entry points: it
+        # always registers the trace seed, and it adds a label when
+        # given a name.
+        source = """
+            org &8000
+        .start
+            jsr helper
+            rts
+        .helper
+            nop
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            # Note: subroutine() seeds the trace from start AND from
+            # helper. No explicit d.entry() needed.
+            d.subroutine(0x8000, name="start")
+            d.subroutine(0x8004, name="helper")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        assert ".start" in text
+        assert ".helper" in text
+        assert "jsr helper" in text
+
+    def test_subroutine_with_title_emits_banner(
+        self, roundtrip_via_beebasm,
+    ):
+        # A subroutine() call with title= produces a banner comment
+        # block above the entry-point label.
+        source = """
+            org &8000
+        .reset
+            cli
+            rts
+        save "step1.bin", reset, P%
+        """
+
+        def configure(d):
+            d.subroutine(
+                0x8000, name="reset",
+                title="reset — entry point on power-on",
+            )
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # Banner separator line (87 asterisks).
+        assert "; " + ("*" * 87) in text
+        # Title text.
+        assert "; reset — entry point on power-on" in text
+        # Label still appears.
+        assert ".reset" in text
+
+    def test_subroutine_with_title_and_description(
+        self, roundtrip_via_beebasm,
+    ):
+        source = """
+            org &8000
+        .ram_test
+            ldy #0
+            rts
+        save "step1.bin", ram_test, P%
+        """
+
+        def configure(d):
+            d.subroutine(
+                0x8000, name="ram_test",
+                title="Scan pages from &1800 upward; record top of RAM",
+                description=(
+                    "Probes pages upward from &1800 by writing &AA and &55\n"
+                    "patterns through mem_ptr_lo/mem_ptr_hi (&80/&81)."
+                ),
+            )
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        assert "; Scan pages from &1800 upward" in text
+        assert "; Probes pages upward from &1800" in text
+        assert "; patterns through mem_ptr_lo/mem_ptr_hi" in text
+
+    def test_banner_visual_only_no_entry_point(
+        self, roundtrip_via_beebasm,
+    ):
+        # banner() does NOT register an entry point. Without an
+        # entry, the trace doesn't run — but the leftover pass
+        # classifies all loaded bytes as Byte. The banner should
+        # still appear above the address.
+        source = """
+            org &8000
+        .data
+            equb &11, &22, &33, &44
+        save "step1.bin", data, P%
+        """
+
+        def configure(d):
+            d.label(0x8000, "data")
+            d.byte(0x8000, 4)
+            d.banner(
+                0x8000,
+                title="Lookup table",
+                description="Four magic bytes used by the bootstrap.",
+            )
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        assert "; " + ("*" * 87) in text
+        assert "; Lookup table" in text
+        assert "; Four magic bytes used by the bootstrap." in text
+        assert ".data" in text
+
+    def test_banner_above_label_above_code(
+        self, roundtrip_via_beebasm,
+    ):
+        # The banner sits above the label (BEFORE_LABEL alignment),
+        # which itself sits above the code line.
+        source = """
+            org &8000
+        .start
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.banner(0x8000, title="banner-text")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        banner_idx = text.index("; banner-text")
+        label_idx = text.index(".start")
+        rts_idx = text.index("rts")
+        assert banner_idx < label_idx < rts_idx
+
+
+@pytest.mark.beebasm
 class TestMultipleLoads:
     """A driver can load multiple binaries into one Disassembler."""
 

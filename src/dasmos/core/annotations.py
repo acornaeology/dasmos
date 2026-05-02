@@ -91,8 +91,33 @@ class Annotation:
     priority: Optional[int] = None
 
 
+@dataclass
+class Banner:
+    """A multi-line decorated comment block at a specific address.
+
+    Renders as a renderer-defined separator (Beebasm uses a row of
+    asterisks per py8dis convention) followed by the title and
+    description text, providing strong visual separation in the
+    disassembled listing.
+
+    The two main use cases:
+
+    - Subroutine headers: ``d.subroutine(addr, name, title=..., description=...)``
+      registers the entry point AND attaches a Banner.
+    - Data-region labels: ``d.banner(addr, title=..., description=...)``
+      adds a Banner without registering an entry point — replaces
+      py8dis's ``subroutine(..., is_entry_point=False)`` idiom.
+    """
+
+    title: str = ""
+    description: str = ""
+    align: Align = Align.BEFORE_LABEL
+    auto_generated: bool = False
+    priority: Optional[int] = None
+
+
 # Type alias for store entries.
-Entry = Union[Comment, Annotation]
+Entry = Union[Comment, Annotation, Banner]
 
 
 class AnnotationStore:

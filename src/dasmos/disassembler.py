@@ -31,7 +31,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
-from dasmos.core.annotations import Align, AnnotationStore, Comment
+from dasmos.core.annotations import Align, AnnotationStore, Banner, Comment
 from dasmos.core.classification import Byte, ExpressionRegistry, Fill, String, Word
 from dasmos.core.config import Config
 from dasmos.core.disassembly import (
@@ -216,6 +216,32 @@ class Disassembler:
 
     # -- driver-script API: comments / annotations ----------------------
 
+    def _resolve_to_binary_addr(
+        self, runtime_addr, move_id: int | None,
+    ) -> BinaryAddr:
+        """Resolve a runtime address to its binary address via the
+        move manager.
+
+        Without ``move_id``, uses the active-move stack
+        (:meth:`MoveManager.r2b_checked`); with an explicit
+        ``move_id``, requires the address to map under that specific
+        move and raises :class:`DisassemblerError` on failure.
+
+        Common to every driver method that takes a runtime address.
+        """
+        if move_id is None:
+            return self._moves.r2b_checked(runtime_addr).binary_addr
+        from dasmos.core.memory import RuntimeAddr
+        binary_addr, _ = self._moves.r2b(
+            RuntimeAddr(runtime_addr), specific_move_id=move_id,
+        )
+        if binary_addr is None:
+            raise DisassemblerError(
+                f"runtime address 0x{int(runtime_addr):x} "
+                f"does not map under move {move_id}"
+            )
+        return BinaryAddr(binary_addr)
+
     def comment(
         self,
         runtime_addr,
@@ -240,21 +266,73 @@ class Disassembler:
         ``move_id`` if given.
         """
         self._raise_if_disassembled("comment")
-        if move_id is None:
-            binary_loc = self._moves.r2b_checked(runtime_addr)
-        else:
-            from dasmos.core.memory import RuntimeAddr
-            binary_addr, _ = self._moves.r2b(
-                RuntimeAddr(runtime_addr), specific_move_id=move_id,
-            )
-            if binary_addr is None:
-                raise DisassemblerError(
-                    f"runtime address 0x{int(runtime_addr):x} not in move {move_id}"
-                )
+        binary_addr = self._resolve_to_binary_addr(runtime_addr, move_id)
         self._annotations.add(
-            binary_loc.binary_addr if move_id is None else binary_addr,
+            binary_addr,
             Comment(text=text, align=align, word_wrap=word_wrap, indent=indent),
         )
+
+    def banner(
+        self,
+        runtime_addr,
+        *,
+        title: str = "",
+        description: str = "",
+        align: Align = Align.BEFORE_LABEL,
+        move_id: int | None = None,
+    ) -> None:
+        """Attach a multi-line decorated comment block at
+        ``runtime_addr`` — visual separation only; does not register
+        an entry point.
+
+        Use this for data regions you want to mark visually without
+        the trace engine treating the address as code. (Replaces
+        py8dis's ``subroutine(..., is_entry_point=False, hook=None)``
+        idiom — see ``docs/design/commands-sweep-memo.md`` C2/C3.)
+
+        For a subroutine that needs both visual separation AND
+        entry-point registration, call :meth:`subroutine` with the
+        same ``title`` / ``description`` kwargs.
+        """
+        self._raise_if_disassembled("banner")
+        binary_addr = self._resolve_to_binary_addr(runtime_addr, move_id)
+        self._annotations.add(
+            binary_addr,
+            Banner(title=title, description=description, align=align),
+        )
+
+    def subroutine(
+        self,
+        runtime_addr,
+        name: str | None = None,
+        *,
+        title: str = "",
+        description: str = "",
+        move_id: int | None = None,
+    ) -> None:
+        """Register a code entry point at ``runtime_addr``.
+
+        Always seeds the trace from this address. If ``name`` is
+        given, also defines a label there. If ``title`` or
+        ``description`` is given, also attaches a banner-style
+        comment block via :meth:`banner`.
+
+        Replaces py8dis's ``subroutine(addr, name, ...)`` with the
+        ``is_entry_point=True`` semantics implicit; the C2/C3 split
+        (per the commands-sweep memo) means the
+        ``is_entry_point=False`` data-banner case is now its own
+        method, :meth:`banner`.
+        """
+        self._raise_if_disassembled("subroutine")
+        binary_addr = self._resolve_to_binary_addr(runtime_addr, move_id)
+        self._entry_points.append(binary_addr)
+        if name is not None:
+            self._labels.add_label(runtime_addr, name, move_id=move_id)
+        if title or description:
+            self._annotations.add(
+                binary_addr,
+                Banner(title=title, description=description),
+            )
 
     # -- the trace + render entry point ---------------------------------
 

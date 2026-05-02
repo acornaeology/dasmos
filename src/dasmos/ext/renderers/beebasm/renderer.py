@@ -46,7 +46,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from dasmos.core.annotations import Align, Annotation, Comment
+from dasmos.core.annotations import Align, Annotation, Banner, Comment
 from dasmos.core.classification import Byte, Fill, String, Word
 from dasmos.cpu import Opcode, OperandKind
 from dasmos.output import TextOutput
@@ -55,6 +55,11 @@ from dasmos.renderer import TextRenderer
 # Trailing column for inline comments. A future config knob; matches
 # py8dis's default.
 INLINE_COMMENT_COLUMN = 40
+
+# Banner separator width: a row of this many ``*`` characters,
+# prefixed by the comment prefix and a space, between the title and
+# the surrounding text. Matches py8dis's default of 87.
+BANNER_SEPARATOR_WIDTH = 87
 
 if TYPE_CHECKING:
     from dasmos.ir import IntermediateRepresentation
@@ -287,7 +292,7 @@ class BeebasmRenderer(TextRenderer):
 
             # Emit BEFORE_LABEL annotations at this address.
             for ann in ir.annotations.get_for_align(int(binary_addr), Align.BEFORE_LABEL):
-                lines.append(self._render_annotation(ann))
+                lines.extend(self._render_annotation(ann))
 
             # Emit any inline labels at this address (sorted for
             # deterministic output).
@@ -298,11 +303,11 @@ class BeebasmRenderer(TextRenderer):
 
             # Emit AFTER_LABEL annotations at this address.
             for ann in ir.annotations.get_for_align(int(binary_addr), Align.AFTER_LABEL):
-                lines.append(self._render_annotation(ann))
+                lines.extend(self._render_annotation(ann))
 
             # Emit BEFORE_LINE annotations at this address.
             for ann in ir.annotations.get_for_align(int(binary_addr), Align.BEFORE_LINE):
-                lines.append(self._render_annotation(ann))
+                lines.extend(self._render_annotation(ann))
 
             # Emit the classification's text line(s).
             content_lines = self._render_classification(ir, binary_addr, classification)
@@ -325,7 +330,7 @@ class BeebasmRenderer(TextRenderer):
 
             # Emit AFTER_LINE annotations at this address.
             for ann in ir.annotations.get_for_align(int(binary_addr), Align.AFTER_LINE):
-                lines.append(self._render_annotation(ann))
+                lines.extend(self._render_annotation(ann))
 
         # Optional end marker, save directive, any trailing close-out.
         if self.boundary_end_label is not None:
@@ -338,22 +343,62 @@ class BeebasmRenderer(TextRenderer):
 
     # -- annotations ------------------------------------------------------
 
-    def _render_annotation(self, ann) -> str:
-        """Render a Comment or Annotation as a standalone line."""
+    def _render_annotation(self, ann) -> list[str]:
+        """Render a Comment / Annotation / Banner as standalone line(s).
+
+        Always returns a list so multi-line entries (Banner) and
+        single-line entries (Comment, Annotation) share the same
+        caller pattern.
+        """
+        if isinstance(ann, Banner):
+            return self._render_banner_lines(ann)
         if isinstance(ann, Comment):
             indent = " " * (ann.indent * 4) if ann.indent else ""
-            return f"{indent}{self.comment_prefix()} {ann.text}"
+            return [f"{indent}{self.comment_prefix()} {ann.text}"]
         if isinstance(ann, Annotation):
-            return ann.text
+            return [ann.text]
         raise TypeError(f"unknown annotation type: {type(ann).__name__}")
 
     def _render_annotation_inline(self, ann) -> str:
-        """Render a Comment or Annotation as the inline (trailing) form."""
+        """Render a Comment or Annotation as the inline (trailing) form.
+
+        Banner inline form is not supported (banners are inherently
+        multi-line); attach them at one of the standalone alignments.
+        """
         if isinstance(ann, Comment):
             return f"{self.comment_prefix()} {ann.text}"
         if isinstance(ann, Annotation):
             return ann.text
+        if isinstance(ann, Banner):
+            raise ValueError(
+                "Banner cannot be rendered inline; use a standalone "
+                "Align position (BEFORE_LABEL, AFTER_LABEL, etc.)"
+            )
         raise TypeError(f"unknown annotation type: {type(ann).__name__}")
+
+    def _render_banner_lines(self, banner: Banner) -> list[str]:
+        """Render a Banner as a multi-line decorated comment block.
+
+        The format follows py8dis: a separator line of
+        :data:`BANNER_SEPARATOR_WIDTH` asterisks, the title, a blank
+        comment line, then the description. Description text is
+        emitted with explicit line breaks preserved (no word-wrap in
+        this first cut — that lands with the markdown_asm port).
+        """
+        prefix = self.comment_prefix()
+        sep = f"{prefix} " + ("*" * BANNER_SEPARATOR_WIDTH)
+        out: list[str] = [sep]
+        if banner.title:
+            out.append(f"{prefix} {banner.title}")
+        if banner.description:
+            if banner.title:
+                out.append(prefix)
+            for line in banner.description.split("\n"):
+                if line:
+                    out.append(f"{prefix} {line}")
+                else:
+                    out.append(prefix)
+        return out
 
     # -- per-classification rendering -------------------------------------
 

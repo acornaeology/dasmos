@@ -11,6 +11,7 @@ from dasmos.core.annotations import (
     Align,
     Annotation,
     AnnotationStore,
+    Banner,
     Comment,
 )
 from dasmos.core.memory import BinaryAddr
@@ -49,6 +50,37 @@ class TestAnnotation:
     def test_default_alignment_is_before_label(self):
         a = Annotation(text="!align 256")
         assert a.align is Align.BEFORE_LABEL
+
+
+class TestBanner:
+
+    def test_default_construction_is_empty(self):
+        b = Banner()
+        assert b.title == ""
+        assert b.description == ""
+        assert b.align is Align.BEFORE_LABEL
+        assert b.auto_generated is False
+        assert b.priority is None
+
+    def test_title_only(self):
+        b = Banner(title="reset entry point")
+        assert b.title == "reset entry point"
+        assert b.description == ""
+
+    def test_title_and_description(self):
+        b = Banner(
+            title="ram_test",
+            description="Probes pages upward from &1800.",
+        )
+        assert b.title == "ram_test"
+        assert "Probes pages" in b.description
+
+    def test_can_be_stored_in_annotation_store(self):
+        store = AnnotationStore()
+        b = Banner(title="hello")
+        store.add(0x8000, b)
+        assert store.get(0x8000) == [b]
+        assert store.get_for_align(0x8000, Align.BEFORE_LABEL) == [b]
 
 
 class TestAnnotationStore:
