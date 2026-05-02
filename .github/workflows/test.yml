@@ -87,9 +87,19 @@ jobs:
         # lands under build/ on Linux/macOS and under build/Release/
         # on Windows MSBuild generators; we move it to a stable
         # location so the next step can put it on PATH.
+        #
+        # Beebasm's CMakeLists.txt unconditionally adds GCC-style
+        # warning flags via ``add_compile_options(-Wall -W ...)``.
+        # MSVC reads ``-W`` as the warning-level prefix and fails
+        # with ``cl : command line  error D8004: '/W' requires an
+        # argument``. We don't care about beebasm's warnings in CI —
+        # we just want the binary — so we strip the line on every OS
+        # for parity (the build is exercised by upstream beebasm
+        # already with proper warning flags).
         shell: bash
         run: |
           cd beebasm-src
+          sed -i.bak '/^add_compile_options/d' CMakeLists.txt
           cmake -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --config Release
           mkdir -p "$HOME/bin"
