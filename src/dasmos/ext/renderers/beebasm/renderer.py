@@ -430,67 +430,92 @@ class BeebasmRenderer(TextRenderer):
 
     def _render_operand(self, ir, binary_addr, opcode: Opcode) -> str:
         """Format the operand for an opcode based on its addressing
-        mode. Uses a label name in place of the literal address when
-        a label is registered at the target.
+        mode.
+
+        Operand symbol is resolved with this priority:
+
+        1. A user-supplied expression at the operand address
+           (registered via ``d.expr(...)``) — used verbatim.
+        2. A label name registered at the target address (for
+           address-style operands).
+        3. The literal hex value of the operand.
+
+        Mode-specific syntax (``#``, ``,X``, parens, …) wraps the
+        resolved symbol.
         """
         mode = opcode.addressing_mode
         kind = mode.operand_kind
         operand_addr = int(binary_addr) + 1
-        # Identify mode shape by name; this is a per-renderer concern
-        # so the dispatch lives here, not on the CPU plug-in.
         mode_name = mode.name
 
+        # No-operand modes ignore expressions entirely.
         if mode_name == "IMPLIED":
             return ""
         if mode_name == "ACCUMULATOR":
             return "A" if self.explicit_a else ""
 
-        if mode_name == "IMMEDIATE":
-            v = ir.memory.get_u8(operand_addr)
-            return f"#{self.hex2(v)}"
+        # Resolve the unwrapped symbol (without mode-specific
+        # punctuation like # or parens).
+        symbol = self._resolve_operand_symbol(
+            ir, binary_addr, opcode, operand_addr,
+        )
 
-        # Direct addressing — the operand IS the target address.
-        if mode_name == "ZERO_PAGE":
+        # Wrap with mode-specific syntax.
+        if mode_name == "IMMEDIATE":
+            return f"#{symbol}"
+        if mode_name in ("ZERO_PAGE", "ABSOLUTE", "RELATIVE"):
+            return symbol
+        if mode_name in ("ZERO_PAGE_X", "ABSOLUTE_X"):
+            return f"{symbol},X"
+        if mode_name in ("ZERO_PAGE_Y", "ABSOLUTE_Y"):
+            return f"{symbol},Y"
+        if mode_name == "INDIRECT":
+            return f"({symbol})"
+        if mode_name == "INDEXED_INDIRECT":  # (zp,X)
+            return f"({symbol},X)"
+        if mode_name == "INDIRECT_INDEXED":  # (zp),Y
+            return f"({symbol}),Y"
+
+        raise ValueError(
+            f"BeebasmRenderer does not know how to render addressing mode "
+            f"{mode_name!r}"
+        )
+
+    def _resolve_operand_symbol(
+        self, ir, binary_addr, opcode, operand_addr,
+    ) -> str:
+        """Resolve the unwrapped operand symbol — expression / label /
+        hex literal — without applying mode-specific punctuation.
+        """
+        # 1. User-supplied expression takes precedence over everything.
+        expr = ir.expressions.get_or_none(operand_addr)
+        if expr is not None:
+            return expr
+
+        kind = opcode.addressing_mode.operand_kind
+
+        if kind is OperandKind.IMMEDIATE:
+            # Immediate values aren't addresses; no label lookup.
+            return self.hex2(ir.memory.get_u8(operand_addr))
+
+        if kind is OperandKind.ADDRESS_8:
             v = ir.memory.get_u8(operand_addr)
             return self._addr_text(ir, v, width=8)
-        if mode_name == "ZERO_PAGE_X":
-            v = ir.memory.get_u8(operand_addr)
-            return f"{self._addr_text(ir, v, width=8)},X"
-        if mode_name == "ZERO_PAGE_Y":
-            v = ir.memory.get_u8(operand_addr)
-            return f"{self._addr_text(ir, v, width=8)},Y"
 
-        if mode_name == "ABSOLUTE":
+        if kind in (OperandKind.ADDRESS_16, OperandKind.ADDRESS_16_INDIRECT):
             v = ir.memory.get_u16_le(operand_addr)
             return self._addr_text(ir, v, width=16)
-        if mode_name == "ABSOLUTE_X":
-            v = ir.memory.get_u16_le(operand_addr)
-            return f"{self._addr_text(ir, v, width=16)},X"
-        if mode_name == "ABSOLUTE_Y":
-            v = ir.memory.get_u16_le(operand_addr)
-            return f"{self._addr_text(ir, v, width=16)},Y"
 
-        if mode_name == "INDIRECT":
-            v = ir.memory.get_u16_le(operand_addr)
-            return f"({self._addr_text(ir, v, width=16)})"
-        if mode_name == "INDEXED_INDIRECT":  # (zp,X)
-            v = ir.memory.get_u8(operand_addr)
-            return f"({self._addr_text(ir, v, width=8)},X)"
-        if mode_name == "INDIRECT_INDEXED":  # (zp),Y
-            v = ir.memory.get_u8(operand_addr)
-            return f"({self._addr_text(ir, v, width=8)}),Y"
-
-        if mode_name == "RELATIVE":
+        if kind is OperandKind.RELATIVE_OFFSET:
             offset = ir.memory.get_u8(operand_addr)
             if offset >= 0x80:
                 offset -= 0x100
             target = int(binary_addr) + opcode.length() + offset
             return self._addr_text(ir, target, width=16)
 
-        raise ValueError(
-            f"BeebasmRenderer does not know how to render addressing mode "
-            f"{mode_name!r}"
-        )
+        # Defensive — the mode-name dispatch in _render_operand
+        # should have caught NONE before we got here.
+        raise ValueError(f"unresolvable operand kind: {kind}")
 
     def _addr_text(self, ir, addr: int, *, width: int) -> str:
         """Render an address operand: a label name if one is registered,

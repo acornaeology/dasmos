@@ -207,11 +207,30 @@ class Disassembler:
 
     # -- driver-script API: expressions ---------------------------------
 
-    def expr(self, binary_addr, expression: str):
-        """Override the rendered operand at ``binary_addr`` with
-        ``expression`` (e.g. ``"num_lives + 1"``).
+    def expr(
+        self,
+        runtime_addr,
+        expression: str,
+        *,
+        move_id: int | None = None,
+    ):
+        """Override the rendered operand at ``runtime_addr`` with the
+        given ``expression``.
+
+        ``runtime_addr`` is the runtime address of the **operand byte**
+        — typically one past the opcode for a single-byte-opcode CPU
+        like the 6502. For example, an ``LDA #$03`` instruction at
+        ``&8000`` has its operand byte at ``&8001``; calling
+        ``d.expr(0x8001, "num_lives + 1")`` makes the renderer emit
+        ``lda #num_lives + 1`` for that instruction.
+
+        The expression is emitted verbatim — the driver is responsible
+        for ensuring any names it references are valid in the rendered
+        output (typically by also defining them via :meth:`label` or
+        an external constant the assembler resolves).
         """
         self._raise_if_disassembled("expr")
+        binary_addr = self._resolve_to_binary_addr(runtime_addr, move_id)
         self._expressions.add(binary_addr, expression)
 
     # -- driver-script API: comments / annotations ----------------------

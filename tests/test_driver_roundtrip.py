@@ -470,6 +470,124 @@ class TestComments:
 
 
 @pytest.mark.beebasm
+class TestExpressionOverrides:
+    """Driver feature: ``d.expr(operand_addr, "expression")`` overrides
+    the operand text with a user-supplied expression. The trace and
+    the underlying bytes are unchanged; only the rendered text differs.
+    """
+
+    def test_expr_overrides_immediate_value(self, roundtrip_via_beebasm):
+        # LDA #&05 — replace the rendered immediate operand with an
+        # arithmetic expression that evaluates to the same value.
+        source = """
+            org &8000
+        .start
+            lda #&05
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.expr(0x8001, "&02 + &03")  # operand byte at &8001
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        assert "lda #&02 + &03" in text
+
+    def test_expr_overrides_absolute_address(self, roundtrip_via_beebasm):
+        # LDA &1234 — replace the rendered absolute address with an
+        # equivalent expression.
+        source = """
+            org &8000
+        .start
+            lda &1234
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.expr(0x8001, "&1230 + 4")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        assert "lda &1230 + 4" in text
+
+    def test_expr_overrides_with_label_arithmetic(
+        self, roundtrip_via_beebasm,
+    ):
+        # An expression that does arithmetic on a defined label.
+        # The data byte naturally lands at &8004 (after the 3-byte
+        # LDA and the 1-byte RTS); reference it via expr arithmetic.
+        source = """
+            org &8000
+        .start
+            lda data
+            rts
+        .data
+            equb &00
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.label(0x8004, "data")
+            d.byte(0x8004, 1)
+            # Operand byte at &8001 holds &04 (low of &8004).
+            d.expr(0x8001, "data + 0")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        assert "lda data + 0" in text
+
+    def test_expr_wins_over_label_at_same_target(
+        self, roundtrip_via_beebasm,
+    ):
+        # When a label exists at the target address AND an expression
+        # is registered at the operand byte, the expression wins.
+        source = """
+            org &8000
+        .start
+            lda data
+            rts
+        .data
+            equb &00
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.label(0x8004, "data")
+            d.byte(0x8004, 1)
+            d.expr(0x8001, "&8004")  # explicit hex; bypasses the label
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # Operand is the literal "&8004", not "data".
+        for line in text.splitlines():
+            if "lda " in line and "data" not in line:
+                assert "&8004" in line
+                break
+        else:
+            raise AssertionError("LDA line with literal operand not found")
+
+    def test_expr_with_indexed_addressing(self, roundtrip_via_beebasm):
+        # LDA &1234,X — the expression replaces the address part;
+        # the ,X suffix is added by the renderer as usual.
+        source = """
+            org &8000
+        .start
+            lda &1234,X
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.expr(0x8001, "&1230 + 4")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        assert "lda &1230 + 4,X" in text
+
+
+@pytest.mark.beebasm
 class TestSubroutineAndBanner:
     """Driver features: ``subroutine()`` (semantic — entry point +
     optional label + optional banner) and ``banner()`` (visual only —
