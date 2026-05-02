@@ -139,29 +139,41 @@ class TestTubeClientPorterEndToEnd:
 #   37 — after auto-label generation (``l<addr>``, ``c<addr>``,
 #        ``sub_c<addr>``, ``loop_c<addr>``) and the trailing
 #        ``; Automatically generated labels:`` footer.
+#   26 — after broadening the comment-text extractor to keep every
+#        ``;``-introduced chunk (so the byte column contributes to
+#        the corpus) and adding the ``"py8dis"`` byte-column format
+#        (bare binary hex with ``:<runtime>[<move_id>]`` suffix
+#        inside relocated blocks; porter sets it).
 #
 # Remaining contributors:
-#   - Inside a relocated block py8dis's byte-column shows BOTH the
-#     binary and the runtime address (``f85c: 58 X :0103[1]``);
-#     dasmos shows just one. Brings in the binary-hex tokens (``f81c``,
-#     ``f85c``, ``fd76`` … ``ff78`` plus a few in the &fexx range).
-#   - One word (``excluding``) from a comment in the original driver
-#     that survives a different rendering path on dasmos.
-MAX_COMMENT_TOKENS_DROPPED = 40
+#   - Multi-line equb byte-column annotations: py8dis emits one
+#     byte-column line per ``equb …`` row inside a multi-row block,
+#     each with its own ``<addr>: ff ff ff... ...``. dasmos emits
+#     just one annotation on the first line. Brings in the bare-hex
+#     tokens for the ``&fec3``/``&fecf``/… block and the ``&ff0c``…
+#     ``&fffb`` table.
+#   - py8dis emits xref summaries (``; &xxxx referenced N times by
+#     …``) for in-range mid-instruction labels (e.g. ``&fdff``,
+#     ``&fe02``); dasmos doesn't visit those during the body walk so
+#     no summary is emitted.
+#   - ``sub_cfe15`` — auto-label heuristic disagrees with py8dis on
+#     a single address.
+#   - ``excluding``/``restored``/``returned``/``were`` — words from
+#     a few comments in the original driver that dasmos renders via
+#     a different (still-correct) path.
+MAX_COMMENT_TOKENS_DROPPED = 30
 
 _COMMENT_TOKEN_RE = re.compile(r"[a-z_][a-z_0-9]{3,}")
 
 
 def _comment_text(asm_text: str) -> str:
+    """See ``test_econet_bridge_roundtrip._comment_text`` — keeps
+    EVERY ``;``-introduced chunk so the byte-column annotation
+    contributes addresses/symbols to the parity corpus."""
     parts: list[str] = []
     for line in asm_text.splitlines():
-        if ";" not in line:
-            continue
-        stripped = line.lstrip()
-        if stripped.startswith(";"):
-            parts.append(stripped[1:])
-        else:
-            parts.append(line.rsplit(";", 1)[1])
+        chunks = line.split(";")
+        parts.extend(chunks[1:])
     return " ".join(parts).replace("`", "").lower()
 
 

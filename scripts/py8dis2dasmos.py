@@ -451,8 +451,10 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
     def _py8dis_compat_render_kwargs() -> list[ast.keyword]:
         """Renderer kwargs that make dasmos's output match py8dis's
         defaults — what ported scripts expect by virtue of being
-        ports. The boundary marker labels use the legacy ``pydis_``
-        prefix and the byte-column inline annotation is enabled.
+        ports. Boundary marker labels use the legacy ``pydis_``
+        prefix; the byte-column inline annotation is enabled in
+        py8dis flavour (bare binary hex with the
+        ``:<runtime>[<move_id>]`` suffix inside relocated blocks).
         """
         return [
             ast.keyword(
@@ -462,6 +464,10 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
             ast.keyword(
                 arg="byte_column",
                 value=ast.Constant(value=True),
+            ),
+            ast.keyword(
+                arg="byte_column_format",
+                value=ast.Constant(value="py8dis"),
             ),
         ]
 

@@ -313,19 +313,20 @@ _COMMENT_TOKEN_RE = re.compile(r"[a-z_][a-z_0-9]{3,}")
 
 def _comment_text(asm_text: str) -> str:
     """Extract every ``;``-comment fragment from a beebasm source,
-    normalised: lowercased, backticks (markdown) stripped."""
+    normalised: lowercased, backticks (markdown) stripped.
+
+    Splits each line on ``;`` and keeps *every* chunk after the first,
+    so a line like ``cli  ; f85c: 58 X  ; Enable IRQs`` contributes
+    BOTH the byte-column ``f85c: 58 X`` AND the user comment ``Enable
+    IRQs`` to the corpus. Catches addresses/symbols that py8dis writes
+    into its inline byte column.
+    """
     parts: list[str] = []
     for line in asm_text.splitlines():
-        if ";" not in line:
-            continue
-        # Pure comment lines start with optional indent + `;`. Inline
-        # comments take everything after the *last* `;` (so we get the
-        # human comment, not py8dis's inline byte annotation).
-        stripped = line.lstrip()
-        if stripped.startswith(";"):
-            parts.append(stripped[1:])
-        else:
-            parts.append(line.rsplit(";", 1)[1])
+        chunks = line.split(";")
+        # chunks[0] is the pre-comment opcode/data text — drop it. All
+        # remaining chunks are ``;``-introduced comment territory.
+        parts.extend(chunks[1:])
     blob = " ".join(parts).replace("`", "").lower()
     return blob
 

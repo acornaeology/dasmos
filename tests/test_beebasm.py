@@ -331,6 +331,80 @@ class TestByteColumnAnnotation:
         assert "ea" in post_addr
         assert "." in post_addr
 
+    def test_py8dis_format_uses_bare_binary_address(self, tmp_path):
+        # ``byte_column_format="py8dis"`` switches the address column
+        # to py8dis's convention: bare 4-digit hex (no ``&`` prefix),
+        # binary address (not runtime), and inside a relocated region
+        # an additional ``:<runtime>[<move_id>]`` suffix.
+        from dasmos.ext.renderers.beebasm import BeebasmRenderer
+        d = _make_disassembler_with_program(tmp_path, b"\xa9\x2a\x60", 0x8000)
+        d.entry(0x8000)
+        text = str(d.disassemble().render(BeebasmRenderer(
+            byte_column=True, byte_column_format="py8dis",
+        )))
+        lda_line = next(l for l in text.splitlines() if "lda" in l)
+        # Bare hex (no &), still the same address since no move active.
+        assert "; 8000:" in lda_line
+        assert "; &8000:" not in lda_line
+
+    def test_py8dis_format_shows_move_suffix_inside_moved_block(
+        self, tmp_path, assemble_beebasm,
+    ):
+        # Moved bytes get the py8dis suffix ``:<runtime>[<move_id>]``
+        # appended to the byte column. Without a move the suffix is
+        # omitted.
+        from dasmos.disassembler import Disassembler
+        from dasmos.ext.renderers.beebasm import BeebasmRenderer
+        binary = assemble_beebasm("""
+            org &8000
+        .start
+            jsr moved_dest
+            rts
+        .moved_src
+            nop
+            nop
+            nop
+            rts
+        .after
+            rts
+        save "step1.bin", start, P%
+        moved_dest = &0070
+        """)
+        bin_in = tmp_path / "in.bin"
+        bin_in.write_bytes(binary)
+        d = Disassembler.create(cpu="nmos6502")
+        d.load(bin_in, 0x8000)
+        d.entry(0x8000, name="start")
+        move_id = d.add_move(
+            dest_runtime_addr=0x70,
+            src_binary_addr=0x8004,
+            length=4,
+        )
+        d.label(0x8004, "moved_src")
+        with d.using_move(move_id):
+            d.label(0x70, "moved_dest")
+            d.entry(0x70)
+        text = str(d.disassemble().render(BeebasmRenderer(
+            byte_column=True, byte_column_format="py8dis",
+        )))
+        # First moved-byte instruction (a NOP) at binary &8004 / runtime
+        # &0070 carries both addresses + the move id.
+        moved_line = next(
+            l for l in text.splitlines()
+            if "8004:" in l and "nop" in l
+        )
+        assert ":0070[1]" in moved_line, (
+            f"expected move suffix in moved-byte byte column: {moved_line!r}"
+        )
+        # An outside-move instruction has NO suffix.
+        outside_line = next(
+            l for l in text.splitlines()
+            if "8000:" in l and "jsr" in l
+        )
+        assert ":" not in outside_line.split("8000:")[1].split(";")[0], (
+            f"unexpected move-suffix on outside-move line: {outside_line!r}"
+        )
+
     def test_byte_column_coexists_with_inline_user_comment(
         self, tmp_path,
     ):

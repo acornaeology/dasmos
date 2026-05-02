@@ -112,12 +112,15 @@ class BeebasmRenderer(TextRenderer):
     #: literal hex addresses for the loaded range.
     DEFAULT_BOUNDARY_LABEL_PREFIX = "dasmos_"
 
+    BYTE_COLUMN_FORMATS = ("dasmos", "py8dis")
+
     def __init__(
         self,
         name: str = "beebasm",
         *,
         boundary_label_prefix: str | None = None,
         byte_column: bool = False,
+        byte_column_format: str = "dasmos",
         show_auto_label_footer: bool = True,
         **kwargs,
     ):
@@ -135,6 +138,21 @@ class BeebasmRenderer(TextRenderer):
         # Off by default — drivers that want a clean rendered listing
         # leave it off; the porter and py8dis-parity tests opt in.
         self.byte_column = byte_column
+        # Byte-column flavour:
+        # - ``"dasmos"`` (default): ``&xxxx`` prefix, b2r-resolved
+        #   address, no move suffix. Reads naturally as part of dasmos
+        #   output (``&`` is beebasm's hex sigil).
+        # - ``"py8dis"``: bare 4-digit hex, binary address. Inside a
+        #   relocated region also append ``:<runtime_hex>[<move_id>]``
+        #   so a reader can see both the binary file position AND the
+        #   execution address. Use this for byte-for-byte annotation
+        #   parity with the legacy py8dis fork's output.
+        if byte_column_format not in self.BYTE_COLUMN_FORMATS:
+            raise ValueError(
+                f"byte_column_format must be one of "
+                f"{self.BYTE_COLUMN_FORMATS!r}, got {byte_column_format!r}"
+            )
+        self.byte_column_format = byte_column_format
         # When True, emit the trailing ``; Automatically generated
         # labels:`` footer block listing every label whose explicit
         # name was synthesised by the Disassembler's auto-label pass.
@@ -354,8 +372,17 @@ class BeebasmRenderer(TextRenderer):
         # detect when iteration enters or exits a relocated region.
         moves_by_src = self._moves_by_src_addr(ir)
         active_move = None
+        active_move_id: int | None = None
         active_move_src_label: str | None = None
         active_move_dest_label: str | None = None
+        # Map MoveDefinition → 1-based id (for the byte-column
+        # ``[<move_id>]`` suffix in py8dis format). Built once per
+        # render so each move-enter doesn't recompute it.
+        move_ids: dict[int, int] = {
+            id(move): i + 1
+            for i, src in enumerate(sorted(moves_by_src))
+            for move in [moves_by_src[src]]
+        }
 
         # Walk classifications in order. Anything between classified
         # addresses is unclassified-loaded data (already covered by
@@ -377,6 +404,7 @@ class BeebasmRenderer(TextRenderer):
                     active_move, active_move_src_label, active_move_dest_label,
                 ))
                 active_move = None
+                active_move_id = None
                 active_move_src_label = None
                 active_move_dest_label = None
 
@@ -398,6 +426,7 @@ class BeebasmRenderer(TextRenderer):
                     moves_by_src, move, active_move_src_label,
                 ))
                 active_move = move
+                active_move_id = move_ids.get(id(move))
 
             # Map binary → runtime so label lookups work even when
             # this byte belongs to a relocation. Without a move,
@@ -451,6 +480,8 @@ class BeebasmRenderer(TextRenderer):
                 byte_col_text = self._format_byte_column(
                     ir, int(binary_addr), runtime_addr_for_bc,
                     classification.length(),
+                    active_move=active_move,
+                    active_move_id=active_move_id,
                 )
                 first = content_lines[0]
                 if len(first) < INSTRUCTION_PAD_WITH_BYTE_COLUMN:
@@ -825,17 +856,29 @@ class BeebasmRenderer(TextRenderer):
     # -- byte-column inline annotation ----------------------------------
 
     def _format_byte_column(
-        self, ir, binary_addr: int, runtime_addr: int, length: int,
+        self,
+        ir,
+        binary_addr: int,
+        runtime_addr: int,
+        length: int,
+        *,
+        active_move=None,
+        active_move_id: int | None = None,
     ) -> str:
         """Format the inline ``; <addr>: <hex bytes>  <ascii>``
-        annotation py8dis attaches to every line. Includes up to
-        :data:`BYTE_COLUMN_MAX_BYTES` bytes; truncated runs are marked
-        with ``...``.
+        annotation. Two flavours, picked by ``byte_column_format``:
 
-        ``binary_addr`` is where to read the bytes from;
-        ``runtime_addr`` is what to print as the address (so move-
-        relocated code shows its execution address, matching the
-        operand label resolution).
+        - ``"dasmos"``: ``<comment_prefix> &<runtime_addr>: <bytes>  <ascii>``.
+          The ``&`` is beebasm's hex sigil; the address is the b2r-
+          resolved runtime so it matches operand-label resolution.
+        - ``"py8dis"``: ``<comment_prefix> <binary_addr>: <bytes>  <ascii>``,
+          with bare 4-digit hex and the binary file position. Inside
+          a relocated region, also append
+          ``:<runtime_hex>[<move_id>]`` so a reader can see both the
+          file address and the execution address. Matches the format
+          used by the legacy py8dis fork's output.
+
+        Up to 3 bytes are shown; longer runs are truncated with ``...``.
         """
         max_bytes = 3
         actual_bytes_to_show = min(length, max_bytes)
@@ -856,10 +899,26 @@ class BeebasmRenderer(TextRenderer):
         if length > max_bytes:
             ascii_chars = f"{ascii_chars}..."
         ascii_field = ascii_chars.ljust(6)
-        return (
-            f"{self.comment_prefix()} {self.hex(runtime_addr)}: "
-            f"{hex_field} {ascii_field}"
-        )
+        cp = self.comment_prefix()
+        if self.byte_column_format == "py8dis":
+            text = f"{cp} {binary_addr:04x}: {hex_field} {ascii_field}"
+            if active_move is not None and active_move_id is not None:
+                # Compute the runtime address WITHIN this move, not
+                # via b2r (b2r picks the most-recently-active move
+                # for the binary addr; we want the active body-walk
+                # context's specific move).
+                offset = binary_addr - int(active_move.src_binary_addr)
+                runtime_in_move = int(active_move.dest_runtime_addr) + offset
+                text = (
+                    f"{text.rstrip()} :{runtime_in_move:04x}"
+                    f"[{active_move_id}]"
+                )
+                # Re-pad so the user comment column lines up.
+                text = text.ljust(
+                    len(cp) + 1 + 6 + 11 + 1 + 6 + 1 + 4 + 1 + 4 + 1 + 1
+                )
+            return text
+        return f"{cp} {self.hex(runtime_addr)}: {hex_field} {ascii_field}"
 
     def _build_label_frequency_table(self, ir) -> list[str]:
         """Build the ``; Label references by decreasing frequency:``
