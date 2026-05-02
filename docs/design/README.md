@@ -20,6 +20,10 @@ written for contributors and is read alongside the source.
 - **[decisions.md](decisions.md)** — chronological log of architectural
   decisions, with the context and rationale for each. Read this when
   questioning a choice.
+- **[commands-sweep-memo.md](commands-sweep-memo.md)** — input for the
+  driver-script API design (task #19): the design-smell audit of
+  py8dis's `commands.py` cross-referenced against real driver-script
+  usage in `acorn-econet-bridge` and `acorn-6502-tube-client`.
 
 ## Status
 
