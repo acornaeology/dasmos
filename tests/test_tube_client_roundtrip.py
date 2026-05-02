@@ -136,19 +136,18 @@ class TestTubeClientPorterEndToEnd:
 #   55 — first run with move-aware renderer
 #   42 — after adding the explanatory ``;`` comments around the
 #        copyblock / clear / org block (mirroring py8dis).
+#   37 — after auto-label generation (``l<addr>``, ``c<addr>``,
+#        ``sub_c<addr>``, ``loop_c<addr>``) and the trailing
+#        ``; Automatically generated labels:`` footer.
 #
-# Remaining contributors (all from the same py8dis feature dasmos
-# doesn't yet have):
-#   - Auto-generated label names (``l<addr>`` and ``sub_<addr>``) that
-#     py8dis synthesises at referenced addresses without an explicit
-#     name. dasmos uses literal hex in the same situations. Brings in
-#     bare-hex tokens (``f81c``, ``fd76``, …, ``ff78``) AND the
-#     synthesised names themselves (``lfe03``, ``lfe17``, ``sub_cfe15``).
-#   - The ``; Automatically generated labels:`` footer block py8dis
-#     emits to list those synthesised names — brings in ``automatically``
-#     ``generated`` ``labels`` ``excluding`` ``restored`` ``returned``
-#     ``were``.
-MAX_COMMENT_TOKENS_DROPPED = 50
+# Remaining contributors:
+#   - Inside a relocated block py8dis's byte-column shows BOTH the
+#     binary and the runtime address (``f85c: 58 X :0103[1]``);
+#     dasmos shows just one. Brings in the binary-hex tokens (``f81c``,
+#     ``f85c``, ``fd76`` … ``ff78`` plus a few in the &fexx range).
+#   - One word (``excluding``) from a comment in the original driver
+#     that survives a different rendering path on dasmos.
+MAX_COMMENT_TOKENS_DROPPED = 40
 
 _COMMENT_TOKEN_RE = re.compile(r"[a-z_][a-z_0-9]{3,}")
 

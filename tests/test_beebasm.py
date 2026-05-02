@@ -363,7 +363,11 @@ class TestPerAddressingModeFormatting:
     def _render(self, tmp_path, bytes_, opcode_addr=0x8000, load_addr=0x8000):
         binpath = tmp_path / "p.bin"
         binpath.write_bytes(bytes_)
-        d = Disassembler.create(cpu="nmos6502")
+        # These tests pin the addressing-mode operand SHAPE (`,X`, `,Y`,
+        # parens, `#`); the auto-label feature would replace the
+        # literal hex with a synthesised symbol, which would still be
+        # the same shape but obscures what's under test. Disable it.
+        d = Disassembler.create(cpu="nmos6502", auto_labels_enabled=False)
         d.load(binpath, load_addr)
         d.entry(opcode_addr)
         ir = d.disassemble()

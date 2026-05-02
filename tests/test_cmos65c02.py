@@ -191,10 +191,13 @@ class TestRoundTripVia65C02:
         assert result.returncode == 0, result.stderr
         original = (tmp_path / "step1.bin").read_bytes()
 
-        # Disassemble + render via 65C02 plug-in.
+        # Disassemble + render via 65C02 plug-in. Disable auto-labels
+        # so the operand resolves to its literal hex form — this test
+        # is pinning the addressing-mode SHAPE (the parentheses
+        # around a zp operand), not the symbol resolution.
         bin_path = tmp_path / "in.bin"
         bin_path.write_bytes(original)
-        d = Disassembler.create(cpu="cmos65c02")
+        d = Disassembler.create(cpu="cmos65c02", auto_labels_enabled=False)
         d.load(bin_path, 0x8000)
         d.entry(0x8000, name="start")
         ir = d.disassemble()
