@@ -16,19 +16,14 @@ A pluggable tracing disassembler for retro CPUs, version `{{ version }}`.
 [fork][py8dis-fork] of [py8dis][py8dis-original] — Steven Flintham's
 original programmable tracing disassembler for the 6502 family.
 *Dasmos* owes the whole core idea to Steven and to the py8dis project;
-this rewrite restructures it around Stevedore extension points so
-CPUs, renderers (assembler-syntax back-ends), and target environments
-ship as composable plug-ins, but the design vocabulary — driver
-scripts, traced classification, label/comment/banner annotations —
-all comes from py8dis.
+this project organises a tracing disassembler as a core algorithm
+customised through plug-in extensions which provide knowledge of CPUs,
+different assembly syntaxes, and target environments. The core of the
+essential design vocabulary — driver scripts, traced classification,
+label/comment/banner annotations — is all inspired by py8dis.
 
-The [acornaeology][acornaeology] py8dis fork accumulated enough new
-capability (JSON renderer, environment hooks, BBC Master coverage)
-that an independent project became the right next step. Driver
-scripts written for the fork port to *Dasmos* with the bundled
-`scripts/py8dis2dasmos.py` AST porter — the four sibling Acorn ROM
-disassembly projects under the acornaeology umbrella all use it
-verbatim.
+Driver scripts written for py8dis can be ported automatically to
+*Dasmos* with the bundled `scripts/py8dis2dasmos.py`.
 
 [py8dis-original]: https://github.com/ZornsLemma/py8dis
 [py8dis-fork]: https://github.com/acornaeology/py8dis

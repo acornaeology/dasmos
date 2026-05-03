@@ -25,19 +25,16 @@ Lineage and acknowledgements
 *Dasmos* is a ground-up rewrite and reimagining of a heavily modified
 `fork <https://github.com/acornaeology/py8dis>`_ of
 `py8dis <https://github.com/ZornsLemma/py8dis>`_ — Steven Flintham's
-original programmable tracing disassembler for the 6502 family. The
-whole core idea — driver scripts, traced classification,
-label / comment / banner annotations — comes from py8dis, and *Dasmos*
-owes Steven a debt of gratitude for inventing and sharing it. This
-rewrite restructures the same vocabulary around Stevedore extension
-points so CPUs, renderers, and target environments ship as composable
-plug-ins.
+original programmable tracing disassembler for the 6502 family.
+*Dasmos* owes the whole core idea to Steven and to the py8dis project;
+this project organises a tracing disassembler as a core algorithm
+customised through plug-in extensions which provide knowledge of CPUs,
+different assembly syntaxes, and target environments. The core of the
+essential design vocabulary — driver scripts, traced classification,
+label / comment / banner annotations — is all inspired by py8dis.
 
-The acornaeology py8dis fork accumulated enough new capability
-(JSON renderer, environment hooks, BBC Master coverage) that an
-independent project became the right next step. Driver scripts
-written for the fork port to *Dasmos* with the bundled
-``scripts/py8dis2dasmos.py`` AST porter.
+Driver scripts written for py8dis can be ported automatically to
+*Dasmos* with the bundled ``scripts/py8dis2dasmos.py``.
 
 
 .. toctree::
