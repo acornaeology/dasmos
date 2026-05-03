@@ -1088,7 +1088,15 @@ class BeebasmRenderer(TextRenderer):
             return self._render_banner_lines(ann)
         if isinstance(ann, Comment):
             indent = " " * (ann.indent * 4) if ann.indent else ""
-            return [f"{indent}{self.comment_prefix()} {ann.text}"]
+            # Multi-line comment text gets one ``;`` line per source
+            # line so beebasm doesn't choke on a bare second/third
+            # line. Empty source lines emit just ``;`` (no trailing
+            # space) for visual cleanliness.
+            return [
+                f"{indent}{self.comment_prefix()} {line}" if line
+                else f"{indent}{self.comment_prefix()}"
+                for line in ann.text.split("\n")
+            ]
         if isinstance(ann, Annotation):
             return [ann.text]
         raise TypeError(f"unknown annotation type: {type(ann).__name__}")
@@ -1453,17 +1461,29 @@ class BeebasmRenderer(TextRenderer):
         return lines
 
     def _render_word(self, ir, binary_addr, c: Word) -> list[str]:
-        """Render a Word block as one or more ``equw`` lines."""
+        """Render a Word block as one or more ``equw`` lines.
+
+        Per-word expression overrides (registered via ``d.expr(addr,
+        expr)`` against the word's binary address) substitute for the
+        word value's address-to-name resolution. Used by
+        :meth:`Disassembler.code_ptr` to emit ``equw target`` (or
+        ``equw target-1`` for the RTS variant) for adjacent
+        pointer-into-code byte pairs.
+        """
         cols = c.cols() or self.default_word_cols
-        words = [
-            ir.memory.get_u16_le(int(binary_addr) + i * 2)
-            for i in range(c.length() // 2)
-        ]
-        lines = []
-        for chunk_start in range(0, len(words), cols):
-            chunk = words[chunk_start:chunk_start + cols]
-            text = ", ".join(self._addr_text(ir, w, width=16) for w in chunk)
-            lines.append(f"    {self.word_prefix()}{text}")
+        n_words = c.length() // 2
+        lines: list[str] = []
+        for chunk_start in range(0, n_words, cols):
+            parts: list[str] = []
+            for i in range(chunk_start, min(chunk_start + cols, n_words)):
+                word_binary = int(binary_addr) + i * 2
+                expr = ir.expressions.get_or_none(word_binary)
+                if expr is not None:
+                    parts.append(expr)
+                else:
+                    w = ir.memory.get_u16_le(word_binary)
+                    parts.append(self._addr_text(ir, w, width=16))
+            lines.append(f"    {self.word_prefix()}{', '.join(parts)}")
         return lines
 
     def _render_string(self, ir, binary_addr, c: String) -> list[str]:

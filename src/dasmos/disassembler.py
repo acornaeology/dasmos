@@ -306,6 +306,122 @@ class Disassembler:
         )
         self._subroutine_hooks[int(runtime_addr)] = hook
 
+    # -- driver-script API: pointer-into-code helpers --------------------
+
+    def code_ptr(
+        self,
+        runtime_addr_lo,
+        runtime_addr_hi: int | None = None,
+        *,
+        offset: int = 0,
+        label_name: str | None = None,
+    ) -> None:
+        """Mark two bytes of data as the address of a subroutine and
+        seed the trace from the computed target.
+
+        Reads the bytes at ``runtime_addr_lo`` (low half) and
+        ``runtime_addr_hi`` (high half — defaults to ``runtime_addr_lo + 1``
+        for the common adjacent-bytes case), computes the target as
+        ``(hi << 8) | lo) + offset``, registers ``entry(target,
+        name=label_name)``, and sets per-byte expression overrides so
+        the source bytes render symbolically (``equw <label>`` or
+        ``equb < (<label>)`` / ``equb > (<label>)``).
+
+        Mirrors py8dis's ``code_ptr``. Used for jump tables where the
+        low and high bytes of subroutine addresses are stored in
+        separate parallel tables (see :meth:`rts_code_ptr` for the
+        RTS-pop-and-INC variant).
+        """
+        self._raise_if_disassembled("code_ptr")
+        if runtime_addr_hi is None:
+            runtime_addr_hi = runtime_addr_lo + 1
+        binary_lo = self._resolve_to_binary_addr(runtime_addr_lo, None)
+        binary_hi = self._resolve_to_binary_addr(runtime_addr_hi, None)
+        target = (
+            self._memory.get_u8(binary_lo)
+            | (self._memory.get_u8(binary_hi) << 8)
+        ) + offset
+        self.entry(target, name=label_name)
+        # Resolve the label name actually registered (an explicit
+        # one if label_name was given; otherwise auto-named at
+        # disassemble() time — but we need a name NOW for the
+        # expression. Fall back to literal hex if no name yet.)
+        target_label = self._labels.get_label(target)
+        if target_label is not None and target_label.explicit_name_texts():
+            label_text = sorted(target_label.explicit_name_texts())[0]
+        else:
+            label_text = f"&{target:04x}"
+        # The bytes contain target - offset, so the expression must
+        # subtract the same offset from the label to evaluate to the
+        # stored bytes. py8dis emits ``label-offset`` (e.g. "-1" for
+        # the RTS variant).
+        offset_str = "" if offset == 0 else f"-{offset}"
+        expr = f"{label_text}{offset_str}"
+        if int(binary_hi) == int(binary_lo) + 1:
+            # Adjacent bytes — emit a single ``equw <expr>``.
+            self.word(runtime_addr_lo)
+            self.expr(runtime_addr_lo, expr)
+        else:
+            # Separate low/high tables — emit two equb lines with
+            # beebasm's lo/hi byte operators.
+            self.byte(runtime_addr_lo, 1)
+            self.expr(runtime_addr_lo, f"< ({expr})")
+            self.byte(runtime_addr_hi, 1)
+            self.expr(runtime_addr_hi, f"> ({expr})")
+
+    def rts_code_ptr(
+        self,
+        runtime_addr_lo,
+        runtime_addr_hi: int | None = None,
+        *,
+        label_name: str | None = None,
+    ) -> None:
+        """Marks two bytes of data as the address of a subroutine
+        targeted via RTS-pop-then-INC (so the bytes contain
+        ``target - 1``). Equivalent to :meth:`code_ptr` with
+        ``offset=1``.
+        """
+        self.code_ptr(
+            runtime_addr_lo, runtime_addr_hi,
+            offset=1, label_name=label_name,
+        )
+
+    def stringz(
+        self,
+        runtime_addr,
+        *,
+        move_id: int | None = None,
+    ) -> int:
+        """Classify a NUL-terminated string starting at
+        ``runtime_addr``; returns the runtime address of the byte
+        right after the NUL terminator.
+
+        Mirrors py8dis's ``stringz()``. Scans forward through loaded
+        memory until the first ``0`` byte; classifies the whole span
+        (including the terminator) as a String. Driver scripts use
+        the return value to chain through a sequence of strings::
+
+            addr = d.stringz(0x9000)
+            addr = d.stringz(addr)  # next string follows
+        """
+        self._raise_if_disassembled("stringz")
+        binary_addr = self._resolve_to_binary_addr(runtime_addr, move_id)
+        scan = int(binary_addr)
+        limit = self._cpu.address_space_size
+        while scan < limit:
+            if not self._memory.is_loaded(scan):
+                raise DisassemblerError(
+                    f"stringz at {int(runtime_addr):04x} ran into "
+                    f"unloaded memory at binary {scan:04x} without "
+                    f"finding a NUL terminator"
+                )
+            if self._memory.get_u8(scan) == 0:
+                break
+            scan += 1
+        length = scan - int(binary_addr) + 1
+        self.string(runtime_addr, length, move_id=move_id)
+        return int(runtime_addr) + length
+
     # -- driver-script API: data classification -------------------------
 
     def byte(

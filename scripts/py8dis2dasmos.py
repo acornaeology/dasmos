@@ -53,6 +53,9 @@ DASMOS_METHODS: frozenset[str] = frozenset({
     "banner",
     "add_move",
     "hook_subroutine",
+    "code_ptr",
+    "rts_code_ptr",
+    "stringz",
 })
 
 
@@ -63,6 +66,13 @@ PY8DIS_FUNCTION_RENAMES: dict[str, str] = {
     # py8dis's ``move(binary_addr, runtime_addr, length)`` registers a
     # relocation; dasmos's equivalent is ``Disassembler.add_move``.
     "move": "add_move",
+    # ``constant(value, name)`` in py8dis names an arbitrary value
+    # (commonly a hardware register address). Drivers in practice use
+    # it for addresses — semantically the same as ``optional_label``,
+    # which is what dasmos provides. Calls passing a 3rd ``comment=``
+    # kwarg are translated into ``description=`` via the per-method
+    # kwarg rewrite below.
+    "constant": "optional_label",
 }
 
 
@@ -82,6 +92,28 @@ UNSUPPORTED_PY8DIS_FUNCTIONS: frozenset[str] = frozenset()
 PY8DIS_COMMAND_RELOCATIONS: dict[str, str] = {
     # Subroutine hooks ported to ``dasmos.hooks``.
     "stringhi_hook": "dasmos.hooks",
+}
+
+
+# py8dis ``acorn.<func>()`` calls map to dasmos environment plug-ins.
+# The porter rewrites each call into a ``d.use_environment("...")``
+# call so the same effect is achieved through the composable
+# environments axis. Where py8dis's function bundles knowledge that
+# dasmos splits into multiple environments (``acorn.bbc()`` includes
+# both MOS labels and BBC hardware addresses), only the environments
+# we've actually ported are activated — the rest is a known gap that
+# closes when more environments land.
+PY8DIS_ACORN_FUNC_TO_ENVIRONMENTS: dict[str, list[str]] = {
+    # ``acorn.bbc()`` registers MOS workspace + vectors + OS calls
+    # (via mos_labels()) AND BBC Micro hardware addresses
+    # (hardware_bbc()). Dasmos has the MOS half via acorn_mos; the
+    # hardware addresses land later as ``acorn_bbc_hardware``.
+    "bbc": ["acorn_mos"],
+    # ``acorn.is_sideways_rom()`` recognises the &8000 header layout
+    # — direct one-to-one map.
+    "is_sideways_rom": ["acorn_sideways_rom"],
+    # ``acorn.mos_labels()`` is the MOS-only subset of bbc().
+    "mos_labels": ["acorn_mos"],
 }
 
 
@@ -118,6 +150,14 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
     def visit_Module(self, node: ast.Module) -> ast.Module:
         new_body: list[ast.stmt] = []
         used_align_inline = False
+        # Names bound to py8dis internals via dropped ``from
+        # py8dis.X import Y as Z`` statements. Any later statement
+        # that references one of these is also dropped — drivers
+        # occasionally reach into py8dis internals to override
+        # classifications (e.g. NFS-3.65's copyright-string split),
+        # and we'd rather drop the override silently than leave
+        # broken references in the ported script.
+        dropped_internal_names: set[str] = set()
 
         for stmt in node.body:
             # Drop ``from py8dis.commands import *`` — replaced by
@@ -125,11 +165,60 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
             if isinstance(stmt, ast.ImportFrom) and stmt.module == "py8dis.commands":
                 continue
             # Drop ``from py8dis.X import ...`` — anything py8dis
-            # internal becomes invalid in a dasmos driver.
+            # internal becomes invalid in a dasmos driver. Record
+            # the bound names so any downstream statement that uses
+            # them gets dropped too.
             if (
                 isinstance(stmt, ast.ImportFrom)
                 and stmt.module
                 and stmt.module.startswith("py8dis")
+            ):
+                for alias in stmt.names:
+                    dropped_internal_names.add(alias.asname or alias.name)
+                continue
+            # Drop ``import py8dis.X [as alias]`` — the porter
+            # rewrites the alias.<func>() calls below into
+            # ``d.use_environment(...)`` calls, so the import itself
+            # is no longer needed. Record the bound aliases too, so
+            # any non-handled downstream reference is dropped too.
+            if isinstance(stmt, ast.Import) and any(
+                alias.name.startswith("py8dis") for alias in stmt.names
+            ):
+                for alias in stmt.names:
+                    if alias.name.startswith("py8dis"):
+                        dropped_internal_names.add(
+                            alias.asname or alias.name.split(".")[0],
+                        )
+                # Drop only the py8dis ones — split the names list
+                # if other imports are mixed in (rare).
+                kept = [
+                    alias for alias in stmt.names
+                    if not alias.name.startswith("py8dis")
+                ]
+                if not kept:
+                    continue
+                stmt.names = kept
+
+            # Translate ``acorn.<func>()`` (or any aliased
+            # ``<alias>.<func>()`` where the alias was bound to the
+            # py8dis ``acorn`` module) into one or more
+            # ``d.use_environment("...")`` calls. Runs BEFORE the
+            # drop-references-to-internals check so calls through a
+            # dropped alias (the typical case) get translated rather
+            # than dropped.
+            env_stmts = self._maybe_acorn_func_to_env_use(stmt)
+            if env_stmts is not None:
+                new_body.extend(env_stmts)
+                continue
+
+            # Drop any statement that references a name bound to a
+            # py8dis internal we've dropped — usually
+            # classification-override hacks like
+            # ``_disasm.classifications[...] = _cls.String(...)``.
+            # These leave the ported script syntactically valid
+            # rather than referring to an undefined ``_cls``.
+            if dropped_internal_names and self._references_any(
+                stmt, dropped_internal_names,
             ):
                 continue
 
@@ -604,6 +693,57 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
         return stmts
 
     # -- helpers ---------------------------------------------------------
+
+    @staticmethod
+    def _references_any(stmt: ast.stmt, names: set[str]) -> bool:
+        """True iff the AST under ``stmt`` references any of the
+        given top-level ``Name``s. Used to drop driver statements
+        that touch py8dis internals via aliases the porter has
+        already removed.
+        """
+        for node in ast.walk(stmt):
+            if isinstance(node, ast.Name) and node.id in names:
+                return True
+        return False
+
+    @staticmethod
+    def _maybe_acorn_func_to_env_use(stmt: ast.stmt) -> list[ast.stmt] | None:
+        """If ``stmt`` is a top-level ``<alias>.<func>()`` expression
+        whose ``<func>`` is one we map onto a dasmos environment,
+        return the replacement ``d.use_environment(...)`` statements.
+        Otherwise return ``None`` (caller falls through to the normal
+        rewriting path).
+
+        Recognises any ``<alias>.<func>()`` shape — we don't track
+        which alias the import bound, since
+        :data:`PY8DIS_ACORN_FUNC_TO_ENVIRONMENTS` keys are unique
+        enough that a stray collision is implausible. Hardens against
+        the original ``import py8dis.acorn as acorn`` *and* the
+        equally common ``import py8dis.acorn`` (no alias).
+        """
+        if not isinstance(stmt, ast.Expr):
+            return None
+        call = stmt.value
+        if not isinstance(call, ast.Call):
+            return None
+        if not isinstance(call.func, ast.Attribute):
+            return None
+        func_name = call.func.attr
+        env_names = PY8DIS_ACORN_FUNC_TO_ENVIRONMENTS.get(func_name)
+        if env_names is None:
+            return None
+        return [
+            ast.Expr(value=ast.Call(
+                func=ast.Attribute(
+                    value=ast.Name(id="d", ctx=ast.Load()),
+                    attr="use_environment",
+                    ctx=ast.Load(),
+                ),
+                args=[ast.Constant(value=env_name)],
+                keywords=[],
+            ))
+            for env_name in env_names
+        ]
 
     @staticmethod
     def _call_name(call: ast.Call) -> str | None:

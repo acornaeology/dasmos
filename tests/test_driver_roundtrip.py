@@ -984,6 +984,164 @@ class TestOptionalLabelsAndExternals:
 
 
 @pytest.mark.beebasm
+class TestCodePtr:
+    """Driver feature: ``d.code_ptr(addr_lo, addr_hi=None, *, offset=0)``
+    and the RTS-flavoured ``d.rts_code_ptr(addr_lo, addr_hi=None)``.
+
+    Mark two bytes of data as the address of a subroutine: read the
+    bytes, register an entry point at the computed target, classify
+    the source bytes appropriately, and set per-byte expression
+    overrides so the source bytes render symbolically.
+    """
+
+    def test_adjacent_bytes_emits_equw_with_label_expr(
+        self, roundtrip_via_beebasm,
+    ):
+        # Two adjacent bytes (low at &8000, high at &8001) point to a
+        # subroutine at &8002. Renderer should emit ``equw target``
+        # for the pair and seed the trace from &8002.
+        source = """
+            org &8000
+        .ptr_table
+            equw target
+        .target
+            rts
+        save "step1.bin", ptr_table, P%
+        """
+
+        def configure(d):
+            d.code_ptr(0x8000, label_name="target")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        assert "equw target" in text
+
+    def test_non_adjacent_bytes_emits_lo_hi_expressions(
+        self, roundtrip_via_beebasm,
+    ):
+        # Low byte at &8000, high byte separated at &8002 — emit
+        # two ``equb`` lines with beebasm's lo/hi expression
+        # operators.
+        source = """
+            org &8000
+            equb &04   ; low half of &8004 (target)
+            equb &00   ; filler between the halves
+            equb &80   ; high half of &8004
+        .target
+            rts
+        save "step1.bin", $8000, P%
+        """
+
+        def configure(d):
+            d.code_ptr(0x8000, 0x8002, label_name="target")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # Both halves render via the lo/hi operators on the label.
+        assert "< (target)" in text
+        assert "> (target)" in text
+
+    def test_rts_flavour_subtracts_one(
+        self, roundtrip_via_beebasm,
+    ):
+        # RTS-pop-then-INC means stored bytes contain target-1; the
+        # rendered expression compensates.
+        source = """
+            org &8000
+            equw target - 1   ; bytes 03 80 (target = &8004)
+        .target
+            rts
+        save "step1.bin", $8000, P%
+        """
+
+        def configure(d):
+            d.rts_code_ptr(0x8000, label_name="target")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # Rendered expression includes the -1 offset.
+        assert "equw target-1" in text
+
+
+@pytest.mark.beebasm
+class TestStringz:
+    """Driver feature: ``d.stringz(addr)`` — classify a NUL-terminated
+    string starting at addr; returns the runtime address of the byte
+    after the terminator. Lifted from py8dis."""
+
+    def test_classifies_string_through_nul(
+        self, roundtrip_via_beebasm,
+    ):
+        source = """
+            org &8000
+        .start
+            equs "Hi", &00, &60     ; "Hi\\0" + RTS-as-data
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.stringz(0x8000)  # classify "Hi\0" — 3 bytes inc. NUL
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # The string text appears in the output as equs-or-equb.
+        # Round-trip succeeds, which is the load-bearing assertion.
+        assert ".start" in text
+
+    def test_returns_address_after_terminator(self, tmp_path):
+        # API check: stringz returns the runtime address of the byte
+        # AFTER the NUL — so chained calls walk a sequence of
+        # NUL-terminated strings.
+        from dasmos.disassembler import Disassembler
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(b"abc\x00def\x00\x60")
+        d = Disassembler.create(cpu="nmos6502")
+        d.load(bin_path, 0x8000)
+        next_addr = d.stringz(0x8000)
+        assert next_addr == 0x8004  # "abc\0" = 4 bytes, next at &8004
+        next_addr = d.stringz(next_addr)
+        assert next_addr == 0x8008  # "def\0" = 4 bytes, next at &8008
+
+    def test_raises_on_unterminated_string(self, tmp_path):
+        # No NUL byte before unloaded memory → diagnostic error.
+        from dasmos.disassembler import Disassembler, DisassemblerError
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(b"abcdef")  # no NUL
+        d = Disassembler.create(cpu="nmos6502")
+        d.load(bin_path, 0x8000)
+        with pytest.raises(DisassemblerError, match="without finding a NUL"):
+            d.stringz(0x8000)
+
+
+@pytest.mark.beebasm
+class TestMultiLineCommentRendering:
+    """A ``d.comment(addr, text)`` whose text contains newlines should
+    render as one ``;`` line per source line — not bare text on the
+    second line that beebasm would choke on.
+    """
+
+    def test_each_line_carries_comment_prefix(
+        self, roundtrip_via_beebasm,
+    ):
+        source = """
+            org &8000
+        .start
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.comment(
+                0x8000,
+                "First line\nSecond line\n=====",
+            )
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # Each non-empty source line is a ``;`` line in the output.
+        assert "; First line" in text
+        assert "; Second line" in text
+        assert "; =====" in text
+
+
+@pytest.mark.beebasm
 class TestSubroutineHooks:
     """Driver feature: ``d.hook_subroutine(addr, name, hook)`` registers
     a callable that the trace fires when it sees a JSR to ``addr``.

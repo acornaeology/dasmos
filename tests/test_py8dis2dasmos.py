@@ -66,6 +66,76 @@ class TestImports:
         """)
         assert "py8dis" not in out
 
+    def test_drops_aliased_py8dis_module_import(self):
+        # ``import py8dis.acorn as acorn`` — the alias gets bound,
+        # then later ``acorn.bbc()`` lines need rewriting. The
+        # import statement itself is dropped.
+        out = port("""
+            from py8dis.commands import *
+            import py8dis.acorn as acorn
+            load(0xE000, "rom.bin", "6502")
+        """)
+        assert "import py8dis" not in out
+        assert "import dasmos" in out
+
+    def test_drops_statements_referencing_dropped_internals(self):
+        # When ``from py8dis.X import Y as Z`` is dropped, any
+        # statement referencing ``Z`` gets dropped too — drivers
+        # occasionally reach into py8dis internals to override
+        # classifications, and we'd rather drop the override
+        # silently than leave broken references in the ported
+        # script.
+        out = port("""
+            from py8dis.commands import *
+            from py8dis import classification as _cls, disassembly as _disasm
+            load(0xE000, "rom.bin", "6502")
+            _disasm.classifications[0xE000] = _cls.String(7)
+            label(0xE100, "after")
+        """)
+        # The classification-override line is gone (it referenced
+        # both _cls and _disasm).
+        assert "_cls" not in out
+        assert "_disasm" not in out
+        # But the unrelated label() call survives.
+        assert "d.label(57600, 'after')" in out
+
+    def test_acorn_func_call_becomes_use_environment(self):
+        # ``acorn.bbc()`` → ``d.use_environment("acorn_mos")``.
+        # Same shape for ``acorn.is_sideways_rom()`` →
+        # ``d.use_environment("acorn_sideways_rom")``.
+        out = port("""
+            from py8dis.commands import *
+            import py8dis.acorn as acorn
+            load(0x8000, "rom.bin", "6502")
+            acorn.bbc()
+            acorn.is_sideways_rom()
+        """)
+        assert "d.use_environment('acorn_mos')" in out
+        assert "d.use_environment('acorn_sideways_rom')" in out
+        assert "acorn.bbc" not in out
+        assert "acorn.is_sideways_rom" not in out
+
+    def test_constant_renamed_to_optional_label(self):
+        out = port("""
+            from py8dis.commands import *
+            load(0xE000, "rom.bin", "6502")
+            constant(0xFEA0, "adlc_cr1")
+        """)
+        assert "d.optional_label(65184, 'adlc_cr1')" in out
+        assert "constant(" not in out
+
+    def test_move_renamed_to_add_move(self):
+        out = port("""
+            from py8dis.commands import *
+            load(0xE000, "rom.bin", "6502")
+            move(0x100, 0x9324, 0x61)
+        """)
+        assert "d.add_move(256, 37668, 97)" in out
+        # No bare ``move(`` call survives (only the ``add_move(`` form
+        # that contains the substring).
+        import re
+        assert not re.search(r"(?<![._a-zA-Z0-9])move\(", out)
+
 
 class TestInitAndLoad:
 
