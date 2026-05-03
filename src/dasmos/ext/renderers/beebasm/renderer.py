@@ -1429,21 +1429,32 @@ class BeebasmRenderer(TextRenderer):
         return ir.memory.is_loaded(int(binary_addr))
 
     def _render_byte(self, ir, binary_addr, c: Byte) -> list[str]:
-        """Render a Byte block as one or more ``equb`` lines."""
-        cols = c.cols() or 8
-        values = [
-            ir.memory.get_u8(int(binary_addr) + i) for i in range(c.length())
-        ]
-        lines = []
-        for chunk_start in range(0, len(values), cols):
-            chunk = values[chunk_start:chunk_start + cols]
-            text = ", ".join(self.hex2(v) for v in chunk)
-            lines.append(f"    {self.byte_prefix()}{text}")
+        """Render a Byte block as one or more ``equb`` lines.
+
+        Per-byte expression overrides (registered via ``d.expr(addr,
+        expr)``) substitute for the literal hex when present. Used by
+        the ``acorn_sideways_rom`` environment to render the
+        copyright-offset byte at ``&8007`` as ``equb copyright -
+        rom_header`` instead of its literal value.
+        """
+        cols = c.cols() or self.default_byte_cols
+        n = c.length()
+        lines: list[str] = []
+        for chunk_start in range(0, n, cols):
+            parts: list[str] = []
+            for i in range(chunk_start, min(chunk_start + cols, n)):
+                addr = int(binary_addr) + i
+                expr = ir.expressions.get_or_none(addr)
+                if expr is not None:
+                    parts.append(expr)
+                else:
+                    parts.append(self.hex2(ir.memory.get_u8(addr)))
+            lines.append(f"    {self.byte_prefix()}{', '.join(parts)}")
         return lines
 
     def _render_word(self, ir, binary_addr, c: Word) -> list[str]:
         """Render a Word block as one or more ``equw`` lines."""
-        cols = c.cols() or 4
+        cols = c.cols() or self.default_word_cols
         words = [
             ir.memory.get_u16_le(int(binary_addr) + i * 2)
             for i in range(c.length() // 2)

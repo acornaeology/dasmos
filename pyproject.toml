@@ -57,6 +57,7 @@ beebasm = "dasmos.ext.renderers.beebasm:Renderer"
 
 [project.entry-points."dasmos.environment"]
 acorn_mos = "dasmos.ext.environments.acorn_mos:Environment"
+acorn_sideways_rom = "dasmos.ext.environments.acorn_sideways_rom:Environment"
 
 [tool.setuptools]
 package-dir = { "" = "src" }

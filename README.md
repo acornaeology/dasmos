@@ -86,13 +86,13 @@ $ dasmos list-renderers
 
 ```console
 $ dasmos list-environments
-    Environments registered under     
-         'dasmos.environment'         
-┏━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ Name      ┃ Description            ┃
-┡━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━┩
-│ acorn_mos │ Acorn MOS environment. │
-└───────────┴────────────────────────┘
+   Environments registered under 'dasmos.environment'   
+┏━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Name               ┃ Description                     ┃
+┡━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ acorn_mos          │ Acorn MOS environment.          │
+│ acorn_sideways_rom │ Acorn sideways ROM environment. │
+└────────────────────┴─────────────────────────────────┘
 ```
 
 Environments layer onto a disassembler additively — a driver can

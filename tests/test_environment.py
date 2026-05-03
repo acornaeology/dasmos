@@ -182,3 +182,163 @@ class TestAcornMosCoverage:
             if label.explicit_name_texts()
         )
         assert named_addrs == 3 + 27 * 2 + 21
+
+
+class TestAcornSidewaysRom:
+    """Sideways ROM environment: header layout + entry-point detection
+    + copyright/title strings. Inspects loaded memory at &8000 so
+    must be activated AFTER ``d.load(...)``.
+    """
+
+    @staticmethod
+    def _make_loaded_disassembler(tmp_path, rom_bytes):
+        """Helper: write ``rom_bytes`` to a file and load it at &8000."""
+        rom = tmp_path / "rom.bin"
+        rom.write_bytes(rom_bytes)
+        d = Disassembler.create(cpu="nmos6502")
+        d.load(rom, 0x8000)
+        return d
+
+    @staticmethod
+    def _build_rom(
+        language_jmp=True, service_jmp=True,
+        title=b"TestROM", version=b"1.00",
+        copyright=b"(C) 2026",
+    ):
+        """Build a 256-byte fake sideways ROM with the standard
+        header layout. Returns the bytes."""
+        # Header: language entry (3 bytes) + service entry (3 bytes)
+        # + rom_type + copyright_offset + binary_version + title +
+        # NUL + version + NUL + ... copyright string at offset.
+        header = bytearray()
+        # &8000-2: language entry (JMP &80F0 if language_jmp else 3 NOPs)
+        if language_jmp:
+            header += bytes([0x4c, 0xf0, 0x80])  # JMP &80F0
+        else:
+            header += bytes([0xea, 0xea, 0xea])  # NOPs
+        # &8003-5: service entry
+        if service_jmp:
+            header += bytes([0x4c, 0xf3, 0x80])  # JMP &80F3
+        else:
+            header += bytes([0xea, 0xea, 0xea])
+        # &8006: rom_type
+        header += bytes([0x82])
+        # &8007: copyright_offset (we'll patch this after we know
+        # where copyright lands)
+        cp_off_pos = len(header)
+        header += bytes([0])  # placeholder
+        # &8008: binary_version
+        header += bytes([0x10])
+        # &8009: title + NUL
+        header += title + b"\x00"
+        # version + NUL
+        header += version + b"\x00"
+        # copyright leading NUL + text + NUL
+        cp_addr = len(header)  # offset from &8000
+        header += b"\x00" + copyright + b"\x00"
+        # Patch copyright_offset
+        header[cp_off_pos] = cp_addr
+        # Pad to 256 bytes (so loading at &8000 doesn't run past the
+        # 16-bit address space) and put NOP-RTS handlers at &80F0
+        # (language) and &80F3 (service) so the trace has somewhere to
+        # go.
+        while len(header) < 0xf0:
+            header += bytes([0xff])
+        header += bytes([0xea, 0xea, 0x60])  # NOP NOP RTS at &80F0
+        header += bytes([0xea, 0xea, 0x60])  # NOP NOP RTS at &80F3
+        while len(header) < 0x100:
+            header += bytes([0xff])
+        return bytes(header)
+
+    def test_raises_when_8000_not_loaded(self, tmp_path):
+        # The environment's setup needs the ROM at &8000.
+        d = Disassembler.create(cpu="nmos6502")
+        with pytest.raises(Exception):  # DasmosError or subclass
+            d.use_environment("acorn_sideways_rom")
+
+    def test_jmp_entry_registers_handler_label(self, tmp_path):
+        d = self._make_loaded_disassembler(
+            tmp_path, self._build_rom(language_jmp=True),
+        )
+        d.use_environment("acorn_sideways_rom")
+        # rom_header at &8000.
+        assert "rom_header" in d.labels.get_label(0x8000).explicit_name_texts()
+        # language_entry at &8000 (alias of rom_header).
+        assert "language_entry" in d.labels.get_label(0x8000).explicit_name_texts()
+        # JMP at &8000 → handler at &80F0.
+        assert "language_handler" in d.labels.get_label(0x80f0).explicit_name_texts()
+
+    def test_non_jmp_entry_classifies_as_byte(self, tmp_path):
+        # No language entry (just NOPs) → classify the 3 bytes as
+        # data and DON'T add a handler label.
+        d = self._make_loaded_disassembler(
+            tmp_path, self._build_rom(language_jmp=False),
+        )
+        d.use_environment("acorn_sideways_rom")
+        # Still labelled language_entry, but no language_handler
+        # (because there's no JMP).
+        assert "language_entry" in d.labels.get_label(0x8000).explicit_name_texts()
+        # The trace shouldn't have an entry registered at &8000 for
+        # the language side. Hard to assert directly without trace
+        # access, but we can verify no language_handler label was
+        # synthesised at any address.
+        for addr in range(0x8000, 0x8100):
+            label = d.labels.get_label(addr)
+            if label is not None:
+                assert "language_handler" not in label.explicit_name_texts()
+
+    def test_header_field_labels(self, tmp_path):
+        d = self._make_loaded_disassembler(tmp_path, self._build_rom())
+        d.use_environment("acorn_sideways_rom")
+        for addr, expected in [
+            (0x8006, "rom_type"),
+            (0x8007, "copyright_offset"),
+            (0x8008, "binary_version"),
+            (0x8009, "title"),
+        ]:
+            assert expected in d.labels.get_label(addr).explicit_name_texts(), (
+                f"missing label {expected} at {addr:04x}"
+            )
+
+    def test_copyright_offset_byte_renders_as_expression(
+        self, tmp_path,
+    ):
+        # The byte at &8007 carries an expression override
+        # (``copyright - rom_header``); the renderer should emit
+        # that expression instead of the literal hex value.
+        d = self._make_loaded_disassembler(tmp_path, self._build_rom())
+        d.use_environment("acorn_sideways_rom")
+        text = str(d.disassemble().render("beebasm"))
+        # The whole expression appears in the output (somewhere).
+        assert "copyright - rom_header" in text
+
+    def test_title_string_classification(self, tmp_path):
+        title = b"MyROM"
+        d = self._make_loaded_disassembler(
+            tmp_path, self._build_rom(title=title),
+        )
+        d.use_environment("acorn_sideways_rom")
+        text = str(d.disassemble().render("beebasm"))
+        # Title gets emitted (as a string literal or equs).
+        assert ".title" in text
+
+    def test_copyright_string_classification(self, tmp_path):
+        copyright = b"(C) Acornaeology"
+        d = self._make_loaded_disassembler(
+            tmp_path, self._build_rom(copyright=copyright),
+        )
+        d.use_environment("acorn_sideways_rom")
+        text = str(d.disassemble().render("beebasm"))
+        assert ".copyright" in text
+
+    def test_layered_with_acorn_mos(self, tmp_path):
+        # The two acorn environments compose: the labels from each
+        # appear together. Sideways-rom needs activation AFTER load,
+        # so it can't be in the constructor kwarg if mos is also.
+        d = self._make_loaded_disassembler(tmp_path, self._build_rom())
+        d.use_environment("acorn_mos")
+        d.use_environment("acorn_sideways_rom")
+        # acorn_mos contribution.
+        assert "oswrch" in d.labels.get_label(0xffee).explicit_name_texts()
+        # acorn_sideways_rom contribution.
+        assert "rom_header" in d.labels.get_label(0x8000).explicit_name_texts()
