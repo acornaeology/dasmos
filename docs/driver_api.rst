@@ -103,8 +103,9 @@ reach end up classified as data unless you intervene.
 Naming things: labels and constants
 -----------------------------------
 
-Once you've identified what an address *means*, name it. dasmos has
-three flavours of name, corresponding to three different commitments:
+Once you've identified what an address *means*, name it. *Dasmos*
+has three flavours of name, corresponding to three different
+commitments:
 
 :meth:`~dasmos.Disassembler.label` — a *required* label at this
 address. It always appears in the output, even if nothing references
@@ -348,13 +349,13 @@ Switching renderers
 -------------------
 
 The same intermediate representation feeds every renderer. The two
-that ship with dasmos:
+that ship with *Dasmos*:
 
 ``beebasm``
    Re-assemblable assembly source. The default. Targets the
    `beebasm <https://github.com/stardot/beebasm>`_ syntax that's
    standard in the BBC Micro / Master ecosystem; the round-trip
-   (binary → driver → beebasm-assembly → binary) is dasmos's
+   (binary → driver → beebasm-assembly → binary) is *Dasmos*'s
    correctness oracle.
 
 ``json``

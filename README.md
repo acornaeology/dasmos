@@ -1,4 +1,4 @@
-# dasmos
+# Dasmos
 
 A pluggable tracing disassembler for retro CPUs, version `0.1.0`.
 
@@ -9,14 +9,28 @@ A pluggable tracing disassembler for retro CPUs, version `0.1.0`.
   <a href="https://pypi.org/project/dasmos/"><img src="https://img.shields.io/pypi/pyversions/dasmos.svg" alt="Python versions"></a>
 </p>
 
-dasmos is a successor to the [py8dis fork][py8dis-fork] under the
-[acornaeology][acornaeology] umbrella, rebuilt from the ground up around
-Stevedore extension points so CPUs and renderers (assembler-syntax
-back-ends) ship as plug-ins. Driver scripts written for the py8dis
-fork can be ported with the bundled `scripts/py8dis2dasmos.py` AST
-porter — the four sibling Acorn ROM disassembly projects use it
+> *From Ancient Greek* δασμός *(dasmós, "division"), from* δαίω
+> *(daíō, "to divide, share").*
+
+*Dasmos* is a ground-up rewrite and reimagining of a heavily modified
+[fork][py8dis-fork] of [py8dis][py8dis-original] — Steven Flintham's
+original programmable tracing disassembler for the 6502 family.
+*Dasmos* owes the whole core idea to Steven and to the py8dis project;
+this rewrite restructures it around Stevedore extension points so
+CPUs, renderers (assembler-syntax back-ends), and target environments
+ship as composable plug-ins, but the design vocabulary — driver
+scripts, traced classification, label/comment/banner annotations —
+all comes from py8dis.
+
+The [acornaeology][acornaeology] py8dis fork accumulated enough new
+capability (JSON renderer, environment hooks, BBC Master coverage)
+that an independent project became the right next step. Driver
+scripts written for the fork port to *Dasmos* with the bundled
+`scripts/py8dis2dasmos.py` AST porter — the four sibling Acorn ROM
+disassembly projects under the acornaeology umbrella all use it
 verbatim.
 
+[py8dis-original]: https://github.com/ZornsLemma/py8dis
 [py8dis-fork]: https://github.com/acornaeology/py8dis
 [acornaeology]: https://github.com/acornaeology
 
@@ -47,7 +61,7 @@ Or with pip:
 pip install dasmos
 ```
 
-`dasmos`'s round-trip / parity tests assemble back to bytes via
+*Dasmos*'s round-trip / parity tests assemble back to bytes via
 [beebasm](https://github.com/stardot/beebasm); `beebasm` on `PATH`
 (or via the `BEEBASM` env var) activates them. CI builds beebasm
 from source per matrix cell so the round-trip is part of the gate.
@@ -195,7 +209,7 @@ print(str(ir.render("beebasm")))
 
 That produces beebasm-assemblable source. Re-assembling it via the
 real `beebasm` binary yields a binary byte-identical to the input
-— the load-bearing **round-trip property** dasmos's test suite
+— the load-bearing **round-trip property** *Dasmos*'s test suite
 exercises against real Acorn ROMs (the 8 KB Econet Bridge and the
 2 KB-mapped 6502 Tube Client both round-trip end-to-end with full
 py8dis annotation-content parity).
@@ -203,7 +217,7 @@ py8dis annotation-content parity).
 ## Migrating a py8dis driver
 
 `scripts/py8dis2dasmos.py` is an AST-based porter that translates a
-py8dis driver script into the equivalent dasmos call shape:
+py8dis driver script into the equivalent *Dasmos* call shape:
 
 ```sh
 uv run python scripts/py8dis2dasmos.py path/to/disasm_<rom>.py > ported.py
@@ -253,18 +267,18 @@ tests/fixtures/             Vendored ROM + driver + reference output
 
 ## Related projects
 
-- [py8dis (fork)][py8dis-fork] — the predecessor dasmos is replacing.
+- [py8dis (fork)][py8dis-fork] — the predecessor *Dasmos* is replacing.
   Driver scripts written against this fork port via
   `scripts/py8dis2dasmos.py`.
 - The four sibling Acorn ROM disassembly repositories under the
-  [acornaeology][acornaeology] umbrella that drive dasmos's
+  [acornaeology][acornaeology] umbrella that drive *Dasmos*'s
   round-trip / parity validation:
   `acorn-econet-bridge`, `acorn-6502-tube-client`, `acorn-nfs`,
   `acorn-adfs`.
 - [beebasm](https://github.com/stardot/beebasm) — the BBC-Micro-style
   assembler used as the round-trip oracle.
 - [asyoulikeit](https://github.com/sixty-north/asyoulikeit) — the
-  CLI-output framework dasmos's reports are built on.
+  CLI-output framework *Dasmos*'s reports are built on.
 
 ---
 

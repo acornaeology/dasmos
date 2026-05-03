@@ -12,14 +12,14 @@ Install
    <https://docs.astral.sh/uv/getting-started/installation/>`_ —
    one-line installers are available for macOS, Linux, and Windows.
 
-For one-shot CLI use, no install needed — ``uvx`` fetches dasmos
+For one-shot CLI use, no install needed — ``uvx`` fetches *Dasmos*
 into a transient environment and runs it:
 
 .. code-block:: console
 
    uvx dasmos disassemble myrom.bin --load-addr '&8000'
 
-To add dasmos to a project (required for driver scripts that
+To add ``dasmos`` to a project (required for driver scripts that
 ``import dasmos``):
 
 .. code-block:: console
@@ -38,7 +38,7 @@ Either install form puts a ``dasmos`` script on your ``PATH``.
 Overview
 --------
 
-dasmos installs a single ``dasmos`` script, organised as a Click
+*Dasmos* installs a single ``dasmos`` script, organised as a Click
 command group. Three command families:
 
 - **Discovery** — ``list-cpus``, ``list-renderers``, ``list-environments``
