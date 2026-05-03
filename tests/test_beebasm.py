@@ -347,6 +347,7 @@ class TestByteColumnAnnotation:
         assert "; 8000:" in lda_line
         assert "; &8000:" not in lda_line
 
+    @pytest.mark.beebasm
     def test_py8dis_format_shows_move_suffix_inside_moved_block(
         self, tmp_path, assemble_beebasm,
     ):

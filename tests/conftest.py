@@ -79,6 +79,7 @@ def assemble_beebasm(tmp_path: Path):
 
     .. code-block:: python
 
+        @pytest.mark.beebasm
         def test_thing(assemble_beebasm):
             binary = assemble_beebasm('''
                 org &8000
@@ -88,6 +89,17 @@ def assemble_beebasm(tmp_path: Path):
                 save "out.bin", start, P%
             ''')
     """
+    # Belt-and-braces: the @pytest.mark.beebasm marker triggers the
+    # auto-skip in pytest_collection_modifyitems when beebasm isn't
+    # available, but a test that uses this fixture without the marker
+    # would otherwise pass None to subprocess.run and get a confusing
+    # TypeError. Skip explicitly so the failure mode is clear.
+    if BEEBASM is None:
+        pytest.skip(
+            "beebasm binary not found; mark the test with "
+            "@pytest.mark.beebasm to opt into the auto-skip"
+        )
+
     def _assemble(source: str, *, name: str = "in") -> bytes:
         asm = tmp_path / f"{name}.asm"
         asm.write_text(source)
@@ -185,6 +197,12 @@ def roundtrip_via_beebasm(tmp_path: Path):
             )
             assert ".start" in text
     """
+    if BEEBASM is None:
+        pytest.skip(
+            "beebasm binary not found; mark the test with "
+            "@pytest.mark.beebasm to opt into the auto-skip"
+        )
+
     def _roundtrip(source: str, load_addr: int, configure: Callable) -> str:
         # Step 1: assemble the known source via beebasm.
         asm_in = tmp_path / "step1_in.asm"
