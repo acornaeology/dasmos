@@ -306,6 +306,34 @@ class Cpu(Extension):
         are deliberately omitted, matching py8dis.
         """
 
+    # -- optional CPU-state tracking ------------------------------------
+    #
+    # Plug-ins that override these enable post-trace register-state
+    # analysis (used by JSR-state hooks like the OSBYTE / OSWORD
+    # decoders). Default implementations return ``None`` so analyzers
+    # that depend on state are skipped silently for CPUs without it.
+
+    def initial_state(self):  # type: () -> "CpuState | None"
+        """Return a fresh :class:`~dasmos.core.cpu_state.CpuState` for
+        this CPU, or ``None`` to opt out of state tracking.
+
+        The Disassembler calls this once at the start of its post-
+        trace state-computation pass. Override in CPU plug-ins that
+        want their state tracked.
+        """
+        return None
+
+    def update_state(self, state, opcode: Opcode, addr: int, memory) -> None:
+        """Advance ``state`` to reflect executing ``opcode`` at the
+        binary address ``addr``. Mutates ``state`` in place.
+
+        ``memory`` is the disassembler's :class:`MemoryImage` so the
+        update can read the operand byte(s) when relevant (e.g.
+        ``LDA #imm`` reads the immediate from ``addr + 1``).
+
+        No-op default — CPU plug-ins override.
+        """
+
 
 class CpuExtensionError(ExtensionError):
     """Exception raised when a CPU extension cannot be loaded."""

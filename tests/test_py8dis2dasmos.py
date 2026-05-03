@@ -99,10 +99,33 @@ class TestImports:
         # But the unrelated label() call survives.
         assert "d.label(57600, 'after')" in out
 
+    def test_drops_get_structured_assignment_and_cascade(self):
+        # The py8dis fork's JSON-output hook ``get_structured()`` has
+        # no dasmos equivalent yet (planned as a JSON-renderer
+        # plug-in). The porter drops ``structured = get_structured()``
+        # AND the follow-up ``json.dumps(structured)`` line that uses
+        # the would-be-defined name, so the ported script doesn't
+        # crash with NameError on the missing function.
+        out = port("""
+            from py8dis.commands import *
+            load(0xE000, "rom.bin", "6502")
+            output = go(print_output=False)
+            structured = get_structured()
+            json_filepath = _output_dirpath / "thing.json"
+            json_filepath.write_text(json.dumps(structured))
+        """)
+        assert "get_structured" not in out
+        # The cascade drops the line that references ``structured``.
+        assert "json.dumps(structured)" not in out
+        # The unrelated ``output = go(...)`` translation survives
+        # (becomes the str(disassemble().render(...)) sequence).
+        assert "d.disassemble().render(" in out
+
     def test_acorn_func_call_becomes_use_environment(self):
-        # ``acorn.bbc()`` → ``d.use_environment("acorn_mos")``.
-        # Same shape for ``acorn.is_sideways_rom()`` →
-        # ``d.use_environment("acorn_sideways_rom")``.
+        # ``acorn.bbc()`` expands to BOTH ``acorn_mos`` (workspace +
+        # vectors + OS calls) AND ``acorn_bbc_hardware`` (memory-
+        # mapped I/O registers) — the two halves py8dis's bbc()
+        # combines. ``acorn.is_sideways_rom()`` is a single env.
         out = port("""
             from py8dis.commands import *
             import py8dis.acorn as acorn
@@ -111,18 +134,25 @@ class TestImports:
             acorn.is_sideways_rom()
         """)
         assert "d.use_environment('acorn_mos')" in out
+        assert "d.use_environment('acorn_bbc_hardware')" in out
         assert "d.use_environment('acorn_sideways_rom')" in out
         assert "acorn.bbc" not in out
         assert "acorn.is_sideways_rom" not in out
 
-    def test_constant_renamed_to_optional_label(self):
+    def test_constant_passes_through(self):
+        # py8dis ``constant(value, name)`` now maps to dasmos's
+        # first-class ``d.constant(value, name)`` (which records a
+        # named-value entry surfaced in the JSON ``constants``
+        # section AND an optional label for asm equate emission).
+        # Earlier rule renamed it to ``optional_label`` — that's now
+        # gone.
         out = port("""
             from py8dis.commands import *
             load(0xE000, "rom.bin", "6502")
             constant(0xFEA0, "adlc_cr1")
         """)
-        assert "d.optional_label(65184, 'adlc_cr1')" in out
-        assert "constant(" not in out
+        assert "d.constant(65184, 'adlc_cr1')" in out
+        assert "optional_label(65184, 'adlc_cr1')" not in out
 
     def test_move_renamed_to_add_move(self):
         out = port("""

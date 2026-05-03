@@ -333,26 +333,63 @@ class BeebasmRenderer(TextRenderer):
         # the top of the output emits these (plus all required
         # out-of-range labels regardless of usage).
         self._used_external_labels: set[int] = set()
+        # Runtime addresses whose label got emitted inline during the
+        # body walk (in any move's emission, or in the main walk).
+        # Consulted by :meth:`_build_explicit_label_table` to suppress
+        # equates that would duplicate an inline definition — needed
+        # because the heuristic ``_label_address_is_classification_start``
+        # uses ``b2r`` (most-recent move) and so misses inline anchors
+        # from a non-most-recent move's body emission.
+        self._inline_emitted_runtime_addrs: set[int] = set()
 
     def render(self, ir: "IntermediateRepresentation") -> TextOutput:
-        """Walk the IR's classifications in binary-address order and
-        emit a beebasm source listing.
+        """Walk the IR's classifications and emit a beebasm source
+        listing.
 
-        Emits an explicit-label table for out-of-range labels (the
-        ``name = &xxxx`` block at the top), then ``ORG`` at the start
-        of the loaded range, the marker labels
-        (``{boundary_label_prefix}start`` /
-        ``{boundary_label_prefix}end``) so the trailing ``save``
-        directive bounds exactly the disassembled range, and the
-        per-classification line(s) for each entry in the
-        :class:`ClassificationStore`.
+        Emission order (mirrors ``py8dis``'s ``mainformatter`` — see
+        ``py8dis_reference_*.asm`` fixtures, where ``org &<move-src>``
+        appears in the file BEFORE ``org &<load-start>``):
+
+        1. Explicit-label table for out-of-range labels (prepended at
+           the end so it can include externals discovered during the
+           body walk).
+        2. **Move regions FIRST**, in source-binary-address order.
+           Each move emits ``org <src>`` to position PC, the source
+           label inline, the move-enter directive (``org <dest>``),
+           the bytes of the move's source range under that move's
+           runtime mapping, and the move-exit directives
+           (``copyblock`` / ``clear`` / restore).
+        3. ``ORG`` at the start of the loaded range and the boundary
+           start marker.
+        4. The main code: the classifications in binary order,
+           SKIPPING any byte covered by a move's source range (already
+           emitted in step 2).
+        5. Boundary end marker, ``save`` directive, end-of-file
+           footer blocks.
+
+        Why moves first: a zero-page label that lives in a moved
+        region's destination has its inline ``.<name>`` anchor inside
+        the move's body. If the move's body comes AFTER main code in
+        the file, the first reference to that label from main code is
+        a forward reference; beebasm assumes absolute (3 bytes) on
+        pass 1, realises zero-page (2 bytes) on pass 2, the code
+        shifts, and the assembler errors with "Assembled object code
+        has changed between 1st and 2nd pass". Emitting moves first
+        makes every such inline anchor naturally precede its uses.
+
+        Overlapping moves (e.g. NFS-3.65's ``move(0x16, 0x9324, 0x61)``
+        and ``move(0x400, 0x9365, 0x100)``) emit each source byte
+        TWICE — once under each containing move's runtime mapping.
+        beebasm's ``copyblock`` for the second move overwrites the
+        first move's bytes in the overlap region; both renderings
+        produce identical opcode bytes for the same source bytes, so
+        byte-equality holds.
         """
         self._reset_render_state()
 
         lines: list[str] = []
         lines.extend(self.disassembly_start())
 
-        # CPU-flavour directive (e.g. ``cpu 1`` for 65C02).
         cpu_directive = self.cpu_directive_for(ir.cpu.name)
         if cpu_directive is not None:
             lines.append(cpu_directive)
@@ -360,31 +397,11 @@ class BeebasmRenderer(TextRenderer):
         try:
             load_start, load_end = ir.memory.entire_load_range()
         except Exception:
-            # No data loaded — nothing to render.
             lines.extend(self.disassembly_end())
             return TextOutput("\n".join(lines) + "\n")
 
-        # Reference analysis + auto-label generation happen in the
-        # Disassembler, not here — by this point every relevant label
-        # is in ``ir.labels`` and ``label.references`` is populated,
-        # so this renderer just consumes them. The body walk's
-        # ``_addr_text`` populates ``_used_external_labels`` for the
-        # equate-table pass at the end as it resolves operands.
-
-        # ORG + optional start marker (omitted when prefix is empty).
-        lines.extend(self.code_start(load_start, load_end, first=True))
-        if self.boundary_start_label is not None:
-            lines.append(self.inline_label(self.boundary_start_label))
-
-        # Pre-compute move-region boundaries: ``{src_binary_addr: move_def}``
-        # for every registered (non-base) move. The body walk uses this to
-        # detect when iteration enters or exits a relocated region.
         moves_by_src = self._moves_by_src_addr(ir)
-        active_move = None
-        active_move_id: int | None = None
-        active_move_src_label: str | None = None
-        active_move_dest_label: str | None = None
-        # Map MoveDefinition → 1-based id (for the byte-column
+        # Map ``MoveDefinition`` → 1-based id (for the byte-column
         # ``[<move_id>]`` suffix in py8dis format). Built once per
         # render so each move-enter doesn't recompute it.
         move_ids: dict[int, int] = {
@@ -393,212 +410,59 @@ class BeebasmRenderer(TextRenderer):
             for move in [moves_by_src[src]]
         }
 
-        # Walk classifications in order. Anything between classified
-        # addresses is unclassified-loaded data (already covered by
-        # the leftover-classification pass) so iter_classified_starts
-        # produces a complete walk.
-        for binary_addr, classification in ir.classifications.iter_classified_starts():
-            # Skip anything outside the loaded range — happens when
-            # the user adds classifications manually before loading.
-            if not (int(load_start) <= int(binary_addr) < int(load_end)):
-                continue
-
-            # Decide which move (if any) should be active for THIS
-            # binary address. Single source of truth — handles
-            # overlapping moves (most-recently-started wins), moves
-            # whose source is mid-instruction (the iteration skips
-            # past the start address), and the normal sequential
-            # case all in one place.
-            desired_move = self._desired_active_move_at(
-                int(binary_addr), moves_by_src,
+        # PHASE 1: emit move regions first, in source-binary-address
+        # order. Each move's emission is self-contained: org-to-src,
+        # source label, move-enter, body, move-exit.
+        for src_addr in sorted(moves_by_src):
+            move = moves_by_src[src_addr]
+            lines.extend(
+                self._emit_move_section(ir, move, moves_by_src, move_ids)
             )
-            if desired_move is not active_move:
-                if active_move is not None:
-                    if (
-                        desired_move is not None
-                        and int(binary_addr) < int(active_move.src_binary_addr)
-                                                + active_move.length
-                    ):
-                        import warnings
-                        warnings.warn(
-                            f"move at src=&"
-                            f"{int(desired_move.src_binary_addr):04x} "
-                            f"overlaps the still-active move at src="
-                            f"&{int(active_move.src_binary_addr):04x}; "
-                            "truncating the outer move's emission. Each "
-                            "source byte is assembled exactly once — "
-                            "under the inner move.",
-                            stacklevel=2,
-                        )
-                    lines.extend(self._emit_move_exit(
-                        active_move, active_move_src_label,
-                        active_move_dest_label,
-                    ))
-                    active_move = None
-                    active_move_id = None
-                    active_move_src_label = None
-                    active_move_dest_label = None
-                if desired_move is not None:
-                    src_addr = int(desired_move.src_binary_addr)
-                    active_move_src_label = self._first_explicit_name(
-                        ir, src_addr,
-                    )
-                    active_move_dest_label = self._first_explicit_name(
-                        ir, int(desired_move.dest_runtime_addr),
-                    )
-                    if active_move_src_label is not None:
-                        lines.append(
-                            self.inline_label(active_move_src_label),
-                        )
-                    lines.extend(self._emit_move_enter(
-                        moves_by_src, desired_move, active_move_src_label,
-                    ))
-                    active_move = desired_move
-                    active_move_id = move_ids.get(id(desired_move))
 
-            # Map binary → runtime so label lookups work even when
-            # this byte belongs to a relocation. Without a move,
-            # b2r is the identity.
-            runtime_addr = int(ir.moves.b2r(BinaryAddr(int(binary_addr))))
+        # PHASE 2: main code. ``org`` to the load start (resetting
+        # PC after the moves' restore-to-source positions left it
+        # somewhere arbitrary) plus the boundary start marker.
+        lines.extend(self.code_start(load_start, load_end, first=True))
+        if self.boundary_start_label is not None:
+            lines.append(self.inline_label(self.boundary_start_label))
 
-            # Emit BEFORE_LABEL annotations at this address.
-            for ann in ir.annotations.get_for_align(int(binary_addr), Align.BEFORE_LABEL):
-                lines.extend(self._render_annotation(ann))
+        # Skip ranges: any binary address covered by ANY move's
+        # source range was emitted in phase 1.
+        move_src_ranges = [
+            (src, src + mv.length) for src, mv in moves_by_src.items()
+        ]
 
-            # Emit any inline labels at this address (sorted for
-            # deterministic output). Labels are keyed by RUNTIME
-            # address — see D-006 / the move-manager design.
-            # Local labels are NOT emitted inline — they appear only
-            # in the explicit-definition table at the top, since
-            # beebasm has no native scoped-label syntax.
-            label = ir.labels.get_label(runtime_addr)
-            if label is not None:
-                # Emit the cross-reference summary above the label
-                # name(s) when this label is referenced from anywhere.
-                xref = self._format_inline_xref_summary(label, runtime_addr)
-                if xref is not None:
-                    lines.append(xref)
-                for name in sorted(label.explicit_name_texts()):
-                    lines.append(self.inline_label(name))
-                # Mid-instruction labels INSIDE this classification's
-                # span get expressed as ``<midname> = <base>+<offset>``
-                # right under the inline base label — matches py8dis's
-                # synthesised-base trick (``nmi1_transfer_addr =
-                # sub_cfe15+1``). Skipped inside a moved region: the
-                # base label there is anchored at the move-dest
-                # runtime, so a ``+offset`` from it would resolve to
-                # the WRONG address; py8dis keeps moved-region mid-
-                # instr labels as literal hex equates instead.
-                base_names = sorted(label.explicit_name_texts())
-                if base_names and active_move is None:
-                    base_name = base_names[0]
-                    for off in range(1, classification.length()):
-                        inner_binary = int(binary_addr) + off
-                        # Use the natural runtime address (binary_addr)
-                        # for the inner-label lookup — labels at
-                        # mid-instruction positions are registered
-                        # against their natural runtime, not the
-                        # b2r-translated one.
-                        inner_label = ir.labels.get_label(inner_binary)
-                        if inner_label is None:
-                            continue
-                        # Xref summary above the offset definition,
-                        # so a reader can see who references the
-                        # mid-instruction address.
-                        inner_xref = self._format_inline_xref_summary(
-                            inner_label, inner_binary,
-                        )
-                        if inner_xref is not None:
-                            lines.append(inner_xref)
-                        for inner_name in sorted(inner_label.explicit_name_texts()):
-                            lines.append(f"{inner_name} = {base_name}+{off}")
-
-            # Emit AFTER_LABEL annotations at this address.
-            for ann in ir.annotations.get_for_align(int(binary_addr), Align.AFTER_LABEL):
-                lines.extend(self._render_annotation(ann))
-
-            # Emit BEFORE_LINE annotations at this address.
-            for ann in ir.annotations.get_for_align(int(binary_addr), Align.BEFORE_LINE):
-                lines.extend(self._render_annotation(ann))
-
-            # Emit the classification's text line(s).
-            content_lines = self._render_classification(ir, binary_addr, classification)
-
-            # Optional byte-column annotation on the first content
-            # line: ``; <addr>: <hex bytes>  <ascii>``. Provides the
-            # py8dis-style address+raw-bytes column for review/parity.
-            inline_anns = ir.annotations.get_for_align(int(binary_addr), Align.INLINE)
-            user_inline_text = None
-            if inline_anns:
-                user_inline_text = "  ".join(
-                    self._render_annotation_inline(a) for a in inline_anns
-                )
-            if self.byte_column and content_lines:
-                # Multi-line equb / equw blocks get one byte-column
-                # annotation PER row, each showing the bytes of that
-                # row. The user inline comment still goes on the last
-                # row, AFTER its byte column.
-                line_byte_counts = self._line_byte_counts(classification)
-                cumulative = 0
-                for idx in range(len(content_lines)):
-                    line_binary = int(binary_addr) + cumulative
-                    line_byte_count = (
-                        line_byte_counts[idx]
-                        if idx < len(line_byte_counts)
-                        else classification.length() - cumulative
-                    )
-                    runtime_for_bc = int(
-                        ir.moves.b2r(BinaryAddr(line_binary))
-                    )
-                    byte_col_text = self._format_byte_column(
-                        ir, line_binary, runtime_for_bc, line_byte_count,
-                        active_move=active_move,
-                        active_move_id=active_move_id,
-                    )
-                    text = content_lines[idx]
-                    if len(text) < INSTRUCTION_PAD_WITH_BYTE_COLUMN:
-                        text = text.ljust(INSTRUCTION_PAD_WITH_BYTE_COLUMN)
-                    else:
-                        text = text + "  "
-                    text = f"{text}{byte_col_text}"
-                    is_last = idx == len(content_lines) - 1
-                    if is_last and user_inline_text:
-                        text = text.ljust(
-                            INSTRUCTION_PAD_WITH_BYTE_COLUMN
-                            + BYTE_COLUMN_TOTAL_WIDTH,
-                        ) + f"  {user_inline_text}"
-                        user_inline_text = None
-                    content_lines[idx] = text
-                    cumulative += line_byte_count
-
-            # Append any INLINE user comment to the last content line
-            # (preserves multi-line equb behavior). When byte_column
-            # placed it on the last line above, user_inline_text is
-            # cleared.
-            if user_inline_text and content_lines:
-                last = content_lines[-1]
-                if len(last) < INLINE_COMMENT_COLUMN:
-                    last = last.ljust(INLINE_COMMENT_COLUMN)
-                else:
-                    last = last + "  "
-                content_lines[-1] = f"{last}{user_inline_text}"
-
-            lines.extend(content_lines)
-
-            # Emit AFTER_LINE annotations at this address.
-            for ann in ir.annotations.get_for_align(int(binary_addr), Align.AFTER_LINE):
-                lines.extend(self._render_annotation(ann))
-
-        # If iteration ended while still inside a relocated region,
-        # emit its close-out directives now.
-        if active_move is not None:
-            lines.extend(self._emit_move_exit(
-                active_move, active_move_src_label, active_move_dest_label,
+        # Track PC through the walk so we can emit ``org &<addr>``
+        # whenever we resume after a skipped (move-source) range —
+        # mirrors py8dis, which emits ``org &9665`` to resume the
+        # main walk at the byte just after the last move source in
+        # NFS-3.65 (line 6545 of the reference output).
+        expected_pc = int(load_start)
+        for binary_addr, classification in ir.classifications.iter_classified_starts():
+            ba = int(binary_addr)
+            if not (int(load_start) <= ba < int(load_end)):
+                continue
+            if any(s <= ba < e for s, e in move_src_ranges):
+                continue
+            if ba != expected_pc:
+                lines.append("")
+                lines.append(f"    org {self.hex(ba)}")
+                expected_pc = ba
+            lines.extend(self._emit_classification_at(
+                ir, ba, classification,
+                active_move=None, active_move_id=None,
             ))
-            active_move = None
+            expected_pc = ba + classification.length()
 
-        # Optional end marker, save directive, any trailing close-out.
+        # Position PC at load_end before emitting the boundary end
+        # marker so the label takes the load_end value (otherwise the
+        # marker lands wherever the last classification's last byte
+        # ended, which can be earlier when a move source extends to
+        # load_end).
         if self.boundary_end_label is not None:
+            if expected_pc != int(load_end):
+                lines.append("")
+                lines.append(f"    org {self.hex(int(load_end))}")
             lines.append(self.inline_label(self.boundary_end_label))
         lines.append("")
         lines.append(self._save_directive(load_start, load_end))
@@ -633,7 +497,249 @@ class BeebasmRenderer(TextRenderer):
             header = [f"{self.comment_prefix()} Memory locations"]
             lines = header + table_lines + [""] + lines
 
+        # Constants (registered via Disassembler.constant) are
+        # tracked separately from labels — emit them as their own
+        # equate block above the memory-map. Mirrors py8dis where
+        # constants live in disassembly.constants and emit as
+        # ``name = value`` lines distinct from label equates.
+        constant_lines = self._build_constant_equates(ir)
+        if constant_lines:
+            header = [f"{self.comment_prefix()} Constants"]
+            lines = header + constant_lines + [""] + lines
+
         return TextOutput("\n".join(lines) + "\n")
+
+    def _build_constant_equates(self, ir) -> list[str]:
+        """``name = value`` lines for every registered constant
+        (deduped by name — multiple registrations of the same
+        ``(value, name)`` pair, common when several JSR sites trigger
+        the same OSBYTE-hook substitution, collapse to one equate).
+        Emitted in registration order to match py8dis output.
+        """
+        seen: set[str] = set()
+        lines: list[str] = []
+        # Compute name column width across all unique names.
+        unique = []
+        for c in ir.constants:
+            if c.name in seen:
+                continue
+            seen.add(c.name)
+            unique.append(c)
+        if not unique:
+            return []
+        max_name_len = max(len(c.name) for c in unique)
+        for c in unique:
+            line = (
+                f"{c.name.ljust(max_name_len)} = {self.hex(int(c.value))}"
+            )
+            if c.comment:
+                line = f"{line}  {self.comment_prefix()} " + " ".join(
+                    c.comment.split()
+                )
+            lines.append(line)
+        return lines
+
+    def _emit_move_section(
+        self, ir, move, moves_by_src, move_ids,
+    ) -> list[str]:
+        """Emit one move's full body: ``org <src>``, source label,
+        ``org <dest>``, the move's classifications, ``copyblock`` /
+        ``clear`` / restore.
+
+        Each move's body walks the classifications in
+        ``[src, src + length)`` with this move forced as the active
+        runtime mapping (so ``b2r`` for those bytes routes through
+        THIS move's ``dest_runtime_addr``, regardless of whether
+        another later-registered move's source range also overlaps
+        these binary addresses — overlap handling is by emitting each
+        containing move's view of the bytes; beebasm's ``copyblock``
+        for the second move overwrites the first in the file).
+        """
+        lines: list[str] = []
+        src_addr = int(move.src_binary_addr)
+        end = src_addr + move.length
+        src_label = self._first_explicit_name(ir, src_addr)
+
+        # Position PC at the move's source binary address. Every
+        # move emits this so the moves can appear in any order in
+        # the file (each one announces where its source bytes live).
+        lines.append("")
+        lines.append(f"    org {self.hex(src_addr)}")
+        if src_label is not None:
+            lines.append(self.inline_label(src_label))
+            self._inline_emitted_runtime_addrs.add(src_addr)
+
+        lines.extend(self._emit_move_enter(moves_by_src, move, src_label))
+        active_move_id = move_ids.get(id(move))
+
+        # Walk classifications inside the move's source range. The
+        # source label was already emitted above (it's at runtime
+        # src_addr, no move) — the body walk's lookup at the first
+        # byte uses the move's mapping (runtime = dest_addr) so it
+        # naturally sees a different label (or none).
+        for binary_addr, classification in ir.classifications.iter_classified_starts():
+            ba = int(binary_addr)
+            if not (src_addr <= ba < end):
+                continue
+            lines.extend(self._emit_classification_at(
+                ir, ba, classification,
+                active_move=move, active_move_id=active_move_id,
+            ))
+
+        active_move_dest_label = self._first_explicit_name(
+            ir, int(move.dest_runtime_addr),
+        )
+        lines.extend(self._emit_move_exit(
+            move, src_label, active_move_dest_label,
+        ))
+        return lines
+
+    def _emit_classification_at(
+        self,
+        ir,
+        binary_addr: int,
+        classification,
+        *,
+        active_move,
+        active_move_id: int | None,
+    ) -> list[str]:
+        """Emit one classification's full output: surrounding
+        annotations, inline labels, the rendered text line(s), the
+        optional byte-column annotation, and any inline user comment.
+
+        ``active_move`` is the move whose runtime mapping should be
+        used for label lookups at this address (None outside any
+        move).
+        """
+        lines: list[str] = []
+
+        # Resolve runtime via the SPECIFIC active move when given —
+        # ``ir.moves.b2r`` would pick the most-recently-registered
+        # move covering this binary address, which under overlap
+        # would route move 1's emission through move 2's mapping.
+        if active_move is not None:
+            runtime_addr = (
+                int(active_move.dest_runtime_addr)
+                + (binary_addr - int(active_move.src_binary_addr))
+            )
+        else:
+            runtime_addr = int(ir.moves.b2r(BinaryAddr(binary_addr)))
+
+        for ann in ir.annotations.get_for_align(binary_addr, Align.BEFORE_LABEL):
+            lines.extend(self._render_annotation(ann))
+
+        # Inline labels at this runtime address.
+        label = ir.labels.get_label(runtime_addr)
+        if label is not None:
+            xref = self._format_inline_xref_summary(label, runtime_addr)
+            if xref is not None:
+                lines.append(xref)
+            names = sorted(label.explicit_name_texts())
+            for name in names:
+                lines.append(self.inline_label(name))
+            if names:
+                self._inline_emitted_runtime_addrs.add(runtime_addr)
+            # Mid-instruction labels INSIDE this classification's span
+            # get expressed as ``<midname> = <base>+<offset>``. Works
+            # inside a moved region too: both the base and the
+            # mid-instr label are inline-anchored at runtime
+            # ``move.dest + (binary_addr - move.src) + offset`` and
+            # beebasm evaluates ``base+offset`` at assembly time
+            # against the inline anchor's PC, which IS at the base's
+            # runtime. (Mirrors py8dis line 331 of the NFS reference:
+            # ``tube_cmd_lo = tube_dispatch_cmd+1`` inside move 1.)
+            base_names = sorted(label.explicit_name_texts())
+            if base_names:
+                base_name = base_names[0]
+                for off in range(1, classification.length()):
+                    inner_binary = binary_addr + off
+                    if active_move is not None:
+                        inner_runtime = (
+                            int(active_move.dest_runtime_addr)
+                            + (inner_binary - int(active_move.src_binary_addr))
+                        )
+                    else:
+                        inner_runtime = inner_binary
+                    inner_label = ir.labels.get_label(inner_runtime)
+                    if inner_label is None:
+                        continue
+                    inner_xref = self._format_inline_xref_summary(
+                        inner_label, inner_runtime,
+                    )
+                    if inner_xref is not None:
+                        lines.append(inner_xref)
+                    for inner_name in sorted(inner_label.explicit_name_texts()):
+                        lines.append(f"{inner_name} = {base_name}+{off}")
+                    self._inline_emitted_runtime_addrs.add(inner_runtime)
+
+        for ann in ir.annotations.get_for_align(binary_addr, Align.AFTER_LABEL):
+            lines.extend(self._render_annotation(ann))
+        for ann in ir.annotations.get_for_align(binary_addr, Align.BEFORE_LINE):
+            lines.extend(self._render_annotation(ann))
+
+        content_lines = self._render_classification(
+            ir, binary_addr, classification, active_move=active_move,
+        )
+
+        inline_anns = ir.annotations.get_for_align(binary_addr, Align.INLINE)
+        user_inline_text = None
+        if inline_anns:
+            user_inline_text = "  ".join(
+                self._render_annotation_inline(a) for a in inline_anns
+            )
+        if self.byte_column and content_lines:
+            line_byte_counts = self._line_byte_counts(classification)
+            cumulative = 0
+            for idx in range(len(content_lines)):
+                line_binary = binary_addr + cumulative
+                line_byte_count = (
+                    line_byte_counts[idx]
+                    if idx < len(line_byte_counts)
+                    else classification.length() - cumulative
+                )
+                if active_move is not None:
+                    runtime_for_bc = (
+                        int(active_move.dest_runtime_addr)
+                        + (line_binary - int(active_move.src_binary_addr))
+                    )
+                else:
+                    runtime_for_bc = int(
+                        ir.moves.b2r(BinaryAddr(line_binary))
+                    )
+                byte_col_text = self._format_byte_column(
+                    ir, line_binary, runtime_for_bc, line_byte_count,
+                    active_move=active_move,
+                    active_move_id=active_move_id,
+                )
+                text = content_lines[idx]
+                if len(text) < INSTRUCTION_PAD_WITH_BYTE_COLUMN:
+                    text = text.ljust(INSTRUCTION_PAD_WITH_BYTE_COLUMN)
+                else:
+                    text = text + "  "
+                text = f"{text}{byte_col_text}"
+                is_last = idx == len(content_lines) - 1
+                if is_last and user_inline_text:
+                    text = text.ljust(
+                        INSTRUCTION_PAD_WITH_BYTE_COLUMN
+                        + BYTE_COLUMN_TOTAL_WIDTH,
+                    ) + f"  {user_inline_text}"
+                    user_inline_text = None
+                content_lines[idx] = text
+                cumulative += line_byte_count
+
+        if user_inline_text and content_lines:
+            last = content_lines[-1]
+            if len(last) < INLINE_COMMENT_COLUMN:
+                last = last.ljust(INLINE_COMMENT_COLUMN)
+            else:
+                last = last + "  "
+            content_lines[-1] = f"{last}{user_inline_text}"
+
+        lines.extend(content_lines)
+
+        for ann in ir.annotations.get_for_align(binary_addr, Align.AFTER_LINE):
+            lines.extend(self._render_annotation(ann))
+        return lines
 
     def _build_explicit_label_table(self, ir) -> list[str]:
         """Return ``name = &xxxx`` definition lines for out-of-range
@@ -677,6 +783,17 @@ class BeebasmRenderer(TextRenderer):
             # for indexed addressing) has no inline anchor — it goes
             # in the table as ``name = &xxxx``. Out-of-range labels
             # obey the required/optional rule as before.
+            #
+            # Authoritative test: did the body walk actually emit the
+            # inline anchor? Tracked in ``_inline_emitted_runtime_addrs``
+            # during the walk. The fallback heuristic
+            # ``_label_address_is_classification_start`` is kept for
+            # the rare case of labels whose address has no body-walk
+            # emission yet (e.g. user added them after rendering
+            # started — currently impossible but the codepath is
+            # defensive).
+            if runtime_addr in self._inline_emitted_runtime_addrs:
+                continue
             inline_anchor = (
                 in_range
                 and self._label_address_is_classification_start(ir, runtime_addr)
@@ -755,37 +872,6 @@ class BeebasmRenderer(TextRenderer):
         )
 
     # -- move-aware emission --------------------------------------------
-
-    @staticmethod
-    def _desired_active_move_at(
-        binary_addr: int,
-        moves_by_src: dict[int, "MoveDefinition"],
-    ) -> "MoveDefinition | None":
-        """Pick the move that should be active when emitting the byte
-        at ``binary_addr`` — the one whose source range contains the
-        address, preferring the most-recently-started one when several
-        overlap (matching py8dis's "inner move wins" semantics).
-
-        Returning ``None`` means we should be outside any move at
-        this position. The body walk transitions to this state by
-        emitting the appropriate enter/exit directives.
-
-        Why a per-address recomputation rather than tracking
-        enter/exit events: it correctly handles three otherwise-
-        awkward cases — overlapping moves (covered by "preferring
-        the most recent"), a move whose source starts mid-
-        instruction (covered by treating any address inside the
-        range as needing the move active, not just the start), and
-        adjacent moves where one ends exactly where the next begins
-        (covered by the < end / >= start arithmetic).
-        """
-        candidates = [
-            mv for src, mv in moves_by_src.items()
-            if src <= binary_addr < src + mv.length
-        ]
-        if not candidates:
-            return None
-        return max(candidates, key=lambda mv: int(mv.src_binary_addr))
 
     @staticmethod
     def _moves_by_src_addr(ir) -> dict[int, "MoveDefinition"]:
@@ -1130,6 +1216,15 @@ class BeebasmRenderer(TextRenderer):
     def _render_annotation(self, ann) -> list[str]:
         """Render a Comment / Annotation / Banner as standalone line(s).
 
+        Comment text is treated as Markdown — full CommonMark plus
+        GFM tables, plus the custom ``[label](address:HEX[?hex])``
+        cross-reference URI scheme — and rendered down to plaintext
+        for the asm comment. The structured JSON renderer (see
+        ``JsonRenderer``) keeps the source markdown verbatim so
+        downstream HTML processors can resolve the anchors. See
+        ``acornaeology.github.io/AUTHORING.md`` §1, §2 for the
+        markdown conventions.
+
         Always returns a list so multi-line entries (Banner) and
         single-line entries (Comment, Annotation) share the same
         caller pattern.
@@ -1138,6 +1233,7 @@ class BeebasmRenderer(TextRenderer):
             return self._render_banner_lines(ann)
         if isinstance(ann, Comment):
             indent = " " * (ann.indent * 4) if ann.indent else ""
+            text = self._comment_text_for_asm(ann, inline=False)
             # Multi-line comment text gets one ``;`` line per source
             # line so beebasm doesn't choke on a bare second/third
             # line. Empty source lines emit just ``;`` (no trailing
@@ -1145,7 +1241,7 @@ class BeebasmRenderer(TextRenderer):
             return [
                 f"{indent}{self.comment_prefix()} {line}" if line
                 else f"{indent}{self.comment_prefix()}"
-                for line in ann.text.split("\n")
+                for line in text.split("\n")
             ]
         if isinstance(ann, Annotation):
             return [ann.text]
@@ -1158,7 +1254,8 @@ class BeebasmRenderer(TextRenderer):
         multi-line); attach them at one of the standalone alignments.
         """
         if isinstance(ann, Comment):
-            return f"{self.comment_prefix()} {ann.text}"
+            text = self._comment_text_for_asm(ann, inline=True)
+            return f"{self.comment_prefix()} {text}"
         if isinstance(ann, Annotation):
             return ann.text
         if isinstance(ann, Banner):
@@ -1167,6 +1264,39 @@ class BeebasmRenderer(TextRenderer):
                 "Align position (BEFORE_LABEL, AFTER_LABEL, etc.)"
             )
         raise TypeError(f"unknown annotation type: {type(ann).__name__}")
+
+    @staticmethod
+    def _comment_text_for_asm(ann: Comment, *, inline: bool) -> str:
+        """Convert a Comment's source text to asm-suitable plaintext.
+
+        Honours the Comment's ``word_wrap`` flag:
+
+        - ``word_wrap=True`` (default) → full Markdown parse via
+          :func:`dasmos.core.markdown_asm.markdown_to_asm_text`. Use
+          when the source text is prose / list / table content.
+        - ``word_wrap=False`` → regex-only address-link stripper via
+          :func:`dasmos.core.markdown_asm.strip_address_uri_links`.
+          Use when the source text is shape-sensitive (banner
+          separators with rows of asterisks would be munged by full
+          markdown parsing).
+
+        Inline comments collapse all whitespace to single spaces so
+        they fit on the trailing position after the instruction.
+        """
+        from dasmos.core.markdown_asm import (
+            markdown_to_asm_text,
+            strip_address_uri_links,
+        )
+        if not ann.word_wrap:
+            text = strip_address_uri_links(ann.text)
+            if inline:
+                # Collapse whitespace for inline rendering even in
+                # word_wrap=False mode — the trailing column on the
+                # instruction line is the constraint.
+                import re as _re
+                text = _re.sub(r"\s+", " ", text).strip()
+            return text
+        return markdown_to_asm_text(ann.text, inline=inline)
 
     def _render_banner_lines(self, banner: Banner) -> list[str]:
         """Render a Banner as a multi-line decorated comment block.
@@ -1215,11 +1345,21 @@ class BeebasmRenderer(TextRenderer):
     # -- per-classification rendering -------------------------------------
 
     def _render_classification(
-        self, ir, binary_addr, c
+        self, ir, binary_addr, c, *, active_move=None,
     ) -> list[str]:
-        """Dispatch to the right per-type rendering method."""
+        """Dispatch to the right per-type rendering method.
+
+        ``active_move`` (when given) is the move whose runtime mapping
+        should be used for relative-branch arithmetic — needed when
+        an instruction's bytes appear under more than one move (the
+        same source byte sequence is emitted under each containing
+        move's mapping during phase 1, and a relative branch resolves
+        to a different runtime in each).
+        """
         if isinstance(c, Opcode):
-            return [self._render_opcode(ir, binary_addr, c)]
+            return [self._render_opcode(
+                ir, binary_addr, c, active_move=active_move,
+            )]
         if isinstance(c, Byte):
             return self._render_byte(ir, binary_addr, c)
         if isinstance(c, Word):
@@ -1232,15 +1372,21 @@ class BeebasmRenderer(TextRenderer):
             f"BeebasmRenderer does not know how to render {type(c).__name__}"
         )
 
-    def _render_opcode(self, ir, binary_addr, opcode: Opcode) -> str:
+    def _render_opcode(
+        self, ir, binary_addr, opcode: Opcode, *, active_move=None,
+    ) -> str:
         """Format a single instruction line."""
         mnemonic = opcode.default_mnemonic()
-        operand = self._render_operand(ir, binary_addr, opcode)
+        operand = self._render_operand(
+            ir, binary_addr, opcode, active_move=active_move,
+        )
         if operand:
             return f"    {mnemonic} {operand}"
         return f"    {mnemonic}"
 
-    def _render_operand(self, ir, binary_addr, opcode: Opcode) -> str:
+    def _render_operand(
+        self, ir, binary_addr, opcode: Opcode, *, active_move=None,
+    ) -> str:
         """Format the operand for an opcode based on its addressing
         mode.
 
@@ -1270,6 +1416,7 @@ class BeebasmRenderer(TextRenderer):
         # punctuation like # or parens).
         symbol = self._resolve_operand_symbol(
             ir, binary_addr, opcode, operand_addr,
+            active_move=active_move,
         )
 
         # Wrap with mode-specific syntax.
@@ -1299,13 +1446,17 @@ class BeebasmRenderer(TextRenderer):
         )
 
     def _resolve_operand_symbol(
-        self, ir, binary_addr, opcode, operand_addr,
+        self, ir, binary_addr, opcode, operand_addr, *, active_move=None,
     ) -> str:
         """Resolve the unwrapped operand symbol — expression / label /
         hex literal — without applying mode-specific punctuation.
 
         ``binary_addr`` is the address of the opcode byte; passed
         through to label lookup for local-label scope checking.
+        ``active_move`` (optional) is the move whose runtime mapping
+        the relative-branch arithmetic should use; without it we fall
+        back to ``ir.moves.b2r`` which picks the most-recently-
+        registered containing move.
         """
         # 1. User-supplied expression takes precedence over everything.
         expr = ir.expressions.get_or_none(operand_addr)
@@ -1331,7 +1482,25 @@ class BeebasmRenderer(TextRenderer):
             offset = ir.memory.get_u8(operand_addr)
             if offset >= 0x80:
                 offset -= 0x100
-            target = int(binary_addr) + opcode.length() + offset
+            # Mirrors py8dis OpcodeConditionalBranch.target: arithmetic
+            # in runtime space so a branch inside a moved region
+            # resolves to the right runtime label. With moves-first
+            # emission, the SAME source byte may be emitted under more
+            # than one move (overlap region); ``active_move`` pins
+            # this resolution to the move whose body we're currently
+            # rendering. Outside a move (or when called without
+            # active_move), b2r is the identity / picks the only/
+            # most-recent containing move.
+            if active_move is not None:
+                base_runtime = (
+                    int(active_move.dest_runtime_addr)
+                    + (int(binary_addr) - int(active_move.src_binary_addr))
+                )
+            else:
+                base_runtime = int(
+                    ir.moves.b2r(BinaryAddr(int(binary_addr)))
+                )
+            target = base_runtime + opcode.length() + offset
             return self._addr_text(
                 ir, target, width=16, using_binary_addr=using_addr,
             )

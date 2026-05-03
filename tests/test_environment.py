@@ -19,6 +19,9 @@ from dasmos.environment import (
     environment_names,
     environment_type,
 )
+from dasmos.ext.environments.acorn_bbc_hardware import (
+    AcornBbcHardwareEnvironment,
+)
 from dasmos.ext.environments.acorn_mos import AcornMosEnvironment
 
 
@@ -155,15 +158,21 @@ class TestAcornMosCoverage:
             )
 
     def test_vector_table_pairs(self):
-        # Each vector occupies 2 bytes; both halves are named.
+        # Each vector occupies 2 bytes. Only the BASE address is
+        # registered as a label; the high byte gets rendered as
+        # ``<name>+1`` via the renderer's base+offset fallback
+        # (matches py8dis-fork's ``ol2`` convention).
         for addr, name in [
             (0x0200, "userv"), (0x020e, "wrchv"),
             (0x0214, "argsv"), (0x0220, "evntv"),
         ]:
             label_lo = self.d.labels.get_label(addr)
-            label_hi = self.d.labels.get_label(addr + 1)
             assert name in label_lo.explicit_name_texts()
-            assert f"{name}_hi" in label_hi.explicit_name_texts()
+            # No ``<name>_hi`` label registered.
+            label_hi = self.d.labels.get_label(addr + 1)
+            assert label_hi is None or (
+                f"{name}_hi" not in label_hi.explicit_name_texts()
+            )
 
     def test_os_call_entries(self):
         for addr, name in [
@@ -174,14 +183,14 @@ class TestAcornMosCoverage:
             assert name in self.d.labels.get_label(addr).explicit_name_texts()
 
     def test_count_matches_expected(self):
-        # 3 workspace + 27 vectors * 2 + 21 OS calls = 78 distinct
-        # addresses with at least one name. Pinning the count guards
-        # against accidental drift.
+        # 3 workspace + 27 vectors (base only — high byte uses the
+        # renderer's ``<base>+1`` fallback) + 21 OS calls = 51
+        # distinct addresses with at least one name.
         named_addrs = sum(
             1 for label in self.d.labels._labels.values()
             if label.explicit_name_texts()
         )
-        assert named_addrs == 3 + 27 * 2 + 21
+        assert named_addrs == 3 + 27 + 21
 
 
 class TestAcornSidewaysRom:
@@ -342,3 +351,200 @@ class TestAcornSidewaysRom:
         assert "oswrch" in d.labels.get_label(0xffee).explicit_name_texts()
         # acorn_sideways_rom contribution.
         assert "rom_header" in d.labels.get_label(0x8000).explicit_name_texts()
+
+
+class TestAcornBbcHardwareEnvironment:
+    """BBC Micro hardware-register Environment: registers the
+    memory-mapped I/O label set py8dis-fork's
+    ``hardware(MACHINE_BBC)`` installs (CRTC, ACIA, station ID,
+    video ULA, ROMSEL, the two VIAs, FDC, Econet ADLC, ADC, Tube
+    control, CUBE Tube). Closes the per-operand resolution gap for
+    any disassembled BBC ROM that touches hardware (NFS-3.65, Tube
+    Client, Econet Bridge, …).
+    """
+
+    def setup_method(self):
+        self.d = Disassembler.create(
+            cpu="nmos6502", environments=["acorn_bbc_hardware"],
+        )
+
+    def test_loadable_via_stevedore(self):
+        env = create_environment("acorn_bbc_hardware")
+        assert isinstance(env, AcornBbcHardwareEnvironment)
+
+    def test_listed_among_environment_names(self):
+        assert "acorn_bbc_hardware" in environment_names()
+
+    def test_tube_register_labels(self):
+        for addr, name in [
+            (0xfee0, "tube_status_1_and_tube_control"),
+            (0xfee1, "tube_data_register_1"),
+            (0xfee3, "tube_data_register_2"),
+            (0xfee7, "tube_data_register_4"),
+        ]:
+            assert name in self.d.labels.get_label(addr).explicit_name_texts(), (
+                f"missing tube label {name} at &{addr:04x}"
+            )
+
+    def test_system_via_register_pair(self):
+        assert "system_via_orb_irb" in self.d.labels.get_label(0xfe40).explicit_name_texts()
+        assert "system_via_acr" in self.d.labels.get_label(0xfe4b).explicit_name_texts()
+        assert "system_via_ifr" in self.d.labels.get_label(0xfe4d).explicit_name_texts()
+        assert "system_via_ier" in self.d.labels.get_label(0xfe4e).explicit_name_texts()
+
+    def test_user_via_register_pair(self):
+        assert "user_via_orb_irb" in self.d.labels.get_label(0xfe60).explicit_name_texts()
+        assert "user_via_ier" in self.d.labels.get_label(0xfe6e).explicit_name_texts()
+
+    def test_econet_adlc_labels(self):
+        for addr, name in [
+            (0xfea0, "econet_control1_or_status1"),
+            (0xfea1, "econet_control23_or_status2"),
+            (0xfea2, "econet_data_continue_frame"),
+            (0xfea3, "econet_data_terminate_frame"),
+        ]:
+            assert name in self.d.labels.get_label(addr).explicit_name_texts()
+
+    def test_video_ula_labels(self):
+        assert "video_ula_control" in self.d.labels.get_label(0xfe20).explicit_name_texts()
+        assert "video_ula_palette" in self.d.labels.get_label(0xfe21).explicit_name_texts()
+
+    def test_romsel_label(self):
+        assert "romsel" in self.d.labels.get_label(0xfe30).explicit_name_texts()
+
+    def test_station_id_label(self):
+        assert "station_id_disable_net_nmis" in (
+            self.d.labels.get_label(0xfe18).explicit_name_texts()
+        )
+
+    def test_composes_with_acorn_mos(self):
+        d = Disassembler.create(
+            cpu="nmos6502",
+            environments=["acorn_mos", "acorn_bbc_hardware"],
+        )
+        assert "oswrch" in d.labels.get_label(0xffee).explicit_name_texts()
+        assert "tube_data_register_1" in d.labels.get_label(0xfee1).explicit_name_texts()
+
+
+class TestAcornMosOsCallHooks:
+    """OSBYTE / OSWORD / OSFIND / OSFILE / OSGBPB hooks installed by
+    the ``acorn_mos`` Environment. When the trace encounters a
+    ``JSR <oscall>`` immediately preceded by ``LDA #imm`` (or
+    ``LDX``/``LDY`` for OSGBPB / OSFILE etc.), the hook looks up
+    the immediate in the call-specific enum table and:
+
+      1. Registers a :meth:`Disassembler.constant` for the
+         (value, name) pair (so it appears in the JSON
+         ``constants`` section + the asm equate table).
+      2. Registers an auto-expression at the LDA's operand byte
+         so the rendered listing reads as ``lda #osbyte_<name>``
+         instead of ``lda #&xx``.
+
+    Mirrors py8dis-fork's ``osbyte_hook`` / ``osword_hook`` etc.
+    """
+
+    @staticmethod
+    def _make(tmp_path, program: bytes, load_addr: int = 0x1000):
+        """Helper: write ``program`` to a binary, load via dasmos
+        with ``acorn_mos`` active, set entry at the load addr.
+        """
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(program)
+        d = Disassembler.create(
+            cpu="nmos6502", environments=["acorn_mos"],
+        )
+        d.load(bin_path, load_addr)
+        d.entry(load_addr)
+        return d
+
+    def test_osbyte_hook_installs_constant_and_expression(self, tmp_path):
+        # LDA #&7c ; JSR osbyte ; RTS
+        # &7c is osbyte_clear_escape
+        d = self._make(
+            tmp_path,
+            bytes([0xa9, 0x7c, 0x20, 0xf4, 0xff, 0x60]),
+            load_addr=0x1000,
+        )
+        ir = d.disassemble()
+        # The constant got registered.
+        assert any(
+            c.name == "osbyte_clear_escape" and c.value == 0x7c
+            for c in ir.constants
+        ), "osbyte hook did not register the constant"
+        # The auto-expression at the LDA's operand byte resolves to
+        # the constant name (so the rendered ``lda #&7c`` becomes
+        # ``lda #osbyte_clear_escape``).
+        assert ir.expressions.get_or_none(0x1001) == "osbyte_clear_escape"
+
+    def test_osbyte_hook_unknown_value_does_nothing(self, tmp_path):
+        # LDA #&20 (not in osbyte_enum) ; JSR osbyte ; RTS
+        d = self._make(
+            tmp_path,
+            bytes([0xa9, 0x20, 0x20, 0xf4, 0xff, 0x60]),
+            load_addr=0x1000,
+        )
+        ir = d.disassemble()
+        # No constant registered for &20.
+        assert not any(c.value == 0x20 for c in ir.constants)
+        # No expression at the LDA's operand byte.
+        assert ir.expressions.get_or_none(0x1001) is None
+
+    def test_osbyte_hook_no_preceding_lda_imm_does_nothing(self, tmp_path):
+        # NOP ; NOP ; JSR osbyte (no LDA #imm before) ; RTS
+        d = self._make(
+            tmp_path,
+            bytes([0xea, 0xea, 0x20, 0xf4, 0xff, 0x60]),
+            load_addr=0x1000,
+        )
+        ir = d.disassemble()
+        assert ir.constants == []
+
+    def test_osword_hook_installs_constant_and_expression(self, tmp_path):
+        # LDA #&05 ; JSR osword ; RTS
+        # &05 is osword_read_io_memory
+        d = self._make(
+            tmp_path,
+            bytes([0xa9, 0x05, 0x20, 0xf1, 0xff, 0x60]),
+            load_addr=0x1000,
+        )
+        ir = d.disassemble()
+        assert any(
+            c.name == "osword_read_io_memory" and c.value == 0x05
+            for c in ir.constants
+        )
+        assert ir.expressions.get_or_none(0x1001) == "osword_read_io_memory"
+
+    def test_osword_hook_recognises_xy_param_block_address(self, tmp_path):
+        # OSWORD calling convention: LDA #call ; LDX #lo ; LDY #hi ;
+        # JSR osword. (X,Y) form the parameter block address.
+        # When the (X,Y) immediate values land at a labelled address,
+        # the analyzer registers ``<(label)`` / ``>(label)`` expressions
+        # at the LDX / LDY operand bytes so they render as
+        # ``ldx #<(myblock)`` / ``ldy #>(myblock)`` (matches py8dis
+        # ``xy_addr`` helper).
+        # LDA #&00 ; LDX #&80 ; LDY #&12 ; JSR osword ; RTS
+        # XY = &1280. We label &1280 as ``myblock``.
+        d = self._make(
+            tmp_path,
+            bytes([0xa9, 0x00, 0xa2, 0x80, 0xa0, 0x12, 0x20, 0xf1, 0xff, 0x60]),
+            load_addr=0x1000,
+        )
+        d.optional_label(0x1280, "myblock")
+        ir = d.disassemble()
+        # The LDX's operand at &1003 carries ``<(myblock)``.
+        assert ir.expressions.get_or_none(0x1003) == "<(myblock)"
+        # The LDY's operand at &1005 carries ``>(myblock)``.
+        assert ir.expressions.get_or_none(0x1005) == ">(myblock)"
+
+    def test_osword_hook_xy_no_label_does_nothing(self, tmp_path):
+        # Same shape but no label at &1280 — the analyzer should
+        # leave the LDX/LDY operands as literal hex (no
+        # auto-expression registered).
+        d = self._make(
+            tmp_path,
+            bytes([0xa9, 0x00, 0xa2, 0x80, 0xa0, 0x12, 0x20, 0xf1, 0xff, 0x60]),
+            load_addr=0x1000,
+        )
+        ir = d.disassemble()
+        assert ir.expressions.get_or_none(0x1003) is None
+        assert ir.expressions.get_or_none(0x1005) is None

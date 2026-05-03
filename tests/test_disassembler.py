@@ -230,6 +230,143 @@ class TestExpressions:
 
 
 # ---------------------------------------------------------------------------
+# constants — named values (BBC hardware addresses, magic numbers)
+# ---------------------------------------------------------------------------
+
+
+class TestConstants:
+    """``constant(value, name)`` records a named value AND registers
+    an optional label at the same address (so the asm equate emission
+    is unchanged from when the porter routed py8dis ``constant()``
+    calls to ``optional_label()``). The constants list itself is the
+    additional handle the JSON renderer reads.
+    """
+
+    def test_records_named_value(self):
+        d = Disassembler(cpu=_StubCpu())
+        d.constant(0xFE60, "system_via_orb")
+        constants = d.constants
+        assert len(constants) == 1
+        assert constants[0].name == "system_via_orb"
+        assert constants[0].value == 0xFE60
+        assert constants[0].comment is None
+
+    def test_records_optional_comment(self):
+        d = Disassembler(cpu=_StubCpu())
+        d.constant(0xFE60, "system_via_orb", comment="System VIA port B")
+        assert d.constants[0].comment == "System VIA port B"
+
+    def test_does_not_pollute_label_space(self):
+        # constant() must NOT add a label at the value's runtime
+        # address — that would cause hook-registered constants
+        # (e.g. ``osbyte_clear_escape = &7c``) to make any
+        # unrelated zero-page operand at &7c suddenly resolve as
+        # ``lda osbyte_clear_escape`` (false positive). Mirrors
+        # py8dis where ``constant()`` populates a separate
+        # ``disassembly.constants`` list, not LabelManager.
+        d = Disassembler(cpu=_StubCpu())
+        d.constant(0x7c, "osbyte_clear_escape")
+        # The constant is recorded.
+        assert d.constants[0].name == "osbyte_clear_escape"
+        # But NO label was added at runtime &7c.
+        assert d.labels.get_label(0x7c) is None
+
+    def test_constants_exposed_on_ir(self):
+        d = Disassembler(cpu=_StubCpu())
+        d.constant(0xFE60, "system_via_orb")
+        ir = d.disassemble()
+        assert ir.constants[0].name == "system_via_orb"
+
+    def test_constants_post_disassemble_raises(self):
+        d = Disassembler(cpu=_StubCpu())
+        d.disassemble()
+        with pytest.raises(DisassemblerError, match="frozen"):
+            d.constant(0xFE60, "system_via_orb")
+
+
+# ---------------------------------------------------------------------------
+# subroutines — entry points with name + optional banner metadata
+# ---------------------------------------------------------------------------
+
+
+class TestSubroutines:
+    """``subroutine()`` already seeds the trace and registers a label
+    + banner annotation. The new behaviour is a SubroutineEntry record
+    on a parallel ``ir.subroutines`` list — needed for the JSON
+    renderer's ``subroutines`` section (mirrors py8dis-fork schema).
+    """
+
+    def test_records_subroutine_entry(self):
+        d = Disassembler(cpu=_StubCpu())
+        d.subroutine(0x8000, "init")
+        subs = d.subroutines
+        assert len(subs) == 1
+        assert subs[0].runtime_addr == 0x8000
+        assert subs[0].name == "init"
+
+    def test_records_banner_metadata(self):
+        d = Disassembler(cpu=_StubCpu())
+        d.subroutine(
+            0x8000, "init",
+            title="Initialise NMI workspace",
+            description="Copies 97 bytes from ROM to ZP.",
+            on_entry={"a": "must be zero"},
+            on_exit={"y": "preserved"},
+        )
+        sub = d.subroutines[0]
+        assert sub.title == "Initialise NMI workspace"
+        assert sub.description == "Copies 97 bytes from ROM to ZP."
+        assert sub.on_entry == {"a": "must be zero"}
+        assert sub.on_exit == {"y": "preserved"}
+
+    def test_anonymous_subroutine_records_entry_with_no_name(self):
+        d = Disassembler(cpu=_StubCpu())
+        d.subroutine(0x8000)
+        sub = d.subroutines[0]
+        assert sub.runtime_addr == 0x8000
+        assert sub.name is None
+
+    def test_subroutines_exposed_on_ir(self):
+        d = Disassembler(cpu=_StubCpu())
+        d.subroutine(0x8000, "init")
+        ir = d.disassemble()
+        assert ir.subroutines[0].name == "init"
+
+    def test_existing_seeding_and_label_behaviour_preserved(self):
+        # subroutine() must STILL seed the trace and define a label
+        # — those are the load-bearing behaviours from before the
+        # SubroutineEntry record was added.
+        d = Disassembler(cpu=_StubCpu())
+        d.subroutine(0x8000, "init")
+        # Trace seeded:
+        from dasmos.core.memory import BinaryAddr
+        assert BinaryAddr(0x8000) in d._entry_points
+        # Label defined:
+        label = d.labels.get_label(0x8000)
+        assert label is not None
+        assert "init" in label.explicit_name_texts()
+
+    def test_is_entry_point_false_skips_trace_and_marks_label_optional(self):
+        # Used by Environment plug-ins to document out-of-image OS
+        # calls (e.g. ``osbyte`` at &FFF4 lives in MOS ROM, NOT in
+        # any disassembled binary — seeding the trace from there
+        # would chase unloaded memory, and the label should only
+        # surface when actually JSR'd to).
+        from dasmos.core.memory import BinaryAddr
+        d = Disassembler(cpu=_StubCpu())
+        d.subroutine(0xfff4, "osbyte", is_entry_point=False)
+        assert BinaryAddr(0xfff4) not in d._entry_points
+        # SubroutineEntry recorded regardless.
+        assert d.subroutines[0].name == "osbyte"
+        # Label registered as OPTIONAL (label-level ``required``
+        # flag stays False).
+        label = d.labels.get_label(0xfff4)
+        assert label is not None
+        assert "osbyte" in label.explicit_name_texts()
+        assert label.required is False
+
+
+# ---------------------------------------------------------------------------
 # disassemble() — the one-shot trace + classify call
 # ---------------------------------------------------------------------------
 

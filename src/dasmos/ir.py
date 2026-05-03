@@ -85,6 +85,21 @@ class IntermediateRepresentation:
     def config(self) -> "Config":
         return self._disassembler.config
 
+    @property
+    def constants(self):
+        """Named values registered via
+        :meth:`Disassembler.constant`. Returned in registration order.
+        """
+        return self._disassembler.constants
+
+    @property
+    def subroutines(self):
+        """Subroutine metadata records registered via
+        :meth:`Disassembler.subroutine`. Returned in registration
+        order.
+        """
+        return self._disassembler.subroutines
+
     def render(self, renderer: "Renderer | str", **kwargs: Any) -> Output:
         """Render this IR via the named or supplied renderer.
 

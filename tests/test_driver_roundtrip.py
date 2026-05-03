@@ -383,6 +383,12 @@ class TestComments:
     def test_multiple_comments_at_same_address_preserve_order(
         self, roundtrip_via_beebasm,
     ):
+        # Three comments at the SAME (address, alignment) — this
+        # SHOULD trigger the duplicate-comment UserWarning (added
+        # to help drivers spot accidental copy-paste). The behaviour
+        # is still that all three comments are emitted in insertion
+        # order, so the warning is informational, not an error.
+        import warnings
         source = """
             org &8000
         .start
@@ -393,9 +399,11 @@ class TestComments:
 
         def configure(d):
             d.entry(0x8000, name="start")
-            d.comment(0x8000, "first")
-            d.comment(0x8000, "second")
-            d.comment(0x8000, "third")
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                d.comment(0x8000, "first")
+                d.comment(0x8000, "second")
+                d.comment(0x8000, "third")
 
         text = roundtrip_via_beebasm(source, 0x8000, configure)
         # Three lines, in insertion order, before the .start label.
@@ -1036,8 +1044,10 @@ class TestCodePtr:
 
         text = roundtrip_via_beebasm(source, 0x8000, configure)
         # Both halves render via the lo/hi operators on the label.
-        assert "< (target)" in text
-        assert "> (target)" in text
+        # py8dis-fork format: ``<(target)`` / ``>(target)`` (no space —
+        # standard 6502 lo/hi operator notation).
+        assert "<(target)" in text
+        assert ">(target)" in text
 
     def test_rts_flavour_subtracts_one(
         self, roundtrip_via_beebasm,
@@ -1112,12 +1122,19 @@ class TestStringz:
 
 @pytest.mark.beebasm
 class TestMultiLineCommentRendering:
-    """A ``d.comment(addr, text)`` whose text contains newlines should
-    render as one ``;`` line per source line — not bare text on the
-    second line that beebasm would choke on.
+    """A ``d.comment(addr, text)`` whose text contains paragraph
+    breaks (``\\n\\n``) should render as one ``;`` line per output
+    line — not bare text on the second line that beebasm would
+    choke on.
+
+    Comment text is parsed as Markdown (CommonMark + GFM tables +
+    the custom ``[label](address:HEX)`` URI scheme), so a SINGLE
+    ``\\n`` is a soft break and joins with a space. Use ``\\n\\n``
+    to start a new paragraph (and therefore a new ``;`` line in
+    asm).
     """
 
-    def test_each_line_carries_comment_prefix(
+    def test_each_paragraph_carries_comment_prefix(
         self, roundtrip_via_beebasm,
     ):
         source = """
@@ -1131,14 +1148,75 @@ class TestMultiLineCommentRendering:
             d.entry(0x8000, name="start")
             d.comment(
                 0x8000,
-                "First line\nSecond line\n=====",
+                "First paragraph.\n\nSecond paragraph.\n\nThird paragraph.",
             )
 
         text = roundtrip_via_beebasm(source, 0x8000, configure)
-        # Each non-empty source line is a ``;`` line in the output.
-        assert "; First line" in text
-        assert "; Second line" in text
-        assert "; =====" in text
+        # Each paragraph is a separate ``;`` line in the output.
+        assert "; First paragraph." in text
+        assert "; Second paragraph." in text
+        assert "; Third paragraph." in text
+
+    def test_word_wrap_false_preserves_literal_layout(
+        self, roundtrip_via_beebasm,
+    ):
+        # ``word_wrap=False`` skips Markdown parsing — the
+        # source's literal layout (including raw single-newline
+        # line breaks) is preserved. Use this for things like
+        # banner separators where rows of punctuation would
+        # otherwise be interpreted as Markdown structural markers.
+        source = """
+            org &8000
+        .start
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.comment(
+                0x8000,
+                "Literal first line\nLiteral second line",
+                word_wrap=False,
+            )
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        assert "; Literal first line" in text
+        assert "; Literal second line" in text
+
+    def test_address_link_in_comment_collapses_to_label(
+        self, roundtrip_via_beebasm,
+    ):
+        # Comment text uses the custom ``[label](address:HEX)``
+        # cross-reference URI documented in
+        # ``acornaeology.github.io/AUTHORING.md`` §1.1. The asm
+        # output collapses to plain ``label`` (or ``label (&HEX)``
+        # with the ``?hex`` flag); the structured JSON renderer
+        # preserves the source markdown verbatim for downstream HTML
+        # processors.
+        source = """
+            org &8000
+        .start
+            rts
+        save "step1.bin", start, P%
+        """
+
+        from dasmos import Align
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.comment(
+                0x8000,
+                "see [foo](address:E000) and [bar](address:F000?hex)",
+                align=Align.INLINE,
+            )
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # The ``foo`` link strips to label-only; the ``bar`` link
+        # appends the upper-cased hex.
+        assert "see foo and bar (&F000)" in text
+        # The raw markdown URI form is gone from the asm.
+        assert "address:" not in text
 
 
 @pytest.mark.beebasm
@@ -1939,23 +2017,128 @@ class TestMoveContext:
         assert "copyblock" in text
         # Round-trip byte equality already asserted by the fixture.
 
-    def test_overlapping_moves_truncate_outer_round_trip(
+    def test_moves_emitted_before_main_code(
         self, roundtrip_via_beebasm,
     ):
-        """When two moves' source ranges overlap, the renderer
-        truncates the outer move's emission at the inner move's start
-        (each byte is emitted exactly once, under the most-recently-
-        active move's PC). The trace's understanding of label
-        positions is unaffected — only the rendered ``copyblock``
-        stretches over the bytes it actually assembled.
+        """py8dis emits move regions FIRST in the output (in source-
+        binary-address order), then the main loaded range. Mirrors
+        py8dis_reference_nfs-3.65.asm where ``org &9324`` (move 1
+        source) appears at line 269 and ``org &8000`` (main ROM) is
+        at line 1164 — moves precede main code despite having higher
+        binary addresses.
+
+        Why: a zero-page label that lives in a moved region's
+        destination must be defined before the first reference from
+        main code, otherwise beebasm picks the wrong operand width on
+        pass 1 and errors with "Assembled object code has changed
+        between 1st and 2nd pass". Emitting the move's body FIRST
+        makes the inline ``.<name>`` anchor naturally precede every
+        reference from main code, no forward-declared equates needed.
+        """
+        # 5-byte block at binary &8005..&8009 moves to ZP &0070..&0074.
+        # Main code at &8000 references zp_var (runtime &0072) BEFORE
+        # the move's source position in binary order.
+        source = """
+            zp_var = &0072
+            org &8000
+        .start
+            ldx #&00
+            sta zp_var,X        ; references zp_var via sta zp,X (2 bytes)
+            rts
+        .moved_src
+            nop : nop : nop : nop : nop  ; &8005..&8009 (5 bytes, runtime &70..&74)
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            mid = d.add_move(0x70, 0x8005, 5)
+            with d.using_move(mid):
+                d.label(0x70, "zp_base")
+                d.label(0x72, "zp_var")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # The move's body — including the inline ``.zp_var`` anchor —
+        # appears in the output BEFORE the ``org &8000`` that opens
+        # main code. (Both must exist; their relative order is what
+        # matters.)
+        zp_var_idx = text.index(".zp_var")
+        main_org_idx = text.index("org &8000")
+        assert zp_var_idx < main_org_idx, (
+            "moved-region inline label .zp_var must appear before "
+            "the main code's `org &8000` so beebasm sees the ZP "
+            "definition before any forward reference to it"
+        )
+        # And the use site (sta zp_var) is in main code, after both.
+        sta_idx = text.index("sta zp_var")
+        assert main_org_idx < sta_idx
+
+    def test_relative_branch_inside_move_resolves_to_runtime_target(
+        self, roundtrip_via_beebasm,
+    ):
+        """A relative branch (BNE / BEQ / etc.) inside a moved region
+        must have its target resolved to the RUNTIME address — not the
+        binary address — so the auto-generated label name and the
+        equate value both point to the runtime location.
+
+        Bug surfaced by NFS-3.65: a BNE at binary ``&933E`` (runtime
+        ``&0030`` in move 1) branches to ``&-9`` → binary ``&9337``,
+        which is runtime ``&0029``. The earlier code computed the
+        target as ``&9337`` and registered the auto-label there;
+        beebasm then saw the equate ``loop_c9337 = &9337`` and tried
+        to branch ~37 KB instead of 7 bytes, erroring with "Branch
+        out of range".
+        """
+        # 6-byte block at binary &8003 moves to runtime &0070..&0075.
+        # ldx #&00 ; .loop dex ; bne loop ; rts (the BNE branches
+        # back inside the moved region).
+        source = """
+            org &8000
+        .start
+            jmp moved_src
+        .moved_src
+            ldx #&00            ; &8003: a2 00     (runtime &70)
+        .loop
+            dex                 ; &8005: ca        (runtime &72)
+            bne loop            ; &8006: d0 fd     (runtime &73 -> &72)
+            rts                 ; &8008: 60        (runtime &75)
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            move_id = d.add_move(0x0070, 0x8003, 6)
+            d.label(0x8003, "moved_src")
+            with d.using_move(move_id):
+                d.entry(0x70)
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # Whatever auto-label name the loop entry point gets, its
+        # equate must use the runtime address (zero page), NOT the
+        # binary source address.
+        assert "= &8005" not in text, (
+            "loop entry's auto-label uses the binary address — should "
+            "be the runtime address inside move 1"
+        )
+
+    def test_overlapping_moves_round_trip(
+        self, roundtrip_via_beebasm,
+    ):
+        """When two moves' source ranges overlap, each move emits
+        its FULL source range under its own runtime mapping (matches
+        py8dis). beebasm's ``copyblock`` for the second move
+        overwrites the overlap bytes the first move wrote — that's
+        fine because both renderings of the same source byte produce
+        identical opcode bytes (relative-branch arithmetic happens
+        to be self-consistent regardless of PC, absolute operands
+        are literal byte values).
 
         The Acorn NFS driver registers exactly this pattern: a ZP
         copy at ``move(0x16, 0x9324, 0x61)`` (97 bytes from &9324)
         and a page-4 copy at ``move(0x400, 0x9365, 0x100)`` (256
         bytes from &9365). The 32-byte overlap (&9365..&9384) is
-        emitted under the inner (page-4) move; the outer (ZP) move
-        only emits its first 65 bytes — the bytes it owns
-        EXCLUSIVELY.
+        emitted under BOTH moves; the resulting binary still byte-
+        matches the original ROM.
         """
         # Build a tiny ROM with two overlapping moves.
         # Layout: outer move src &8004..&8013 (16 bytes, dest &0070);
@@ -1990,12 +2173,10 @@ class TestMoveContext:
             d.label(0x70, "outer_dest")
 
         text = roundtrip_via_beebasm(source, 0x8000, configure)
-        # Outer move's ``copyblock`` covers only the bytes actually
-        # emitted (the 6 outer-exclusive bytes).
-        # Inner move's ``copyblock`` covers all 16 of its bytes.
+        # Both moves emit their full source range (each with its own
+        # ``copyblock`` over its full 16 bytes).
         assert "copyblock outer_dest" in text
         assert "copyblock inner_dest" in text
-        # Both ``org`` directives appear.
         assert "org &70" in text
         assert "org &80" in text
         # If we got here, the round-trip already byte-matched (the

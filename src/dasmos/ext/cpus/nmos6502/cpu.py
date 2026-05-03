@@ -28,8 +28,11 @@ Renderers that use a different convention (e.g. Acorn MASM's
 See ``docs/design/decisions.md`` D-021.
 """
 
+import copy
+from dataclasses import dataclass, field
 from enum import Enum, unique
 
+from dasmos.core.cpu_state import CpuState
 from dasmos.cpu import (
     AddressingModeMember,
     Cpu,
@@ -320,6 +323,94 @@ OPCODES: dict[int, Opcode] = {
 # heuristics and aren't needed by the trace loop itself.
 
 
+@dataclass
+class RegisterValue:
+    """What we know about a 6502 register at a given binary address.
+
+    ``value`` is the integer value if statically known (None if not).
+    ``previous_load_imm_addr`` is the binary address of the most-
+    recent immediate-load instruction (``LDA #imm`` for A,
+    ``LDX #imm`` for X, ``LDY #imm`` for Y) — preserved across any
+    instruction that doesn't modify the register, so a JSR-state
+    analyzer can find the LDA #imm even when stores or other-
+    register touches sit between.
+    """
+
+    value: int | None = None
+    previous_load_imm_addr: int | None = None
+
+
+@dataclass
+class State6502(CpuState):
+    """6502 register + flag state. Used by post-trace analyzers
+    (OSBYTE / OSWORD decoders) — see ``acorn_mos`` for the wiring.
+
+    The flag fields (``n``, ``z``, …) are tracked when statically
+    determinable so a future "branch-not-taken / always-taken"
+    analyzer can prune dead paths. None = unknown.
+    """
+
+    a: RegisterValue = field(default_factory=RegisterValue)
+    x: RegisterValue = field(default_factory=RegisterValue)
+    y: RegisterValue = field(default_factory=RegisterValue)
+    n: bool | None = None
+    v: bool | None = None
+    d: bool | None = None
+    i: bool | None = None
+    z: bool | None = None
+    c: bool | None = None
+
+    def clone(self) -> "State6502":
+        return copy.deepcopy(self)
+
+
+# Operations that read the operand into A / X / Y. The state-update
+# routine treats IMMEDIATE specially (records the value + source
+# addr); other addressing modes set the value to None but still
+# clear the previous-load-imm marker (the LDA from memory broke the
+# chain back to any earlier LDA #imm).
+_LOAD_OPERATIONS = {
+    Operation.LDA: "a",
+    Operation.LDX: "x",
+    Operation.LDY: "y",
+}
+
+# Operations that modify A in place — clear A's previous-load-imm
+# marker (the original LDA #imm is no longer the source of A's
+# current value). Value tracking is set to None; a smarter tracker
+# could compute some of these (e.g. CLC + ADC #imm) but for OSBYTE
+# detection the conservative clear is correct.
+_A_MODIFYING_OPERATIONS = {
+    Operation.ADC, Operation.SBC, Operation.AND, Operation.ORA,
+    Operation.EOR, Operation.ASL, Operation.LSR, Operation.ROL,
+    Operation.ROR,
+}
+
+# Pure-flag opcodes: don't touch A/X/Y or break the previous-load-
+# imm chain.
+_FLAG_ONLY_OPERATIONS = {
+    Operation.CLC, Operation.SEC, Operation.CLI, Operation.SEI,
+    Operation.CLD, Operation.SED, Operation.CLV,
+    # Compares affect flags only (don't change the register).
+    Operation.CMP, Operation.CPX, Operation.CPY, Operation.BIT,
+}
+
+# Stores / branches / jumps / NOP / pushes / pulls — preserve the
+# register the operation doesn't touch. PHA/PLA conservatively
+# clear A (we don't model the stack); same for PLP affecting flags.
+# Branches and JMPs leave state untouched (taken/not-taken handled
+# at the trace pipeline's BFS level, which we don't try to refine
+# here per py8dis's "optimistic" approach).
+_PRESERVING_OPERATIONS = {
+    Operation.STA, Operation.STX, Operation.STY,
+    Operation.NOP, Operation.PHP, Operation.PHA,
+    Operation.JMP, Operation.JSR, Operation.RTS, Operation.RTI,
+    Operation.BCC, Operation.BCS, Operation.BEQ, Operation.BNE,
+    Operation.BMI, Operation.BPL, Operation.BVC, Operation.BVS,
+    Operation.BRK,
+}
+
+
 class Nmos6502Cpu(Cpu):
     """The classic NMOS 6502.
 
@@ -337,3 +428,123 @@ class Nmos6502Cpu(Cpu):
 
     def opcodes(self) -> dict[int, Opcode]:
         return OPCODES
+
+    def initial_state(self) -> State6502:
+        return State6502()
+
+    def update_state(
+        self,
+        state: State6502,
+        opcode: Opcode,
+        addr: int,
+        memory,
+    ) -> None:
+        """Mutate ``state`` to reflect executing ``opcode`` at the
+        binary address ``addr``.
+
+        Models the rules a post-trace analyzer cares about — chiefly
+        register-load tracking. Flag tracking is left for a future
+        branch-prune analyzer (the slots are present on the state
+        but most operations leave them None for now).
+        """
+        op = opcode.operation
+        mode = opcode.addressing_mode
+
+        # Loads: LDA / LDX / LDY.
+        reg = _LOAD_OPERATIONS.get(op)
+        if reg is not None:
+            self._apply_load(state, reg, opcode, addr, memory)
+            return
+
+        # Pure flag-affecting operations (compares, CLC/SEC/...).
+        if op in _FLAG_ONLY_OPERATIONS:
+            return
+
+        # Stack pulls clobber A or flags.
+        if op is Operation.PLA:
+            state.a = RegisterValue()
+            return
+        if op is Operation.PLP:
+            state.n = state.v = state.d = state.i = state.z = state.c = None
+            return
+
+        # In-place arithmetic / logic on A.
+        if op in _A_MODIFYING_OPERATIONS:
+            state.a = RegisterValue()
+            return
+
+        # In-place increments / decrements affect a single register
+        # — value updates if known, but the previous-load-imm chain
+        # is broken (the LD reg is no longer the *source* of the
+        # current value).
+        if op in (Operation.INX, Operation.DEX):
+            v = state.x.value
+            new_v = None
+            if v is not None:
+                new_v = ((v + 1) if op is Operation.INX else (v - 1)) & 0xff
+            state.x = RegisterValue(value=new_v)
+            return
+        if op in (Operation.INY, Operation.DEY):
+            v = state.y.value
+            new_v = None
+            if v is not None:
+                new_v = ((v + 1) if op is Operation.INY else (v - 1)) & 0xff
+            state.y = RegisterValue(value=new_v)
+            return
+        if op in (Operation.INC, Operation.DEC):
+            # Memory-target incs/decs don't touch A/X/Y.
+            return
+
+        # Register-to-register transfers preserve the source's
+        # previous-load-imm marker too (the destination's value
+        # came from the same load chain).
+        if op is Operation.TAX:
+            state.x = RegisterValue(
+                value=state.a.value,
+                previous_load_imm_addr=state.a.previous_load_imm_addr,
+            )
+            return
+        if op is Operation.TAY:
+            state.y = RegisterValue(
+                value=state.a.value,
+                previous_load_imm_addr=state.a.previous_load_imm_addr,
+            )
+            return
+        if op is Operation.TXA:
+            state.a = RegisterValue(
+                value=state.x.value,
+                previous_load_imm_addr=state.x.previous_load_imm_addr,
+            )
+            return
+        if op is Operation.TYA:
+            state.a = RegisterValue(
+                value=state.y.value,
+                previous_load_imm_addr=state.y.previous_load_imm_addr,
+            )
+            return
+        if op is Operation.TSX:
+            state.x = RegisterValue()
+            return
+        if op is Operation.TXS:
+            return  # X unaffected.
+
+        # Default for anything not explicitly handled: assume the
+        # operation preserves register state. Stores, jumps,
+        # branches, NOP and the BRK-family fall here.
+        if op in _PRESERVING_OPERATIONS:
+            return
+
+    @staticmethod
+    def _apply_load(state: State6502, reg: str, opcode: Opcode, addr: int, memory) -> None:
+        """Common LDA/LDX/LDY update. Immediate mode records the
+        value AND the source-instruction address; any other mode
+        (zero-page, absolute, …) sets the value to unknown and
+        clears the previous-load-imm marker (the load broke the
+        chain back to any earlier immediate).
+        """
+        if opcode.addressing_mode is AddressingMode.IMMEDIATE:
+            v = memory.get_u8(addr + 1)
+            new = RegisterValue(value=v, previous_load_imm_addr=addr)
+        else:
+            new = RegisterValue()
+        setattr(state, reg, new)

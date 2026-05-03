@@ -135,6 +135,48 @@ class AcornMosEnvironment(Environment):
             disassembler.optional_label(addr, name)
         for addr, name in _MOS_VECTORS:
             disassembler.optional_label(addr, name)
-            disassembler.optional_label(addr + 1, f"{name}_hi")
+            # Register the high byte as ``<name>+1`` via an
+            # EXPRESSION (``expr_label``) — labels can't carry
+            # ``+`` in their identifier text, but expressions can.
+            # Mirrors py8dis-fork's ``ol2`` helper which marks
+            # the high byte as an alias for the base label using
+            # the ``base_runtime_addr=addr`` kwarg. The
+            # JsonRenderer's ``_first_registered_name`` reads
+            # both names AND expressions; the auto-label generator
+            # skips addresses with expressions to avoid
+            # synthesising a competing ``l0221`` for &0221.
+            disassembler.expr_label(addr + 1, f"{name}+1")
+        # OS-call entry points: registered as subroutines (not bare
+        # optional labels) so structured renderers — JsonRenderer in
+        # particular — surface them in the ``subroutines`` section
+        # alongside subroutines defined IN the disassembled image.
+        # ``is_entry_point=False`` because these live in MOS ROM
+        # (out of any disassembled image): seeding the trace from
+        # them would chase unloaded memory. The label still appears
+        # as optional, so it only surfaces when actually JSR'd to.
         for addr, name in _OS_CALLS.items():
-            disassembler.optional_label(addr, name)
+            disassembler.subroutine(addr, name, is_entry_point=False)
+        # Wire OS-call analyzers: AFTER trace + classification +
+        # CPU-state computation, the disassembler walks every JSR
+        # whose target matches a registered analyzer key. Each
+        # analyzer reads the per-instruction CPU state (in
+        # particular A's ``previous_load_imm_addr``) to find the
+        # LDA #imm that set up the call, registers a constant for
+        # the (imm, name) pair, and registers an auto-expression
+        # that turns ``lda #&xx`` into ``lda #osbyte_<name>`` at
+        # render time. See ``hooks.py`` for per-call detail.
+        from dasmos.ext.environments.acorn_mos.hooks import (
+            osbyte_analyzer,
+            oseven_analyzer,
+            osfile_analyzer,
+            osfind_analyzer,
+            osgbpb_analyzer,
+            osword_analyzer,
+        )
+        disassembler._post_trace_jsr_analyzers[0xfff4] = osbyte_analyzer
+        disassembler._post_trace_jsr_analyzers[0xfff1] = osword_analyzer
+        disassembler._post_trace_jsr_analyzers[0xffce] = osfind_analyzer
+        disassembler._post_trace_jsr_analyzers[0xffdd] = osfile_analyzer
+        disassembler._post_trace_jsr_analyzers[0xffd1] = osgbpb_analyzer
+        # OSEVEN takes an event number in Y; analyzer substitutes it.
+        disassembler._post_trace_jsr_analyzers[0xffbf] = oseven_analyzer

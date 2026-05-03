@@ -271,3 +271,131 @@ class TestRendererMnemonicOverrideEndToEnd:
         key = (op.operation, op.addressing_mode)
         chosen = masm_overrides.get(key, op.default_mnemonic())
         assert chosen == "jsr"
+
+
+# ---------------------------------------------------------------------------
+# CpuState tracking — A/X/Y register tracking via Cpu.update_state
+# ---------------------------------------------------------------------------
+
+
+class TestState6502:
+    """The 6502 CPU state tracker. Records the previous immediate
+    load address per register so post-trace analyzers (OSBYTE
+    decoder etc.) can find the LDA #imm that set up a JSR call.
+    """
+
+    def _new(self):
+        from dasmos.ext.cpus.nmos6502 import Nmos6502Cpu
+        return Nmos6502Cpu(), Nmos6502Cpu().initial_state()
+
+    def test_initial_state_is_unknown(self):
+        cpu, state = self._new()
+        assert state.a.value is None
+        assert state.x.value is None
+        assert state.y.value is None
+        assert state.a.previous_load_imm_addr is None
+
+    def test_lda_immediate_records_value_and_source(self, tmp_path):
+        from dasmos.core.memory import MemoryImage
+        cpu, state = self._new()
+        memory = MemoryImage(address_space_size=0x10000)
+        # LDA #&7c at &1000
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0xa9, 0x7c]))
+        memory.load(bin_path, 0x1000)
+        opcode = OPCODES[0xa9]
+        cpu.update_state(state, opcode, 0x1000, memory)
+        assert state.a.value == 0x7c
+        assert state.a.previous_load_imm_addr == 0x1000
+
+    def test_lda_absolute_clears_immediate_marker(self, tmp_path):
+        from dasmos.core.memory import MemoryImage
+        cpu, state = self._new()
+        memory = MemoryImage(address_space_size=0x10000)
+        bin_path = tmp_path / "p.bin"
+        # LDA #&7c at &1000, then LDA &abcd at &1002 (3 bytes, ad cd ab)
+        bin_path.write_bytes(bytes([0xa9, 0x7c, 0xad, 0xcd, 0xab]))
+        memory.load(bin_path, 0x1000)
+        cpu.update_state(state, OPCODES[0xa9], 0x1000, memory)
+        cpu.update_state(state, OPCODES[0xad], 0x1002, memory)
+        # Value unknown, no longer "previous load imm"
+        assert state.a.value is None
+        assert state.a.previous_load_imm_addr is None
+
+    def test_sta_does_not_change_a(self, tmp_path):
+        from dasmos.core.memory import MemoryImage
+        cpu, state = self._new()
+        memory = MemoryImage(address_space_size=0x10000)
+        bin_path = tmp_path / "p.bin"
+        # LDA #&7c ; STA &abcd
+        bin_path.write_bytes(bytes([0xa9, 0x7c, 0x8d, 0xcd, 0xab]))
+        memory.load(bin_path, 0x1000)
+        cpu.update_state(state, OPCODES[0xa9], 0x1000, memory)
+        cpu.update_state(state, OPCODES[0x8d], 0x1002, memory)
+        # STA preserves A — the immediate value and source survive.
+        assert state.a.value == 0x7c
+        assert state.a.previous_load_imm_addr == 0x1000
+
+    def test_inc_a_clears_immediate_marker(self, tmp_path):
+        # Not a 6502 instruction (INC A is 65C02), but tests the
+        # general principle: any in-place modification of A clears
+        # the previous-load-imm tracking. Use INX (which clears X)
+        # as the equivalent test for an NMOS 6502.
+        from dasmos.core.memory import MemoryImage
+        cpu, state = self._new()
+        memory = MemoryImage(address_space_size=0x10000)
+        bin_path = tmp_path / "p.bin"
+        # LDX #&05 ; INX
+        bin_path.write_bytes(bytes([0xa2, 0x05, 0xe8]))
+        memory.load(bin_path, 0x1000)
+        cpu.update_state(state, OPCODES[0xa2], 0x1000, memory)
+        assert state.x.previous_load_imm_addr == 0x1000
+        cpu.update_state(state, OPCODES[0xe8], 0x1002, memory)
+        # X was incremented — value updates, but previous_load_imm
+        # cleared (the LDX #imm is no longer the source of X's value).
+        assert state.x.previous_load_imm_addr is None
+
+    def test_lda_propagates_through_intermediate_sta(self, tmp_path):
+        # The whole point of state tracking — an LDA #imm can be
+        # detected several instructions before a JSR even when STA
+        # / other-register-touching instructions sit between. py8dis
+        # gets this; the previous dasmos heuristic missed it.
+        from dasmos.core.memory import MemoryImage
+        cpu, state = self._new()
+        memory = MemoryImage(address_space_size=0x10000)
+        bin_path = tmp_path / "p.bin"
+        # LDA #&fd ; STA &70 ; LDX #&00 ; STX &71
+        bin_path.write_bytes(bytes([
+            0xa9, 0xfd,             # LDA #&fd at &1000
+            0x85, 0x70,             # STA &70 at &1002
+            0xa2, 0x00,             # LDX #&00 at &1004
+            0x86, 0x71,             # STX &71 at &1006
+        ]))
+        memory.load(bin_path, 0x1000)
+        cpu.update_state(state, OPCODES[0xa9], 0x1000, memory)
+        cpu.update_state(state, OPCODES[0x85], 0x1002, memory)
+        cpu.update_state(state, OPCODES[0xa2], 0x1004, memory)
+        cpu.update_state(state, OPCODES[0x86], 0x1006, memory)
+        # A's immediate-load tracking survived all the stores.
+        assert state.a.previous_load_imm_addr == 0x1000
+        assert state.a.value == 0xfd
+        # X also tracked.
+        assert state.x.previous_load_imm_addr == 0x1004
+        assert state.x.value == 0x00
+
+    def test_clone_is_independent(self, tmp_path):
+        from dasmos.core.memory import MemoryImage
+        cpu, state = self._new()
+        memory = MemoryImage(address_space_size=0x10000)
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0xa9, 0x7c]))
+        memory.load(bin_path, 0x1000)
+        cpu.update_state(state, OPCODES[0xa9], 0x1000, memory)
+        snapshot = state.clone()
+        # Continuing to update the original doesn't mutate the snapshot.
+        cpu.update_state(state, OPCODES[0xa9], 0x1000, memory)  # re-LDA
+        assert snapshot.a.value == 0x7c
+        # Setting the snapshot's A to something else doesn't affect
+        # the original.
+        snapshot.a.value = 0xff
+        assert state.a.value == 0x7c

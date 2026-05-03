@@ -28,6 +28,7 @@ Per ``docs/design/decisions.md``:
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,46 @@ from dasmos.ir import IntermediateRepresentation
 
 class DisassemblerError(DasmosError):
     """Raised on misuse of the :class:`Disassembler` orchestration."""
+
+
+@dataclass
+class Constant:
+    """A named value registered via :meth:`Disassembler.constant`.
+
+    Distinct from :class:`~dasmos.core.labels.Label` — constants are
+    arbitrary named values (magic numbers, OSBYTE call numbers,
+    hardware register addresses) that the driver wants to surface as a
+    separate ``constants`` section in structured output. The
+    :meth:`Disassembler.constant` method ALSO calls
+    :meth:`Disassembler.optional_label` so the asm equate emission is
+    unchanged from the legacy ``constant() → optional_label`` porter
+    rename.
+    """
+
+    name: str
+    value: int
+    comment: str | None = None
+
+
+@dataclass
+class SubroutineEntry:
+    """Subroutine metadata registered via :meth:`Disassembler.subroutine`.
+
+    Mirrors the py8dis-fork ``Subroutine`` record so the JSON
+    renderer can emit a directly-comparable shape (downstream
+    consumers expect this). Internally we hold the runtime address
+    plus the kwargs the driver supplied; rendering computes
+    fall-through and per-name fields at emission time.
+    """
+
+    runtime_addr: int
+    binary_addr: int | None
+    move_id: int | None
+    name: str | None
+    title: str
+    description: str
+    on_entry: dict[str, str] = field(default_factory=dict)
+    on_exit: dict[str, str] = field(default_factory=dict)
 
 
 class Disassembler:
@@ -97,6 +138,41 @@ class Disassembler:
         self._annotations = AnnotationStore()
         self._entry_points: list[BinaryAddr] = []
         self._traced: set[int] = set()
+        # Named values registered via :meth:`constant`. Distinct from
+        # labels — these are arbitrary values (e.g. magic numbers,
+        # hardware register addresses) the driver wants to give a name
+        # AND surface as a separate ``constants`` section in
+        # structured output. Internally :meth:`constant` ALSO calls
+        # :meth:`optional_label` so the asm equate emission is
+        # unchanged from the legacy ``constant() → optional_label``
+        # porter rename.
+        self._constants: list[Constant] = []
+        # Subroutine metadata registered via :meth:`subroutine` —
+        # name, banner content, fall-through computed at render time.
+        self._subroutines: list[SubroutineEntry] = []
+        # Per-binary-address CPU state, computed by the post-trace
+        # ``_compute_cpu_states`` linear sweep. Maps the address of
+        # each classified opcode to the CpuState IMMEDIATELY BEFORE
+        # that instruction executes (so a JSR analyzer can ask
+        # "what was A just before the JSR?"). Stays empty when the
+        # CPU plug-in opts out of state tracking
+        # (``Cpu.initial_state`` returns None).
+        self._cpu_state_at: dict[int, object] = {}
+        # Deferred expressions: a list of ``(binary_addr,
+        # target_runtime_addr, build_text)`` triples registered by
+        # ``code_ptr`` / ``rts_code_ptr`` (and any future caller that
+        # wants to resolve the target's label name AFTER the trace
+        # has filled out the auto-label store). Resolved by
+        # :meth:`_resolve_deferred_expressions` after auto-label
+        # generation. Mirrors py8dis ``expr_label`` semantics.
+        self._deferred_expressions: list[tuple[int, int, object]] = []
+        # Post-trace JSR analyzers registered by Environment plug-ins
+        # (or driver scripts). Each maps a target runtime address to
+        # a callable ``analyzer(disassembler, jsr_binary_addr,
+        # state_before_jsr)``. Fired in the post-trace state pass —
+        # has full CPU state available, unlike ``_subroutine_hooks``
+        # which fires during trace before state is computed.
+        self._post_trace_jsr_analyzers: dict[int, object] = {}
         self._disassembled = False
         # Environments registered via constructor activate
         # immediately. Environments needing loaded memory should be
@@ -171,6 +247,22 @@ class Disassembler:
     @property
     def config(self) -> Config:
         return self._config
+
+    @property
+    def constants(self) -> list[Constant]:
+        """Named values registered via :meth:`constant`. The
+        :class:`Constant` records here also appear as optional labels
+        in :attr:`labels` (for asm equate emission).
+        """
+        return self._constants
+
+    @property
+    def subroutines(self) -> list[SubroutineEntry]:
+        """Subroutine metadata records registered via
+        :meth:`subroutine`. The label name (when given) also appears
+        in :attr:`labels`.
+        """
+        return self._subroutines
 
     # -- driver-script API: setup ---------------------------------------
 
@@ -268,6 +360,38 @@ class Disassembler:
             runtime_addr, name, is_optional=True, **kwargs,
         )
 
+    def constant(
+        self,
+        value: int,
+        name: str,
+        comment: str | None = None,
+    ) -> None:
+        """Register a named value (a constant).
+
+        Conceptually distinct from a label: constants are arbitrary
+        named values (magic numbers, OSBYTE call numbers, hardware
+        register addresses) — not necessarily addresses of code or
+        data the disassembler will reach. The structured-output
+        renderers surface them as a dedicated ``constants`` section
+        (mirroring the py8dis-fork schema).
+
+        Constants are tracked SEPARATELY from labels (matches py8dis
+        where ``constant()`` populates ``disassembly.constants``,
+        not the LabelManager). Mixing them would cause the hook-
+        registered OSBYTE constants (e.g. ``osbyte_clear_escape =
+        &7c``) to pollute operand resolution at zero-page address
+        ``&7c``: any unrelated code reading from ``&7c`` would
+        suddenly render as ``lda osbyte_clear_escape`` — a false
+        positive.
+
+        The ``BeebasmRenderer`` emits constants as equates in their
+        own block alongside the label-equate table.
+        """
+        self._raise_if_disassembled("constant")
+        self._constants.append(
+            Constant(name=name, value=int(value), comment=comment),
+        )
+
     def local_label(self, runtime_addr, name: str, start_addr, end_addr, **kwargs):
         """Define a label scoped to ``[start_addr, end_addr)``."""
         self._raise_if_disassembled("local_label")
@@ -342,32 +466,32 @@ class Disassembler:
             | (self._memory.get_u8(binary_hi) << 8)
         ) + offset
         self.entry(target, name=label_name)
-        # Resolve the label name actually registered (an explicit
-        # one if label_name was given; otherwise auto-named at
-        # disassemble() time — but we need a name NOW for the
-        # expression. Fall back to literal hex if no name yet.)
-        target_label = self._labels.get_label(target)
-        if target_label is not None and target_label.explicit_name_texts():
-            label_text = sorted(target_label.explicit_name_texts())[0]
-        else:
-            label_text = f"&{target:04x}"
-        # The bytes contain target - offset, so the expression must
-        # subtract the same offset from the label to evaluate to the
-        # stored bytes. py8dis emits ``label-offset`` (e.g. "-1" for
-        # the RTS variant).
+        # py8dis-fork format: ``label-offset`` for adjacent equw,
+        # ``<(label-offset)`` / ``>(label-offset)`` for split lo/hi
+        # tables (no space — matches the standard 6502 lo/hi
+        # operator notation). The label name is resolved LAZILY at
+        # render time via :meth:`_register_deferred_expression` so
+        # subroutines registered LATER in the driver script still
+        # surface symbolically (mirrors py8dis ``expr_label`` which
+        # also resolves names at output time).
         offset_str = "" if offset == 0 else f"-{offset}"
-        expr = f"{label_text}{offset_str}"
         if int(binary_hi) == int(binary_lo) + 1:
-            # Adjacent bytes — emit a single ``equw <expr>``.
             self.word(runtime_addr_lo)
-            self.expr(runtime_addr_lo, expr)
+            self._register_deferred_expression(
+                int(binary_lo), target,
+                lambda name: f"{name}{offset_str}",
+            )
         else:
-            # Separate low/high tables — emit two equb lines with
-            # beebasm's lo/hi byte operators.
             self.byte(runtime_addr_lo, 1)
-            self.expr(runtime_addr_lo, f"< ({expr})")
+            self._register_deferred_expression(
+                int(binary_lo), target,
+                lambda name: f"<({name}{offset_str})",
+            )
             self.byte(runtime_addr_hi, 1)
-            self.expr(runtime_addr_hi, f"> ({expr})")
+            self._register_deferred_expression(
+                int(binary_hi), target,
+                lambda name: f">({name}{offset_str})",
+            )
 
     def rts_code_ptr(
         self,
@@ -626,26 +750,34 @@ class Disassembler:
         description: str = "",
         on_entry: dict[str, str] | None = None,
         on_exit: dict[str, str] | None = None,
+        is_entry_point: bool = True,
         move_id: int | None = None,
     ) -> None:
-        """Register a code entry point at ``runtime_addr``.
+        """Register a subroutine entry at ``runtime_addr``.
 
-        Always seeds the trace from this address. If ``name`` is
-        given, also defines a label there. If ``title`` or
-        ``description`` is given, also attaches a banner-style
-        comment block via :meth:`banner`.
+        Always records a :class:`SubroutineEntry` (so structured
+        renderers can surface it). When ``is_entry_point`` is True
+        (the default), also seeds the trace AND registers the label
+        as REQUIRED. When False — used by environments to document
+        out-of-image OS calls (``osbyte``, ``osword``, …) that
+        shouldn't seed tracing of unloaded memory — the trace is not
+        seeded AND the label is registered as OPTIONAL (so it only
+        emits when actually JSR'd to). This is the ``is_entry_point``
+        knob from py8dis: same semantic, on the dasmos method.
 
-        Replaces py8dis's ``subroutine(addr, name, ...)`` with the
-        ``is_entry_point=True`` semantics implicit; the C2/C3 split
-        (per the commands-sweep memo) means the
-        ``is_entry_point=False`` data-banner case is now its own
-        method, :meth:`banner`.
+        If ``title`` or ``description`` (or ``on_entry`` / ``on_exit``)
+        is given, also attaches a banner-style annotation.
         """
         self._raise_if_disassembled("subroutine")
         binary_addr = self._resolve_to_binary_addr(runtime_addr, move_id)
-        self._entry_points.append(binary_addr)
+        if is_entry_point:
+            self._entry_points.append(binary_addr)
         if name is not None:
-            self._labels.add_label(runtime_addr, name, move_id=move_id)
+            self._labels.add_label(
+                runtime_addr, name,
+                is_optional=not is_entry_point,
+                move_id=move_id,
+            )
         if title or description or on_entry or on_exit:
             self._annotations.add(
                 binary_addr,
@@ -654,6 +786,16 @@ class Disassembler:
                     on_entry=on_entry, on_exit=on_exit,
                 ),
             )
+        self._subroutines.append(SubroutineEntry(
+            runtime_addr=int(runtime_addr),
+            binary_addr=int(binary_addr),
+            move_id=move_id,
+            name=name,
+            title=title,
+            description=description,
+            on_entry=dict(on_entry) if on_entry else {},
+            on_exit=dict(on_exit) if on_exit else {},
+        ))
 
     # -- the trace + render entry point ---------------------------------
 
@@ -684,10 +826,22 @@ class Disassembler:
             )
         self._trace()
         self._classify_leftovers()
+        # Compute per-instruction CPU state via a linear sweep of
+        # the now-classified code. Optional — the CPU plug-in opts
+        # in by overriding ``Cpu.initial_state`` / ``update_state``.
+        # Done BEFORE reference analysis so post-trace JSR analyzers
+        # (e.g. OSBYTE / OSWORD decoders) can register additional
+        # constants/expressions that the reference walk will see.
+        self._compute_cpu_states()
+        self._run_post_trace_jsr_analyzers()
         refs_by_addr = self._compute_references()
         if self.auto_labels_enabled:
             self._generate_auto_labels(refs_by_addr)
             self._synthesise_offset_bases()
+        # Now that all labels are known (driver-supplied + auto-
+        # generated), resolve the deferred expressions registered
+        # earlier (by ``code_ptr`` / ``rts_code_ptr``).
+        self._resolve_deferred_expressions()
         self._disassembled = True
         return IntermediateRepresentation(self)
 
@@ -839,6 +993,138 @@ class Disassembler:
                 if self._memory.is_loaded(addr) and not self._classifications.is_classified(addr):
                     self._classifications.add_classification(addr, Byte(1))
 
+    # -- internals: deferred expressions -------------------------------
+
+    def _register_deferred_expression(
+        self, binary_addr: int, target_runtime_addr: int, build_text,
+    ) -> None:
+        """Record a callable that builds the expression text for
+        ``binary_addr`` based on the label name at
+        ``target_runtime_addr``. Resolved by
+        :meth:`_resolve_deferred_expressions` after the trace +
+        auto-label pass, so labels registered LATER in the driver
+        script (e.g. ``rts_code_ptr`` at line 1769 referencing a
+        ``subroutine`` at line 3087) still surface symbolically.
+
+        ``build_text`` is a callable taking the resolved label name
+        and returning the final expression text — see callers in
+        :meth:`code_ptr` for the typical lambdas
+        (``lambda n: f"<({n}-1)"`` etc.).
+        """
+        self._deferred_expressions.append(
+            (int(binary_addr), int(target_runtime_addr), build_text),
+        )
+
+    def _resolve_deferred_expressions(self) -> None:
+        """Iterate :attr:`_deferred_expressions`, resolve each
+        target's label name (now that auto-label generation is done),
+        and write the final text to :attr:`_expressions`. Falls back
+        to the literal hex address only when no name exists at all
+        for the target — matches py8dis's behaviour.
+        """
+        for binary_addr, target, build_text in self._deferred_expressions:
+            label = self._labels.get_label(target)
+            if label is not None:
+                # Match the JsonRenderer's "first registered name"
+                # tie-break (insertion order, NOT alphabetical) so
+                # the deferred-expression text agrees with operand
+                # rendering at the same target.
+                name = None
+                for name_list in label.explicit_names.values():
+                    for explicit in name_list:
+                        name = explicit.text
+                        break
+                    if name is not None:
+                        break
+                if name is None:
+                    name = f"&{target:04x}"
+            else:
+                name = f"&{target:04x}"
+            self._expressions.add(binary_addr, build_text(name))
+
+    # -- internals: post-trace CPU-state pass ---------------------------
+
+    def _compute_cpu_states(self) -> None:
+        """Populate :attr:`_cpu_state_at` by walking classified code
+        in binary order, advancing a CPU state through each opcode.
+
+        py8dis-fork calls this an "optimistic" walk — straight-line,
+        ignoring branches; state propagates linearly and resets
+        only on data classifications. Despite the imprecision it's
+        good enough for OSBYTE-style detection (the LDA #imm and
+        the JSR osbyte are usually in the same straight-line block).
+
+        Skipped silently when the CPU plug-in opts out (i.e.
+        ``Cpu.initial_state`` returns None).
+        """
+        from dasmos.cpu import Opcode
+        state = self._cpu.initial_state()
+        if state is None:
+            return
+        for start, end in self._memory.load_ranges:
+            # Reset state at the start of each loaded range — we
+            # have no idea what state arrived from outside.
+            state = self._cpu.initial_state()
+            addr = int(start)
+            while addr < int(end):
+                c = self._classifications.get_classification(addr)
+                if isinstance(c, Opcode):
+                    # Snapshot state BEFORE the instruction so a JSR
+                    # analyzer can ask "what was A just before the
+                    # JSR?" — i.e. the LDA's effect is visible.
+                    self._cpu_state_at[addr] = state.clone()
+                    self._cpu.update_state(state, c, addr, self._memory)
+                    addr += c.length()
+                elif c is None:
+                    # Unclassified-but-loaded — bytes that are
+                    # neither code nor data. Reset state.
+                    state = self._cpu.initial_state()
+                    addr += 1
+                else:
+                    # Data classification (Byte / Word / String /
+                    # Fill) — code execution doesn't continue
+                    # through it, so reset state.
+                    state = self._cpu.initial_state()
+                    addr += c.length()
+
+    def _run_post_trace_jsr_analyzers(self) -> None:
+        """For each classified JSR whose target has a registered
+        post-trace analyzer, call the analyzer with the CPU state
+        immediately before the JSR fires.
+
+        Distinct from :attr:`_subroutine_hooks` — those run during
+        trace (they may change where the trace continues). This
+        runs AFTER trace + state computation, so analyzers can read
+        :attr:`_cpu_state_at` to find the previous LDA #imm. This
+        is what makes OSBYTE / OSWORD decoders work for ``LDA #imm
+        ; STA somewhere ; JSR osbyte`` patterns the simple peek-
+        back-1 heuristic misses.
+        """
+        if not self._post_trace_jsr_analyzers:
+            return
+        from dasmos.cpu import FlowControl, Opcode
+        # Fire on JSR (normal call) AND JMP (tail-call optimization
+        # — common idiom is ``lda #X ; jmp osbyte`` instead of
+        # ``lda #X ; jsr osbyte ; rts``). Both are control transfers
+        # to the OS call so the analyzer should fire on either.
+        for binary_addr, classification in self._classifications.iter_classified_starts():
+            if not isinstance(classification, Opcode):
+                continue
+            if classification.flow_control not in (
+                FlowControl.SUBROUTINE_CALL, FlowControl.JUMP,
+            ):
+                continue
+            target = classification._compute_target(self._memory, int(binary_addr))
+            if target is None:
+                continue
+            analyzer = self._post_trace_jsr_analyzers.get(int(target))
+            if analyzer is None:
+                continue
+            state = self._cpu_state_at.get(int(binary_addr))
+            if state is None:
+                continue
+            analyzer(self, int(binary_addr), state)
+
     # -- internals: reference analysis + auto-label generation ----------
 
     def _compute_references(self) -> dict[int, list[int]]:
@@ -848,6 +1134,12 @@ class Disassembler:
         Returns ``{target_runtime_addr: [ref_binary_addr, …]}`` for
         the auto-label pass to consume — even targets that don't yet
         have a label appear here.
+
+        Each recorded reference carries the ref's ``move_id`` (the
+        move under which the referencing opcode is executing) so
+        downstream renderers can present the ref's address in the
+        right runtime — e.g. ``&0030[1]`` for a JSR at binary &933E
+        running at runtime &30 under move 1.
         """
         from dasmos.cpu import Opcode, OperandKind
         from dasmos.core.memory import BinaryLocation
@@ -861,7 +1153,10 @@ class Disassembler:
             refs_by_addr.setdefault(target, []).append(int(binary_addr))
             label = self._labels.get_label(target)
             if label is not None:
-                label.add_reference(BinaryLocation(int(binary_addr), 0))
+                ref_move_id = self._moves._move_id_for_binary_addr[int(binary_addr)]
+                label.add_reference(
+                    BinaryLocation(int(binary_addr), int(ref_move_id)),
+                )
         return refs_by_addr
 
     def _operand_label_target(self, binary_addr: int, opcode) -> int | None:
@@ -884,7 +1179,16 @@ class Disassembler:
             offset = self._memory.get_u8(operand_addr)
             if offset >= 0x80:
                 offset -= 0x100
-            return binary_addr + opcode.length() + offset
+            # Mirrors py8dis OpcodeConditionalBranch.target: do the
+            # branch-target arithmetic in runtime space so a branch
+            # whose source byte is inside a moved region resolves to
+            # the runtime address (matching where the label was
+            # registered against ``with d.using_move(...)``), not the
+            # binary source address. Outside any move b2r is the
+            # identity, so non-moved code is unaffected.
+            from dasmos.core.memory import BinaryAddr
+            base_runtime = int(self._moves.b2r(BinaryAddr(binary_addr)))
+            return base_runtime + opcode.length() + offset
         return None
 
     def _generate_auto_labels(
@@ -909,7 +1213,18 @@ class Disassembler:
         from dasmos.core.memory import BinaryLocation, RuntimeAddr
         for runtime_addr, ref_binary_addrs in refs_by_addr.items():
             existing = self._labels.get_label(runtime_addr)
-            if existing is not None and existing.explicit_name_texts():
+            if existing is not None and (
+                existing.explicit_name_texts()
+                # Also skip if an EXPRESSION is registered (e.g.
+                # ``acorn_mos`` registers ``evntv+1`` at &0221 via
+                # ``expr_label``). Synthesising ``l0221`` here
+                # would compete with the expression and cause the
+                # operand to render as ``sta l0221`` instead of
+                # ``sta evntv+1``. Mirrors py8dis-fork ``ol2``
+                # which suppresses auto-label generation at alias
+                # addresses via the ``base_runtime_addr`` kwarg.
+                or any(existing.expressions.values())
+            ):
                 continue
             name = self._synthesise_auto_label_name(
                 runtime_addr, sorted(set(ref_binary_addrs)),

@@ -56,6 +56,7 @@ DASMOS_METHODS: frozenset[str] = frozenset({
     "code_ptr",
     "rts_code_ptr",
     "stringz",
+    "constant",
 })
 
 
@@ -66,13 +67,12 @@ PY8DIS_FUNCTION_RENAMES: dict[str, str] = {
     # py8dis's ``move(binary_addr, runtime_addr, length)`` registers a
     # relocation; dasmos's equivalent is ``Disassembler.add_move``.
     "move": "add_move",
-    # ``constant(value, name)`` in py8dis names an arbitrary value
-    # (commonly a hardware register address). Drivers in practice use
-    # it for addresses — semantically the same as ``optional_label``,
-    # which is what dasmos provides. Calls passing a 3rd ``comment=``
-    # kwarg are translated into ``description=`` via the per-method
-    # kwarg rewrite below.
-    "constant": "optional_label",
+    # ``constant(value, name)`` is now a first-class dasmos method
+    # too — it both registers a named-value record (surfaced as the
+    # ``constants`` section in structured output) AND emits an
+    # optional label so the asm equate is unchanged from when this
+    # rule routed via ``optional_label``. ``comment=`` rewrite still
+    # applies (the dasmos method takes ``comment`` directly).
 }
 
 
@@ -80,8 +80,19 @@ PY8DIS_FUNCTION_RENAMES: dict[str, str] = {
 # by the porter — the corresponding dasmos feature isn't implemented
 # yet. Drivers using these features may still round-trip byte-
 # identically, but the rendered annotations will be poorer than
-# py8dis's output. Empty for now; populate as gaps surface.
-UNSUPPORTED_PY8DIS_FUNCTIONS: frozenset[str] = frozenset()
+# py8dis's output. When the dropped call appears as the rhs of an
+# assignment, the LHS name is also tracked in
+# ``dropped_internal_names`` so the cascade drops any follow-up
+# statement that uses the would-be-defined variable.
+UNSUPPORTED_PY8DIS_FUNCTIONS: frozenset[str] = frozenset({
+    # JSON-output renderer hook from the py8dis fork. dasmos doesn't
+    # have a JSON renderer yet (planned as a separate plug-in). The
+    # NFS-3.65 driver and others end with ``structured =
+    # get_structured(); ... json.dumps(structured) ...``; dropping
+    # the call cascades through the dropped-name tracker so the
+    # surrounding JSON dump statements drop too.
+    "get_structured",
+})
 
 
 # py8dis names that are part of ``py8dis.commands`` and now live in
@@ -106,14 +117,16 @@ PY8DIS_COMMAND_RELOCATIONS: dict[str, str] = {
 PY8DIS_ACORN_FUNC_TO_ENVIRONMENTS: dict[str, list[str]] = {
     # ``acorn.bbc()`` registers MOS workspace + vectors + OS calls
     # (via mos_labels()) AND BBC Micro hardware addresses
-    # (hardware_bbc()). Dasmos has the MOS half via acorn_mos; the
-    # hardware addresses land later as ``acorn_bbc_hardware``.
-    "bbc": ["acorn_mos"],
+    # (hardware_bbc()). Dasmos splits these into two composable
+    # Environment plug-ins; activate both.
+    "bbc": ["acorn_mos", "acorn_bbc_hardware"],
     # ``acorn.is_sideways_rom()`` recognises the &8000 header layout
     # — direct one-to-one map.
     "is_sideways_rom": ["acorn_sideways_rom"],
     # ``acorn.mos_labels()`` is the MOS-only subset of bbc().
     "mos_labels": ["acorn_mos"],
+    # ``acorn.hardware_bbc()`` is the hardware-only subset of bbc().
+    "hardware_bbc": ["acorn_bbc_hardware"],
 }
 
 
@@ -225,14 +238,26 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
             # Drop top-level calls to py8dis features dasmos doesn't
             # support yet. The ported script keeps running; the rendered
             # disassembly just loses whatever annotations the dropped
-            # call would have contributed. (Empty by default — drop to
-            # the porter's set only when there's a concrete reason.)
+            # call would have contributed.
             if (
                 UNSUPPORTED_PY8DIS_FUNCTIONS
                 and isinstance(stmt, ast.Expr)
                 and isinstance(stmt.value, ast.Call)
                 and self._call_name(stmt.value) in UNSUPPORTED_PY8DIS_FUNCTIONS
             ):
+                continue
+            # Same for assignments: ``x = get_structured()`` drops the
+            # whole assignment AND tracks ``x`` so any later statement
+            # that uses ``x`` (e.g. ``json.dumps(x)``) cascades-drops.
+            if (
+                UNSUPPORTED_PY8DIS_FUNCTIONS
+                and isinstance(stmt, ast.Assign)
+                and isinstance(stmt.value, ast.Call)
+                and self._call_name(stmt.value) in UNSUPPORTED_PY8DIS_FUNCTIONS
+            ):
+                for target in stmt.targets:
+                    if isinstance(target, ast.Name):
+                        dropped_internal_names.add(target.id)
                 continue
 
             # Detect ``subroutine(..., is_entry_point=False, ...)``

@@ -30,6 +30,11 @@ classifiers = [
 dependencies = [
     "asyoulikeit>=1.1",
     "click>=8.0",
+    # Markdown parser used by ``dasmos.core.markdown_asm`` to render
+    # comment / subroutine-description text down to plaintext for asm
+    # output. The structured JSON renderer keeps the source markdown
+    # verbatim; only the asm-side renderers strip it.
+    "mistletoe>=1.4",
     "stevedore",
 ]
 
@@ -54,10 +59,12 @@ cmos65c02 = "dasmos.ext.cpus.cmos65c02:Cpu"
 
 [project.entry-points."dasmos.renderer"]
 beebasm = "dasmos.ext.renderers.beebasm:Renderer"
+json = "dasmos.ext.renderers.json:Renderer"
 
 [project.entry-points."dasmos.environment"]
 acorn_mos = "dasmos.ext.environments.acorn_mos:Environment"
 acorn_sideways_rom = "dasmos.ext.environments.acorn_sideways_rom:Environment"
+acorn_bbc_hardware = "dasmos.ext.environments.acorn_bbc_hardware:Environment"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
