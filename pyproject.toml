@@ -102,3 +102,13 @@ tag_message = "Bump version: {current_version} → {new_version}"
 files = [
     { filename = "src/dasmos/__init__.py" },
 ]
+
+# After bump-my-version updates __init__.py but before it commits,
+# regenerate the README (its template embeds {{ version }}) and stage
+# it. Without this, every bump creates a commit + tag with a stale
+# README, which the readme-check gate in release.yml refuses to
+# publish.
+pre_commit_hooks = [
+    "uv run python scripts/generate_readme.py",
+    "git add README.md",
+]
