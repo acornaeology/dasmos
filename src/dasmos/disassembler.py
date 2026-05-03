@@ -737,13 +737,40 @@ class Disassembler:
             # Classify (skip if any byte in the range is already
             # classified — could be a manual byte() call or a prior
             # trace path overlapping us).
+            #
+            # Move boundary: an opcode whose byte range straddles a
+            # move boundary can't be rendered as a single instruction
+            # — its bytes need to land in different runtime-address
+            # spaces to satisfy each move's copyblock, and beebasm
+            # assembles one instruction's bytes contiguously at one
+            # PC. Leave the bytes for the leftover-classify pass to
+            # mark individually as ``Byte(1)`` so each lands under
+            # the right move at render time.
+            #
+            # Surface a warning so the driver author knows what the
+            # rendered output WILL look like (split equbs rather
+            # than the original instruction) — the scenario itself
+            # is valid (NFS-3.65's BVC at &9564 straddling moves 3
+            # and 4 reflects real ROM behaviour) but the rendering
+            # is surprising enough to flag.
             if not self._classifications.is_classified(addr, opcode.length()):
-                try:
-                    self._classifications.add_classification(addr, opcode)
-                except ClassificationError:
-                    # Defensive — is_classified should have caught
-                    # this. Continue tracing regardless.
-                    pass
+                if self._opcode_straddles_move_boundary(addr, opcode.length()):
+                    import warnings
+                    warnings.warn(
+                        f"opcode at &{addr:04x} ({opcode.default_mnemonic()}, "
+                        f"{opcode.length()} bytes) straddles a move "
+                        f"boundary; rendering each byte individually as "
+                        f"``equb`` since one instruction can't span two "
+                        f"runtime spaces.",
+                        stacklevel=2,
+                    )
+                else:
+                    try:
+                        self._classifications.add_classification(addr, opcode)
+                    except ClassificationError:
+                        # Defensive — is_classified should have caught
+                        # this. Continue tracing regardless.
+                        pass
 
             # Continue tracing whether we classified or not — the
             # control flow is determined by the opcode, not by who
@@ -773,6 +800,30 @@ class Disassembler:
             for next_addr in opcode.next_addresses(self._memory, addr):
                 if 0 <= next_addr < self._memory.address_space_size:
                     pending.append(next_addr)
+
+    def _opcode_straddles_move_boundary(
+        self, addr: int, length: int,
+    ) -> bool:
+        """True iff a multi-byte opcode at ``[addr, addr+length)``
+        crosses any move's source-range start or end.
+
+        Boundaries are at ``src_binary_addr`` and
+        ``src_binary_addr + length`` for every registered move
+        (excluding the base move). An instruction is "straddling" if
+        a boundary falls strictly between its first and last byte.
+        Pure-internal helper for :meth:`_trace`.
+        """
+        if length < 2:
+            return False
+        end = addr + length
+        for mv in self._moves._move_definitions[1:]:  # skip base move
+            for boundary in (
+                int(mv.src_binary_addr),
+                int(mv.src_binary_addr) + mv.length,
+            ):
+                if addr < boundary < end:
+                    return True
+        return False
 
     def _classify_leftovers(self) -> None:
         """Mark every loaded-but-unclassified byte as a 1-byte

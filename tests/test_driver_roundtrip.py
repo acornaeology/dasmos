@@ -1838,6 +1838,169 @@ class TestMoveContext:
         text = roundtrip_via_beebasm(source, 0x8000, configure)
         assert "; this code runs at zero-page-ish" in text
 
+    def test_instruction_straddling_move_boundary_renders_as_bytes(
+        self, roundtrip_via_beebasm,
+    ):
+        """When the trace would classify a multi-byte instruction
+        whose bytes straddle a move boundary, dasmos leaves the
+        bytes for the leftover-classify pass — they render as
+        ``equb`` lines, one per byte. Without this, the renderer
+        would try to emit a single instruction but the bytes belong
+        to two different runtime spaces (one each side of the
+        boundary), and beebasm errors with "Trying to assemble over
+        existing code".
+
+        This is the NFS-3.65 case: BVC at &9564 has its operand
+        byte at &9565, exactly the start of the page-6 move.
+        """
+        # Layout: 6-byte block at &8000 is moved to &0070; another
+        # 6-byte block at &8006 is moved to &0080. The BNE at &8005
+        # straddles &8005 (in move 1) → &8006 (in move 2).
+        source = """
+            org &8000
+        .start
+            jsr &0070
+            ldx #&00     ; &8003-4
+            bne after    ; &8005-6 — STRADDLES the &8006 move boundary
+            nop : nop : nop : nop  ; &8007-a
+        .after
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            # Move 1: &8003..&8005 → &0070..&0072
+            m1 = d.add_move(0x70, 0x8003, 3)
+            with d.using_move(m1):
+                d.label(0x70, "page70")
+            # Move 2: &8006..&800b → &0080..&0085 (BNE operand byte
+            # at &8006 is the boundary)
+            m2 = d.add_move(0x80, 0x8006, 6)
+            with d.using_move(m2):
+                d.label(0x80, "page80")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # Both moves' org / copyblock present (round-trip succeeded).
+        assert "org &70" in text
+        assert "org &80" in text
+        # The straddling instruction's bytes appear as equbs (the
+        # trace declined to classify the BNE as a single Opcode
+        # because its byte range crossed the move-2 boundary).
+        # If the renderer DID try to emit the BNE as one
+        # instruction, beebasm's "trying to assemble over existing
+        # code" error would have failed the fixture's round-trip
+        # assertion — so reaching this point already proves the
+        # behaviour.
+
+    def test_move_starting_mid_instruction_is_entered(
+        self, roundtrip_via_beebasm,
+    ):
+        """A move whose source binary address is mid-instruction
+        (not the start of any classification) still gets entered —
+        the body walk re-evaluates the desired active move at every
+        iteration, not just at classification starts. NFS-3.65's
+        page-6 copy starts at &9565 which is the operand byte of a
+        BVC at &9564; without per-iteration re-evaluation the move
+        would never enter and references to its labels would resolve
+        to wrong addresses.
+        """
+        # Layout:
+        #   8000: jsr &0070       (3 bytes)
+        #   8003: rts             (1 byte)
+        #   8004: bne &8006       (2 bytes — operand at &8005)
+        #   8006: nop : nop : nop : rts  (4 bytes — &8006..&8009)
+        # Move src=&8005 (mid-BNE!), length=4, dest=&0070.
+        source = """
+            org &8000
+        .start
+            jsr &0070
+            rts
+            bne after
+        .moved_src
+        .after
+            nop : nop : nop : rts  ; &8006..&8009 emitted under move
+        save "step1.bin", start, P%
+        moved_dest = &0070
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            # Move starts at &8005 — the BNE's operand byte.
+            mid = d.add_move(0x0070, 0x8005, 5)
+            with d.using_move(mid):
+                d.label(0x70, "moved_dest")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # The renderer entered the move (emitted org &70 and the
+        # close-out directives) even though &8005 isn't a
+        # classification start.
+        assert "org &70" in text
+        assert "copyblock" in text
+        # Round-trip byte equality already asserted by the fixture.
+
+    def test_overlapping_moves_truncate_outer_round_trip(
+        self, roundtrip_via_beebasm,
+    ):
+        """When two moves' source ranges overlap, the renderer
+        truncates the outer move's emission at the inner move's start
+        (each byte is emitted exactly once, under the most-recently-
+        active move's PC). The trace's understanding of label
+        positions is unaffected — only the rendered ``copyblock``
+        stretches over the bytes it actually assembled.
+
+        The Acorn NFS driver registers exactly this pattern: a ZP
+        copy at ``move(0x16, 0x9324, 0x61)`` (97 bytes from &9324)
+        and a page-4 copy at ``move(0x400, 0x9365, 0x100)`` (256
+        bytes from &9365). The 32-byte overlap (&9365..&9384) is
+        emitted under the inner (page-4) move; the outer (ZP) move
+        only emits its first 65 bytes — the bytes it owns
+        EXCLUSIVELY.
+        """
+        # Build a tiny ROM with two overlapping moves.
+        # Layout: outer move src &8004..&8013 (16 bytes, dest &0070);
+        # inner move src &800a..&8019 (16 bytes, dest &0080).
+        # Overlap: &800a..&8013 (10 bytes).
+        source = """
+            org &8000
+        .start
+            jsr &0070       ; calls outer move's dest
+            rts
+        .outer_src
+            nop : nop : nop : nop : nop : nop  ; &8004..&8009 (6 bytes — outer-only)
+        .inner_src
+            nop : nop : nop : nop : nop : nop  ; &800a..&800f (6 bytes — overlap)
+            nop : nop : nop : nop              ; &8010..&8013 (4 bytes — overlap)
+            nop : nop : nop : nop : nop : nop  ; &8014..&8019 (6 bytes — inner-only)
+        .after
+            rts
+        save "step1.bin", start, P%
+        outer_dest = &0070
+        inner_dest = &0080
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.label(0x8004, "outer_src")
+            d.label(0x800a, "inner_src")
+            d.add_move(0x0070, 0x8004, 16)  # outer
+            inner_id = d.add_move(0x0080, 0x800a, 16)  # inner (overlaps)
+            with d.using_move(inner_id):
+                d.label(0x80, "inner_dest")
+            d.label(0x70, "outer_dest")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # Outer move's ``copyblock`` covers only the bytes actually
+        # emitted (the 6 outer-exclusive bytes).
+        # Inner move's ``copyblock`` covers all 16 of its bytes.
+        assert "copyblock outer_dest" in text
+        assert "copyblock inner_dest" in text
+        # Both ``org`` directives appear.
+        assert "org &70" in text
+        assert "org &80" in text
+        # If we got here, the round-trip already byte-matched (the
+        # ``roundtrip_via_beebasm`` fixture asserts byte equality).
+
     def test_moved_block_emits_relocation_directives(
         self, roundtrip_via_beebasm,
     ):

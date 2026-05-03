@@ -403,39 +403,58 @@ class BeebasmRenderer(TextRenderer):
             if not (int(load_start) <= int(binary_addr) < int(load_end)):
                 continue
 
-            # Move-region exit: if the iteration has stepped past the
-            # end of the active relocated block, emit the close-out
-            # directives and resume in the source-PC context.
-            if active_move is not None and int(binary_addr) >= (
-                int(active_move.src_binary_addr) + active_move.length
-            ):
-                lines.extend(self._emit_move_exit(
-                    active_move, active_move_src_label, active_move_dest_label,
-                ))
-                active_move = None
-                active_move_id = None
-                active_move_src_label = None
-                active_move_dest_label = None
-
-            # Move-region entry: if this binary address is the start
-            # of a relocation, anchor the source label here, switch PC
-            # to the destination, and remember the labels we need for
-            # the close-out.
-            if active_move is None and int(binary_addr) in moves_by_src:
-                move = moves_by_src[int(binary_addr)]
-                active_move_src_label = self._first_explicit_name(
-                    ir, int(binary_addr),
-                )
-                active_move_dest_label = self._first_explicit_name(
-                    ir, int(move.dest_runtime_addr),
-                )
-                if active_move_src_label is not None:
-                    lines.append(self.inline_label(active_move_src_label))
-                lines.extend(self._emit_move_enter(
-                    moves_by_src, move, active_move_src_label,
-                ))
-                active_move = move
-                active_move_id = move_ids.get(id(move))
+            # Decide which move (if any) should be active for THIS
+            # binary address. Single source of truth — handles
+            # overlapping moves (most-recently-started wins), moves
+            # whose source is mid-instruction (the iteration skips
+            # past the start address), and the normal sequential
+            # case all in one place.
+            desired_move = self._desired_active_move_at(
+                int(binary_addr), moves_by_src,
+            )
+            if desired_move is not active_move:
+                if active_move is not None:
+                    if (
+                        desired_move is not None
+                        and int(binary_addr) < int(active_move.src_binary_addr)
+                                                + active_move.length
+                    ):
+                        import warnings
+                        warnings.warn(
+                            f"move at src=&"
+                            f"{int(desired_move.src_binary_addr):04x} "
+                            f"overlaps the still-active move at src="
+                            f"&{int(active_move.src_binary_addr):04x}; "
+                            "truncating the outer move's emission. Each "
+                            "source byte is assembled exactly once — "
+                            "under the inner move.",
+                            stacklevel=2,
+                        )
+                    lines.extend(self._emit_move_exit(
+                        active_move, active_move_src_label,
+                        active_move_dest_label,
+                    ))
+                    active_move = None
+                    active_move_id = None
+                    active_move_src_label = None
+                    active_move_dest_label = None
+                if desired_move is not None:
+                    src_addr = int(desired_move.src_binary_addr)
+                    active_move_src_label = self._first_explicit_name(
+                        ir, src_addr,
+                    )
+                    active_move_dest_label = self._first_explicit_name(
+                        ir, int(desired_move.dest_runtime_addr),
+                    )
+                    if active_move_src_label is not None:
+                        lines.append(
+                            self.inline_label(active_move_src_label),
+                        )
+                    lines.extend(self._emit_move_enter(
+                        moves_by_src, desired_move, active_move_src_label,
+                    ))
+                    active_move = desired_move
+                    active_move_id = move_ids.get(id(desired_move))
 
             # Map binary → runtime so label lookups work even when
             # this byte belongs to a relocation. Without a move,
@@ -736,6 +755,37 @@ class BeebasmRenderer(TextRenderer):
         )
 
     # -- move-aware emission --------------------------------------------
+
+    @staticmethod
+    def _desired_active_move_at(
+        binary_addr: int,
+        moves_by_src: dict[int, "MoveDefinition"],
+    ) -> "MoveDefinition | None":
+        """Pick the move that should be active when emitting the byte
+        at ``binary_addr`` — the one whose source range contains the
+        address, preferring the most-recently-started one when several
+        overlap (matching py8dis's "inner move wins" semantics).
+
+        Returning ``None`` means we should be outside any move at
+        this position. The body walk transitions to this state by
+        emitting the appropriate enter/exit directives.
+
+        Why a per-address recomputation rather than tracking
+        enter/exit events: it correctly handles three otherwise-
+        awkward cases — overlapping moves (covered by "preferring
+        the most recent"), a move whose source starts mid-
+        instruction (covered by treating any address inside the
+        range as needing the move active, not just the start), and
+        adjacent moves where one ends exactly where the next begins
+        (covered by the < end / >= start arithmetic).
+        """
+        candidates = [
+            mv for src, mv in moves_by_src.items()
+            if src <= binary_addr < src + mv.length
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda mv: int(mv.src_binary_addr))
 
     @staticmethod
     def _moves_by_src_addr(ir) -> dict[int, "MoveDefinition"]:
