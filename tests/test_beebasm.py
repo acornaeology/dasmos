@@ -536,7 +536,7 @@ class TestBeebasmRoundTrip:
         text = str(ir.render(renderer))
 
         asm_path = tmp_path / "src.asm"
-        asm_path.write_text(text)
+        asm_path.write_text(text, encoding="utf-8")
 
         result = subprocess.run(
             [BEEBASM, "-i", str(asm_path)],
@@ -612,7 +612,7 @@ class TestBeebasmRoundTrip:
         assert ".None" not in text
 
         asm_path = tmp_path / "src.asm"
-        asm_path.write_text(text)
+        asm_path.write_text(text, encoding="utf-8")
         result = subprocess.run(
             [BEEBASM, "-i", str(asm_path)],
             capture_output=True, text=True, cwd=str(tmp_path),

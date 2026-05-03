@@ -85,9 +85,9 @@ class TestNfsPorterEndToEnd:
         assert hashlib.md5(rom).hexdigest() == ROM_MD5
         assert len(rom) == ROM_SIZE
 
-        ported_src = _porter.port(ORIGINAL_DRIVER_PATH.read_text())
+        ported_src = _porter.port(ORIGINAL_DRIVER_PATH.read_text(encoding="utf-8"))
         ported_filepath = tmp_path / "ported_driver.py"
-        ported_filepath.write_text(ported_src)
+        ported_filepath.write_text(ported_src, encoding="utf-8")
 
         output_dirpath = tmp_path / "out"
         output_dirpath.mkdir()
@@ -222,9 +222,9 @@ def _run_dasmos_driver(tmp_path) -> Path:
     """Port the NFS driver via py8dis2dasmos, run it, return the
     output dir. Helper for both the asm and JSON parity tests.
     """
-    ported_src = _porter.port(ORIGINAL_DRIVER_PATH.read_text())
+    ported_src = _porter.port(ORIGINAL_DRIVER_PATH.read_text(encoding="utf-8"))
     ported_filepath = tmp_path / "ported_driver.py"
-    ported_filepath.write_text(ported_src)
+    ported_filepath.write_text(ported_src, encoding="utf-8")
     output_dirpath = tmp_path / "out"
     output_dirpath.mkdir()
     env = os.environ.copy()
@@ -246,7 +246,7 @@ def _render_dasmos_json(tmp_path) -> dict:
     selection in the ported script's tail.
     """
     import re
-    ported_src = _porter.port(ORIGINAL_DRIVER_PATH.read_text())
+    ported_src = _porter.port(ORIGINAL_DRIVER_PATH.read_text(encoding="utf-8"))
     # Swap the beebasm-renderer call for the json renderer. The
     # porter emits a single ``output = str(d.disassemble().render(
     # 'beebasm', ...))`` line at the tail; replace its inside.
@@ -256,7 +256,7 @@ def _render_dasmos_json(tmp_path) -> dict:
         ported_src,
     )
     ported_filepath = tmp_path / "ported_driver_json.py"
-    ported_filepath.write_text(ported_src)
+    ported_filepath.write_text(ported_src, encoding="utf-8")
     output_dirpath = tmp_path / "out_json"
     output_dirpath.mkdir()
     env = os.environ.copy()
@@ -272,7 +272,7 @@ def _render_dasmos_json(tmp_path) -> dict:
     # Driver writes to ``nfs-3.65.asm`` regardless of content.
     out_filepath = output_dirpath / "nfs-3.65.asm"
     import json as _json
-    return _json.loads(out_filepath.read_text())
+    return _json.loads(out_filepath.read_text(encoding="utf-8"))
 
 
 @pytest.mark.beebasm
@@ -304,8 +304,8 @@ class TestNfsPy8disParity:
         output_dirpath = _run_dasmos_driver(tmp_path)
         candidate_filepath = output_dirpath / "nfs-3.65.asm"
 
-        ref_tokens = _comment_tokens(PY8DIS_REFERENCE_PATH.read_text())
-        das_tokens = _comment_tokens(candidate_filepath.read_text())
+        ref_tokens = _comment_tokens(PY8DIS_REFERENCE_PATH.read_text(encoding="utf-8"))
+        das_tokens = _comment_tokens(candidate_filepath.read_text(encoding="utf-8"))
 
         missing = ref_tokens - das_tokens
         sample = sorted(missing)[:25]
@@ -324,7 +324,7 @@ class TestNfsPy8disParity:
         diverges it's a real bug (load-range computation error).
         """
         import json as _json
-        ref = _json.loads(PY8DIS_REFERENCE_JSON_PATH.read_text())
+        ref = _json.loads(PY8DIS_REFERENCE_JSON_PATH.read_text(encoding="utf-8"))
         das = _render_dasmos_json(tmp_path)
         assert das["meta"] == ref["meta"]
 
@@ -334,7 +334,7 @@ class TestNfsPy8disParity:
         down as the renderer learns this section.
         """
         import json as _json
-        ref = _json.loads(PY8DIS_REFERENCE_JSON_PATH.read_text())
+        ref = _json.loads(PY8DIS_REFERENCE_JSON_PATH.read_text(encoding="utf-8"))
         das = _render_dasmos_json(tmp_path)
         ref_names = {c["name"] for c in ref["constants"]}
         das_names = {c["name"] for c in das["constants"]}
@@ -352,7 +352,7 @@ class TestNfsPy8disParity:
         (MAX_SUBROUTINES_MISSING = 0).
         """
         import json as _json
-        ref = _json.loads(PY8DIS_REFERENCE_JSON_PATH.read_text())
+        ref = _json.loads(PY8DIS_REFERENCE_JSON_PATH.read_text(encoding="utf-8"))
         das = _render_dasmos_json(tmp_path)
         ref_addrs = {s["addr"] for s in ref["subroutines"]}
         das_addrs = {s["addr"] for s in das["subroutines"]}
@@ -375,7 +375,7 @@ class TestNfsPy8disParity:
         relative to py8dis. Lower it as the algorithm tightens.
         """
         import json as _json
-        ref = _json.loads(PY8DIS_REFERENCE_JSON_PATH.read_text())
+        ref = _json.loads(PY8DIS_REFERENCE_JSON_PATH.read_text(encoding="utf-8"))
         das = _render_dasmos_json(tmp_path)
         ref_ft = {s["addr"] for s in ref["subroutines"]
                   if s.get("fall_through")}
@@ -404,7 +404,7 @@ class TestNfsPy8disParity:
         includes auto-generated labels py8dis classifies differently).
         """
         import json as _json
-        ref = _json.loads(PY8DIS_REFERENCE_JSON_PATH.read_text())
+        ref = _json.loads(PY8DIS_REFERENCE_JSON_PATH.read_text(encoding="utf-8"))
         das = _render_dasmos_json(tmp_path)
         ref_names = set(ref["external_labels"])
         das_names = set(das["external_labels"])
@@ -424,7 +424,7 @@ class TestNfsPy8disParity:
         emit several) — tolerated.
         """
         import json as _json
-        ref = _json.loads(PY8DIS_REFERENCE_JSON_PATH.read_text())
+        ref = _json.loads(PY8DIS_REFERENCE_JSON_PATH.read_text(encoding="utf-8"))
         das = _render_dasmos_json(tmp_path)
         ref_addrs = {it["addr"] for it in ref["items"]}
         das_addrs = {it["addr"] for it in das["items"]}
@@ -452,7 +452,7 @@ class TestNfsPy8disParity:
         the residual root causes of each gap.
         """
         import json as _json
-        ref = _json.loads(PY8DIS_REFERENCE_JSON_PATH.read_text())
+        ref = _json.loads(PY8DIS_REFERENCE_JSON_PATH.read_text(encoding="utf-8"))
         das = _render_dasmos_json(tmp_path)
         ref_by_addr = {it["addr"]: it for it in ref["items"]}
         das_by_addr = {it["addr"]: it for it in das["items"]}
@@ -479,7 +479,7 @@ class TestNfsPy8disParity:
         BVC straddle whose reference-tracking is necessarily lossy).
         """
         import json as _json
-        ref = _json.loads(PY8DIS_REFERENCE_JSON_PATH.read_text())
+        ref = _json.loads(PY8DIS_REFERENCE_JSON_PATH.read_text(encoding="utf-8"))
         das = _render_dasmos_json(tmp_path)
         ref_by_addr = {it["addr"]: it for it in ref["items"]}
         das_by_addr = {it["addr"]: it for it in das["items"]}

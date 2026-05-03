@@ -97,7 +97,11 @@ def main() -> int:
     rendered = render()
 
     if args.check:
-        existing = README_FILEPATH.read_text() if README_FILEPATH.exists() else ""
+        existing = (
+            README_FILEPATH.read_text(encoding="utf-8")
+            if README_FILEPATH.exists()
+            else ""
+        )
         if rendered == existing:
             return 0
         sys.stderr.write("README.md is out of sync with the generator.\n")
@@ -112,7 +116,7 @@ def main() -> int:
         )
         return 1
 
-    README_FILEPATH.write_text(rendered)
+    README_FILEPATH.write_text(rendered, encoding="utf-8")
     return 0
 
 

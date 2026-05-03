@@ -102,7 +102,7 @@ def assemble_beebasm(tmp_path: Path):
 
     def _assemble(source: str, *, name: str = "in") -> bytes:
         asm = tmp_path / f"{name}.asm"
-        asm.write_text(source)
+        asm.write_text(source, encoding="utf-8")
         result = subprocess.run(
             [BEEBASM, "-i", str(asm)],
             capture_output=True, text=True, cwd=str(tmp_path),
@@ -206,7 +206,7 @@ def roundtrip_via_beebasm(tmp_path: Path):
     def _roundtrip(source: str, load_addr: int, configure: Callable) -> str:
         # Step 1: assemble the known source via beebasm.
         asm_in = tmp_path / "step1_in.asm"
-        asm_in.write_text(source)
+        asm_in.write_text(source, encoding="utf-8")
         result = subprocess.run(
             [BEEBASM, "-i", str(asm_in)],
             capture_output=True, text=True, cwd=str(tmp_path),
@@ -235,7 +235,7 @@ def roundtrip_via_beebasm(tmp_path: Path):
 
         # Step 3: re-assemble the dasmos output via beebasm.
         asm_out = tmp_path / "step3.asm"
-        asm_out.write_text(text)
+        asm_out.write_text(text, encoding="utf-8")
         result = subprocess.run(
             [BEEBASM, "-i", str(asm_out)],
             capture_output=True, text=True, cwd=str(tmp_path),

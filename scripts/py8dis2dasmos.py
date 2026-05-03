@@ -826,9 +826,19 @@ def main(argv: list[str] | None = None) -> int:
             "would produce"
         ),
     )
+    parser.add_argument(
+        "--encoding",
+        default="utf-8",
+        help=(
+            "encoding used to read the input driver (default UTF-8). "
+            "Driver scripts are Python source and should normally be "
+            "UTF-8; override only when porting a driver written in a "
+            "different encoding."
+        ),
+    )
     args = parser.parse_args(argv)
 
-    source = Path(args.input).read_text()
+    source = Path(args.input).read_text(encoding=args.encoding)
     ported = port(source)
 
     if args.check:

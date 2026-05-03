@@ -112,7 +112,7 @@ class TestImports:
             output = go(print_output=False)
             structured = get_structured()
             json_filepath = _output_dirpath / "thing.json"
-            json_filepath.write_text(json.dumps(structured))
+            json_filepath.write_text(json.dumps(structured), encoding="utf-8")
         """)
         assert "get_structured" not in out
         # The cascade drops the line that references ``structured``.
@@ -387,7 +387,7 @@ class TestPorterEndToEnd:
         # its stdout (which is the beebasm source via go() →
         # print(str(ir.render(...)))).
         ported_path = tmp_path / "ported.py"
-        ported_path.write_text(ported)
+        ported_path.write_text(ported, encoding="utf-8")
 
         import subprocess
         result = subprocess.run(
@@ -412,7 +412,7 @@ class TestPorterEndToEnd:
         if _BEEBASM is None:
             pytest.skip("beebasm binary not found")
         rebuilt_asm = tmp_path / "rebuilt.asm"
-        rebuilt_asm.write_text(beebasm_source)
+        rebuilt_asm.write_text(beebasm_source, encoding="utf-8")
         rebuilt_bin = tmp_path / "rebuilt.bin"
         result = subprocess.run(
             [_BEEBASM, "-i", str(rebuilt_asm), "-o", str(rebuilt_bin)],

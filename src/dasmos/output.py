@@ -6,12 +6,16 @@ Every :class:`~dasmos.renderer.Renderer` returns a subclass of
 callers that want structured data without going through serialisation
 and back.
 
-This means a uniform write-to-file idiom works for every output type:
+This means a uniform write-to-file idiom works for every output type
+— always pass an explicit ``encoding`` (UTF-8 unless you have a
+specific reason otherwise) so behaviour is identical across
+platforms; relying on the locale default produces cp1252 on Windows
+and silently mangles em-dashes:
 
 .. code-block:: python
 
-    Path("out.asm").write_text(str(beebasm_output))
-    Path("out.json").write_text(str(json_output))
+    Path("out.asm").write_text(str(beebasm_output), encoding="utf-8")
+    Path("out.json").write_text(str(json_output), encoding="utf-8")
 
 …while structured renderers still expose their data:
 

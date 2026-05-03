@@ -85,9 +85,9 @@ class TestTubeClientPorterEndToEnd:
         assert len(full_rom) == ROM_PHYSICAL_SIZE
         mapped = full_rom[ROM_PHYSICAL_SIZE - MAPPED_SIZE:]
 
-        ported_src = _porter.port(ORIGINAL_DRIVER_PATH.read_text())
+        ported_src = _porter.port(ORIGINAL_DRIVER_PATH.read_text(encoding="utf-8"))
         ported_filepath = tmp_path / "ported_driver.py"
-        ported_filepath.write_text(ported_src)
+        ported_filepath.write_text(ported_src, encoding="utf-8")
 
         output_dirpath = tmp_path / "out"
         output_dirpath.mkdir()
@@ -201,9 +201,9 @@ class TestTubeClientPy8disParity:
         if _BEEBASM is None:
             pytest.skip("beebasm not found")
 
-        ported_src = _porter.port(ORIGINAL_DRIVER_PATH.read_text())
+        ported_src = _porter.port(ORIGINAL_DRIVER_PATH.read_text(encoding="utf-8"))
         ported_filepath = tmp_path / "ported_driver.py"
-        ported_filepath.write_text(ported_src)
+        ported_filepath.write_text(ported_src, encoding="utf-8")
         output_dirpath = tmp_path / "out"
         output_dirpath.mkdir()
         env = os.environ.copy()
@@ -218,8 +218,8 @@ class TestTubeClientPy8disParity:
         )
         candidate_filepath = output_dirpath / "tube-6502-client-1.10.asm"
 
-        ref_tokens = _comment_tokens(PY8DIS_REFERENCE_PATH.read_text())
-        das_tokens = _comment_tokens(candidate_filepath.read_text())
+        ref_tokens = _comment_tokens(PY8DIS_REFERENCE_PATH.read_text(encoding="utf-8"))
+        das_tokens = _comment_tokens(candidate_filepath.read_text(encoding="utf-8"))
 
         missing = ref_tokens - das_tokens
         sample = sorted(missing)[:25]

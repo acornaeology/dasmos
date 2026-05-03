@@ -1,0 +1,19 @@
+# Force LF line endings for all text files on every platform.
+# Git's default core.autocrlf can convert LF→CRLF on Windows
+# checkout, which breaks anything that hashes file contents — most
+# obviously the pinned-MD5 round-trip / parity tests against vendored
+# py8dis fixtures, which compute hashlib.md5 on the file bytes
+# directly. With "text=auto eol=lf", every text file is checked out
+# with LF on Windows too, and the hashes stay stable cross-platform.
+* text=auto eol=lf
+
+# Belt-and-braces for the vendored fixtures whose byte-exact content
+# is load-bearing for round-trip / parity tests:
+tests/fixtures/**/*.py    text eol=lf
+tests/fixtures/**/*.json  text eol=lf
+tests/fixtures/**/*.asm   text eol=lf
+
+# ROM binaries are binary — never apply line-ending or encoding
+# conversion.
+tests/fixtures/**/*.rom   binary
+tests/fixtures/**/*.bin   binary

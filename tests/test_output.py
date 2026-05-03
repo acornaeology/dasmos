@@ -86,11 +86,11 @@ class TestUniformWriteIdiom:
     def test_text_output_can_be_written_via_str(self, tmp_path):
         out = TextOutput("hello world\n")
         path = tmp_path / "out.txt"
-        path.write_text(str(out))
-        assert path.read_text() == "hello world\n"
+        path.write_text(str(out), encoding="utf-8")
+        assert path.read_text(encoding="utf-8") == "hello world\n"
 
     def test_structured_output_can_be_written_via_str(self, tmp_path):
         out = StructuredOutput({"hello": "world"})
         path = tmp_path / "out.json"
-        path.write_text(str(out))
-        assert json.loads(path.read_text()) == {"hello": "world"}
+        path.write_text(str(out), encoding="utf-8")
+        assert json.loads(path.read_text(encoding="utf-8")) == {"hello": "world"}

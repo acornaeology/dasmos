@@ -86,7 +86,7 @@ class TestDisassemble:
         # When --out is given, stdout is mostly silent (one progress
         # line is fine but the asm should NOT be in stdout).
         assert "ldy" not in result.output
-        text = out.read_text()
+        text = out.read_text(encoding="utf-8")
         assert "ldy" in text
         assert "jsr" in text
 
@@ -242,7 +242,7 @@ class TestInit:
             "--env", "acorn_bbc_hardware",
         ])
         assert result.exit_code == 0, result.output
-        text = driver.read_text()
+        text = driver.read_text(encoding="utf-8")
         assert "acorn_mos" in text
         assert "acorn_bbc_hardware" in text
 
@@ -257,14 +257,14 @@ class TestInit:
             "--entry", "&1004",
         ])
         assert result.exit_code == 0, result.output
-        text = driver.read_text()
+        text = driver.read_text(encoding="utf-8")
         # Both entry points appear in the generated driver.
         assert "0x1002" in text or "&1002" in text or "4098" in text
         assert "0x1004" in text or "&1004" in text or "4100" in text
 
     def test_refuses_to_overwrite_existing_driver(self, tiny_rom, tmp_path):
         driver = tmp_path / "driver.py"
-        driver.write_text("# pre-existing\n")
+        driver.write_text("# pre-existing\n", encoding="utf-8")
         runner = CliRunner()
         result = runner.invoke(cli, [
             "init", str(driver),
@@ -273,11 +273,11 @@ class TestInit:
         ])
         assert result.exit_code != 0
         # Existing content is untouched.
-        assert driver.read_text() == "# pre-existing\n"
+        assert driver.read_text(encoding="utf-8") == "# pre-existing\n"
 
     def test_force_overwrites_existing(self, tiny_rom, tmp_path):
         driver = tmp_path / "driver.py"
-        driver.write_text("# pre-existing\n")
+        driver.write_text("# pre-existing\n", encoding="utf-8")
         runner = CliRunner()
         result = runner.invoke(cli, [
             "init", str(driver),
@@ -286,8 +286,8 @@ class TestInit:
             "--force",
         ])
         assert result.exit_code == 0, result.output
-        assert "import dasmos" in driver.read_text()
-        assert "pre-existing" not in driver.read_text()
+        assert "import dasmos" in driver.read_text(encoding="utf-8")
+        assert "pre-existing" not in driver.read_text(encoding="utf-8")
 
     def test_md5_pinned_in_driver(self, tiny_rom, tmp_path):
         import hashlib
@@ -301,5 +301,5 @@ class TestInit:
             "--md5", md5,
         ])
         assert result.exit_code == 0, result.output
-        text = driver.read_text()
+        text = driver.read_text(encoding="utf-8")
         assert md5 in text

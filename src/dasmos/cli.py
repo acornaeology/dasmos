@@ -250,6 +250,12 @@ def _split_envs(env_options: tuple[str, ...]) -> list[str]:
     help="Pin the ROM's MD5 hash. The disassembly fails (without "
          "writing output) if the actual hash differs.",
 )
+@click.option(
+    "--encoding", "encoding", default="utf-8", show_default=True,
+    help="Encoding for the rendered output written via --out. "
+         "Default UTF-8. Reading the ROM is unaffected — ROMs are "
+         "binary.",
+)
 def disassemble_command(
     rom: Path,
     load_addr: int,
@@ -259,6 +265,7 @@ def disassemble_command(
     entries: tuple[int, ...],
     out_path: Path | None,
     md5_hash: str | None,
+    encoding: str,
 ) -> None:
     """Disassemble ROM and write the rendered output.
 
@@ -286,7 +293,7 @@ def disassemble_command(
     output = d.disassemble().render(renderer)
     text = str(output)
     if out_path is not None:
-        out_path.write_text(text, encoding="utf-8")
+        out_path.write_text(text, encoding=encoding)
     else:
         click.echo(text, nl=False)
 
@@ -417,6 +424,11 @@ def _format_entries_block(entries: tuple[int, ...]) -> str:
     "--force", is_flag=True,
     help="Overwrite an existing driver file.",
 )
+@click.option(
+    "--encoding", "encoding", default="utf-8", show_default=True,
+    help="Encoding used to write the generated driver file. "
+         "Default UTF-8.",
+)
 def init_command(
     driver_path: Path,
     rom_path: Path,
@@ -427,6 +439,7 @@ def init_command(
     entries: tuple[int, ...],
     md5_hash: str | None,
     force: bool,
+    encoding: str,
 ) -> None:
     """Scaffold a starter dasmos driver at DRIVER_PATH.
 
@@ -459,11 +472,12 @@ def init_command(
         entries_block=_format_entries_block(entries),
         renderer_repr=repr(renderer),
     )
-    # encoding="utf-8" so the em-dashes in the template survive on
-    # Windows (default locale encoding is cp1252, which would write
-    # them as \x97 bytes — Python then refuses to run the generated
-    # driver because source files must be UTF-8).
-    driver_path.write_text(text, encoding="utf-8")
+    # Always write with an explicit encoding (default UTF-8). On
+    # Windows the locale default is cp1252, which would mangle the
+    # em-dashes in the template into \x97 bytes — Python would then
+    # refuse to run the generated driver since source files must be
+    # UTF-8.
+    driver_path.write_text(text, encoding=encoding)
     click.echo(f"Wrote driver to {driver_path}", err=True)
 
 

@@ -183,7 +183,7 @@ class TestRoundTripVia65C02:
         save "step1.bin", start, P%
         """
         asm_in = tmp_path / "in.asm"
-        asm_in.write_text(src)
+        asm_in.write_text(src, encoding="utf-8")
         result = subprocess.run(
             [_BEEBASM, "-i", str(asm_in)],
             capture_output=True, text=True, cwd=str(tmp_path),
@@ -212,7 +212,7 @@ class TestRoundTripVia65C02:
         # ``save dasmos_start, dasmos_end`` has no filename embedded;
         # beebasm needs ``-o`` to know where to write.
         asm_out = tmp_path / "out.asm"
-        asm_out.write_text(text)
+        asm_out.write_text(text, encoding="utf-8")
         rebuilt_path = tmp_path / "rebuilt.bin"
         result = subprocess.run(
             [_BEEBASM, "-i", str(asm_out), "-o", str(rebuilt_path)],
@@ -247,7 +247,7 @@ class TestRoundTripVia65C02:
         save "step1.bin", start, P%
         """
         asm_in = tmp_path / "in.asm"
-        asm_in.write_text(src)
+        asm_in.write_text(src, encoding="utf-8")
         result = subprocess.run(
             [_BEEBASM, "-i", str(asm_in)],
             capture_output=True, text=True, cwd=str(tmp_path),

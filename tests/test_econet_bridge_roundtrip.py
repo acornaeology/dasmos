@@ -96,7 +96,7 @@ def _roundtrip_via_beebasm(
     text = str(ir.render(renderer))
 
     asm_path = tmp_path / "econet.asm"
-    asm_path.write_text(text)
+    asm_path.write_text(text, encoding="utf-8")
 
     result = subprocess.run(
         [_BEEBASM, "-i", str(asm_path)],
@@ -218,11 +218,11 @@ class TestEconetBridgePorterEndToEnd:
         if _BEEBASM is None:
             pytest.skip("beebasm not found")
 
-        original_driver_src = ORIGINAL_DRIVER_PATH.read_text()
+        original_driver_src = ORIGINAL_DRIVER_PATH.read_text(encoding="utf-8")
         ported_src = _porter.port(original_driver_src)
 
         ported_filepath = tmp_path / "ported_driver.py"
-        ported_filepath.write_text(ported_src)
+        ported_filepath.write_text(ported_src, encoding="utf-8")
 
         output_dirpath = tmp_path / "out"
         output_dirpath.mkdir()
@@ -364,10 +364,10 @@ class TestEconetBridgePy8disParity:
 
         # Run the porter end-to-end (same pipeline as the round-trip
         # test) to get the candidate output.
-        original_driver_src = ORIGINAL_DRIVER_PATH.read_text()
+        original_driver_src = ORIGINAL_DRIVER_PATH.read_text(encoding="utf-8")
         ported_src = _porter.port(original_driver_src)
         ported_filepath = tmp_path / "ported_driver.py"
-        ported_filepath.write_text(ported_src)
+        ported_filepath.write_text(ported_src, encoding="utf-8")
         output_dirpath = tmp_path / "out"
         output_dirpath.mkdir()
         env = os.environ.copy()
@@ -382,8 +382,8 @@ class TestEconetBridgePy8disParity:
         )
         candidate_filepath = output_dirpath / "econet-bridge-variant_1.asm"
 
-        ref_tokens = _comment_tokens(PY8DIS_REFERENCE_PATH.read_text())
-        das_tokens = _comment_tokens(candidate_filepath.read_text())
+        ref_tokens = _comment_tokens(PY8DIS_REFERENCE_PATH.read_text(encoding="utf-8"))
+        das_tokens = _comment_tokens(candidate_filepath.read_text(encoding="utf-8"))
 
         missing = ref_tokens - das_tokens
         sample = sorted(missing)[:25]
