@@ -61,6 +61,34 @@ pip install dasmos
 (or via the `BEEBASM` env var) activates them. CI builds beebasm
 from source per matrix cell so the round-trip is part of the gate.
 
+## Programmatic API
+
+Every CLI capability is also reachable through the package. The
+typical driver-script flow is: pick a CPU plug-in, load a binary,
+register entry points / labels / classifications / annotations,
+disassemble, then render via a renderer plug-in.
+
+```python
+from dasmos import Disassembler, Align
+
+d = Disassembler.create(cpu="nmos6502")
+d.load("rom.bin", 0x8000)
+d.entry(0x8000, name="start")
+d.label(0x8006, "show", description="Display routine")
+d.comment(0x8000, "Entry point.")
+d.comment(0x8000, "magic", align=Align.INLINE)
+
+ir = d.disassemble()
+print(str(ir.render("beebasm")))
+```
+
+That produces beebasm-assemblable source. Re-assembling it via the
+real `beebasm` binary yields a binary byte-identical to the input
+— the load-bearing **round-trip property** *Dasmos*'s test suite
+exercises against real Acorn ROMs (the 8 KB Econet Bridge and the
+2 KB-mapped 6502 Tube Client both round-trip end-to-end with full
+py8dis annotation-content parity).
+
 ## CLI
 
 ```console
@@ -180,34 +208,6 @@ Options:
                               'display' for terminals, 'tsv' for pipes.
   --help                      Show this message and exit.
 ```
-
-## Programmatic API
-
-Every CLI capability is also reachable through the package. The
-typical driver-script flow is: pick a CPU plug-in, load a binary,
-register entry points / labels / classifications / annotations,
-disassemble, then render via a renderer plug-in.
-
-```python
-from dasmos import Disassembler, Align
-
-d = Disassembler.create(cpu="nmos6502")
-d.load("rom.bin", 0x8000)
-d.entry(0x8000, name="start")
-d.label(0x8006, "show", description="Display routine")
-d.comment(0x8000, "Entry point.")
-d.comment(0x8000, "magic", align=Align.INLINE)
-
-ir = d.disassemble()
-print(str(ir.render("beebasm")))
-```
-
-That produces beebasm-assemblable source. Re-assembling it via the
-real `beebasm` binary yields a binary byte-identical to the input
-— the load-bearing **round-trip property** *Dasmos*'s test suite
-exercises against real Acorn ROMs (the 8 KB Econet Bridge and the
-2 KB-mapped 6502 Tube Client both round-trip end-to-end with full
-py8dis annotation-content parity).
 
 ## Migrating a py8dis driver
 
