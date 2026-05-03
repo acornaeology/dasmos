@@ -58,6 +58,16 @@ $ dasmos list-renderers
 {{ list_renderers }}
 ```
 
+```console
+$ dasmos list-environments
+{{ list_environments }}
+```
+
+Environments layer onto a disassembler additively — a driver can
+activate any number of them, in either the constructor's
+``environments=[…]`` kwarg or via repeated
+``d.use_environment(…)`` calls.
+
 `describe-cpu` (and the matching `describe-renderer`) shows the full
 docstring of a single plug-in:
 

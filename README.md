@@ -44,10 +44,12 @@ Options:
   --help     Show this message and exit.
 
 Commands:
-  describe-cpu       Describe a specific CPU plug-in.
-  describe-renderer  Describe a specific renderer plug-in.
-  list-cpus          List the available CPU plug-ins.
-  list-renderers     List the available renderer plug-ins.
+  describe-cpu          Describe a specific CPU plug-in.
+  describe-environment  Describe a specific environment plug-in.
+  describe-renderer     Describe a specific renderer plug-in.
+  list-cpus             List the available CPU plug-ins.
+  list-environments     List the available environment plug-ins.
+  list-renderers        List the available renderer plug-ins.
 ```
 
 The CLI commands inherit a uniform `--as display | tsv | json` story
@@ -81,6 +83,22 @@ $ dasmos list-renderers
 │ beebasm │ Beebasm-syntax renderer. │
 └─────────┴──────────────────────────┘
 ```
+
+```console
+$ dasmos list-environments
+    Environments registered under     
+         'dasmos.environment'         
+┏━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Name      ┃ Description            ┃
+┡━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ acorn_mos │ Acorn MOS environment. │
+└───────────┴────────────────────────┘
+```
+
+Environments layer onto a disassembler additively — a driver can
+activate any number of them, in either the constructor's
+``environments=[…]`` kwarg or via repeated
+``d.use_environment(…)`` calls.
 
 `describe-cpu` (and the matching `describe-renderer`) shows the full
 docstring of a single plug-in:

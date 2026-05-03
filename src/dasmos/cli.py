@@ -16,6 +16,11 @@ from asyoulikeit import (
 
 from dasmos import __version__
 from dasmos.cpu import CPU_NAMESPACE, cpu_names, describe_cpu
+from dasmos.environment import (
+    ENVIRONMENT_NAMESPACE,
+    describe_environment,
+    environment_names,
+)
 from dasmos.renderer import (
     RENDERER_NAMESPACE,
     describe_renderer,
@@ -89,6 +94,38 @@ def describe_renderer_command(name: str) -> Reports:
     """Describe a specific renderer plug-in."""
     return Reports(renderer=Report(data=ScalarContent(
         value=describe_renderer(name),
+        title=name,
+    )))
+
+
+@cli.command(name="list-environments")
+@report_output(reports={
+    "environments": "Registered environment plug-ins with one-line descriptions.",
+})
+def list_environments_command() -> Reports:
+    """List the available environment plug-ins."""
+    table = (
+        TableContent(title=f"Environments registered under {ENVIRONMENT_NAMESPACE!r}")
+        .add_column("name", "Name")
+        .add_column("description", "Description")
+    )
+    for name in sorted(environment_names()):
+        table.add_row(
+            name=name,
+            description=describe_environment(name, single_line=True),
+        )
+    return Reports(environments=Report(data=table))
+
+
+@cli.command(name="describe-environment")
+@click.argument("name")
+@report_output(reports={
+    "environment": "The full description of one registered environment plug-in.",
+})
+def describe_environment_command(name: str) -> Reports:
+    """Describe a specific environment plug-in."""
+    return Reports(environment=Report(data=ScalarContent(
+        value=describe_environment(name),
         title=name,
     )))
 

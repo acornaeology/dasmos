@@ -63,6 +63,7 @@ class Disassembler:
         self,
         cpu: Cpu,
         *,
+        environments: tuple = (),
         auto_labels_enabled: bool = True,
         auto_label_data_prefix: str = "l",
         auto_label_code_prefix: str = "c",
@@ -97,6 +98,11 @@ class Disassembler:
         self._entry_points: list[BinaryAddr] = []
         self._traced: set[int] = set()
         self._disassembled = False
+        # Environments registered via constructor activate
+        # immediately. Environments needing loaded memory should be
+        # activated explicitly via use_environment() AFTER load().
+        for env in environments:
+            self.use_environment(env)
 
     # -- factory ---------------------------------------------------------
 
@@ -186,6 +192,37 @@ class Disassembler:
         idiom (D-006 / D-011).
         """
         return self._moves.using(move_id)
+
+    # -- driver-script API: environments --------------------------------
+
+    def use_environment(self, env) -> None:
+        """Activate an environment plug-in on this disassembler.
+
+        ``env`` may be a string (the registered name, resolved via
+        Stevedore) or an :class:`~dasmos.environment.Environment`
+        instance.
+
+        Environments are **composable**: calling ``use_environment``
+        more than once layers their effects in order. Activating the
+        same environment twice is a harmless no-op (the underlying
+        managers deduplicate registrations).
+
+        Constructor sugar: ``Disassembler.create(cpu=...,
+        environments=[...])`` activates each environment immediately
+        in order. Environments that need loaded memory (e.g. one that
+        inspects bytes at the ROM header) should be activated AFTER
+        :meth:`load` rather than via the constructor kwarg.
+        """
+        from dasmos.environment import Environment, create_environment
+        self._raise_if_disassembled("use_environment")
+        if isinstance(env, str):
+            env = create_environment(env)
+        if not isinstance(env, Environment):
+            raise TypeError(
+                f"use_environment expected str or Environment, "
+                f"got {type(env).__name__}"
+            )
+        env.setup(self)
 
     # -- driver-script API: entry points --------------------------------
 

@@ -56,6 +56,7 @@ cmos65c02 = "dasmos.ext.cpus.cmos65c02:Cpu"
 beebasm = "dasmos.ext.renderers.beebasm:Renderer"
 
 [project.entry-points."dasmos.environment"]
+acorn_mos = "dasmos.ext.environments.acorn_mos:Environment"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
