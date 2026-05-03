@@ -98,10 +98,14 @@ class TestAnnotationStore:
         assert store.get(0x8000) == [c]
 
     def test_multiple_entries_at_same_address_preserve_insertion_order(self):
+        # Use distinct alignments so no duplicate-warning fires —
+        # this test is about insertion order, not the duplicate
+        # check. (The duplicate-warning behaviour is covered in
+        # ``TestAnnotationStoreDuplicateWarning`` below.)
         store = AnnotationStore()
-        a = Comment(text="first")
-        b = Comment(text="second")
-        c = Comment(text="third")
+        a = Comment(text="first", align=Align.BEFORE_LABEL)
+        b = Comment(text="second", align=Align.BEFORE_LINE)
+        c = Comment(text="third", align=Align.AFTER_LINE)
         store.add(0x8000, a)
         store.add(0x8000, b)
         store.add(0x8000, c)
@@ -137,10 +141,13 @@ class TestAnnotationStore:
         assert 0x8000 not in s2
 
     def test_iter_yields_addresses(self):
+        # Use distinct alignments at &8000 to avoid the
+        # duplicate-warning — this test is about address iteration,
+        # not duplicate handling.
         store = AnnotationStore()
-        store.add(0x8000, Comment(text="a"))
+        store.add(0x8000, Comment(text="a", align=Align.BEFORE_LABEL))
         store.add(0x9000, Comment(text="b"))
-        store.add(0x8000, Comment(text="c"))
+        store.add(0x8000, Comment(text="c", align=Align.INLINE))
         assert set(int(a) for a in store) == {0x8000, 0x9000}
 
     def test_items_yields_address_entries_pairs(self):
@@ -149,3 +156,86 @@ class TestAnnotationStore:
         store.add(0x9000, Comment(text="b"))
         result = {int(a): [e.text for e in entries] for a, entries in store.items()}
         assert result == {0x8000: ["a"], 0x9000: ["b"]}
+
+
+class TestAnnotationStoreDuplicateWarning:
+    """A second annotation at the same (address, align, type) is
+    almost always a driver-script bug — likely a copy-paste error,
+    or an attempt to OVERRIDE an earlier comment that ends up
+    appending instead. We warn (don't raise) so the disassembly
+    still completes; both entries are stored, and the user sees
+    the warning to decide how to fix it.
+    """
+
+    def test_duplicate_comment_same_align_warns(self):
+        import warnings
+        store = AnnotationStore()
+        store.add(0x8000, Comment(text="first"))
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            store.add(0x8000, Comment(text="second"))
+        # Exactly one warning, and it identifies the address +
+        # alignment + the existing entry's text so the user can
+        # locate the earlier comment.
+        assert len(caught) == 1
+        msg = str(caught[0].message)
+        assert "8000" in msg
+        assert "before_label" in msg.lower() or "BEFORE_LABEL" in msg
+        # Both entries are still stored.
+        assert len(store.get(0x8000)) == 2
+
+    def test_duplicate_comment_different_align_no_warning(self):
+        # A BEFORE_LABEL comment plus an INLINE comment at the same
+        # address is a common pattern (the latter is a trailing
+        # remark on the instruction). No warning.
+        import warnings
+        store = AnnotationStore()
+        store.add(0x8000, Comment(text="header", align=Align.BEFORE_LABEL))
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            store.add(0x8000, Comment(text="trailer", align=Align.INLINE))
+        assert caught == []
+
+    def test_comment_alongside_banner_no_warning(self):
+        # Comment + Banner at the same (addr, align) is OK — the
+        # check is per-type. The renderer interleaves them by
+        # alignment bucket regardless.
+        import warnings
+        store = AnnotationStore()
+        store.add(0x8000, Banner(title="A subroutine"))
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            store.add(0x8000, Comment(text="leading remark"))
+        assert caught == []
+
+    def test_duplicate_banner_same_align_warns(self):
+        # Two banners at the same address — typically a driver bug
+        # (e.g. ``subroutine()`` called twice for the same addr).
+        import warnings
+        store = AnnotationStore()
+        store.add(0x8000, Banner(title="First"))
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            store.add(0x8000, Banner(title="Second"))
+        assert len(caught) == 1
+        assert "Banner" in str(caught[0].message)
+
+    def test_duplicate_annotation_same_align_warns(self):
+        import warnings
+        store = AnnotationStore()
+        store.add(0x8000, Annotation(text="!align 256"))
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            store.add(0x8000, Annotation(text="!align 256"))
+        assert len(caught) == 1
+
+    def test_three_duplicates_emit_two_warnings(self):
+        # Each duplicate after the first triggers a warning.
+        import warnings
+        store = AnnotationStore()
+        store.add(0x8000, Comment(text="first"))
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            store.add(0x8000, Comment(text="second"))
+            store.add(0x8000, Comment(text="third"))
+        assert len(caught) == 2

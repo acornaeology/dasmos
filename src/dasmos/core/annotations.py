@@ -135,9 +135,52 @@ class AnnotationStore:
         self._entries: dict[BinaryAddr, list[Entry]] = {}
 
     def add(self, binary_addr, entry: Entry) -> None:
-        """Append ``entry`` at ``binary_addr``."""
+        """Append ``entry`` at ``binary_addr``.
+
+        Issues a :class:`UserWarning` when the (address, alignment,
+        type) triple already has at least one prior entry — a
+        second comment at the same place is almost always a
+        driver-script bug (a copy-paste, or an attempt to override
+        an earlier comment that ends up appending instead). Both
+        entries are still stored; the warning lets the user notice
+        and decide.
+        """
         addr = self._key(binary_addr)
-        self._entries.setdefault(addr, []).append(entry)
+        bucket = self._entries.setdefault(addr, [])
+        existing = next(
+            (
+                e for e in bucket
+                if type(e) is type(entry) and e.align is entry.align
+            ),
+            None,
+        )
+        if existing is not None:
+            import warnings
+            existing_text = self._summary(existing)
+            new_text = self._summary(entry)
+            warnings.warn(
+                f"Duplicate {type(entry).__name__} at &{int(addr):04x} "
+                f"(align={entry.align.name}): existing={existing_text!r}, "
+                f"new={new_text!r}. Both will be emitted; if this was "
+                f"meant to override the earlier entry, the driver is "
+                f"appending instead.",
+                stacklevel=2,
+            )
+        bucket.append(entry)
+
+    @staticmethod
+    def _summary(entry: "Entry") -> str:
+        """One-line preview of an entry's content for the duplicate-
+        warning message. Picks ``text`` for Comment / Annotation
+        and ``title`` (else first line of description) for Banner.
+        """
+        text = getattr(entry, "text", None)
+        if text is None:
+            text = getattr(entry, "title", None) or getattr(entry, "description", "")
+        first_line = text.split("\n", 1)[0] if text else ""
+        if len(first_line) > 60:
+            first_line = first_line[:57] + "..."
+        return first_line
 
     def get(self, binary_addr) -> list[Entry]:
         """Return a list of entries at ``binary_addr`` (insertion order)."""
