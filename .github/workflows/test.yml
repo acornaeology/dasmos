@@ -115,11 +115,26 @@ jobs:
             exit 1
           fi
 
-      - name: Add beebasm to PATH
+      - name: Expose beebasm to the test process
         # ``conftest.py`` finds beebasm via the BEEBASM env var first,
-        # then PATH. Putting it on PATH is enough.
+        # then PATH. We set BEEBASM directly because PATH alone is
+        # fragile on Windows: bash's $HOME is an MSYS-style path
+        # (/c/Users/runneradmin), and writing that into $GITHUB_PATH
+        # adds an entry the Windows process spawner can't resolve.
+        # ``cygpath -w`` produces the Windows-style path that works
+        # for both PATH lookups and direct exec.
         shell: bash
-        run: echo "$HOME/bin" >> "$GITHUB_PATH"
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            win_bin_dirpath=$(cygpath -w "$HOME/bin")
+            echo "$win_bin_dirpath" >> "$GITHUB_PATH"
+            echo "BEEBASM=$win_bin_dirpath\\beebasm.exe" >> "$GITHUB_ENV"
+          else
+            echo "$HOME/bin" >> "$GITHUB_PATH"
+            echo "BEEBASM=$HOME/bin/beebasm" >> "$GITHUB_ENV"
+          fi
+          echo "Configured beebasm; contents of \$HOME/bin:"
+          ls -la "$HOME/bin"
 
       # ---- dasmos: build a wheel and test against the installed wheel.
 
