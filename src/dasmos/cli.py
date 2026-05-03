@@ -286,7 +286,7 @@ def disassemble_command(
     output = d.disassemble().render(renderer)
     text = str(output)
     if out_path is not None:
-        out_path.write_text(text)
+        out_path.write_text(text, encoding="utf-8")
     else:
         click.echo(text, nl=False)
 
@@ -447,7 +447,10 @@ def init_command(
     text = _DRIVER_TEMPLATE.format(
         rom_name=rom_path.name,
         driver_name=driver_path.name,
-        rom_path_repr=repr(str(rom_path)),
+        # as_posix() so the embedded path is portable: forward slashes
+        # work as a Path constructor argument on Windows and don't need
+        # backslash-escaping in the str literal.
+        rom_path_repr=repr(rom_path.as_posix()),
         load_addr_hex=f"{load_addr:#06x}",
         md5_line=md5_line,
         cpu_repr=repr(cpu),
@@ -456,7 +459,11 @@ def init_command(
         entries_block=_format_entries_block(entries),
         renderer_repr=repr(renderer),
     )
-    driver_path.write_text(text)
+    # encoding="utf-8" so the em-dashes in the template survive on
+    # Windows (default locale encoding is cp1252, which would write
+    # them as \x97 bytes — Python then refuses to run the generated
+    # driver because source files must be UTF-8).
+    driver_path.write_text(text, encoding="utf-8")
     click.echo(f"Wrote driver to {driver_path}", err=True)
 
 

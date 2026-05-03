@@ -194,11 +194,14 @@ class TestInit:
         ])
         assert result.exit_code == 0, result.output
         assert driver.exists()
-        text = driver.read_text()
+        text = driver.read_text(encoding="utf-8")
         # It's a real Python file that can be imported / run.
         assert "import dasmos" in text
-        # ROM path and load addr land in the file.
-        assert str(tiny_rom) in text
+        # ROM path and load addr land in the file. We compare against
+        # the as_posix form because that's what init embeds (forward
+        # slashes are platform-portable; the str() form has
+        # backslash-escaping issues on Windows).
+        assert tiny_rom.as_posix() in text
         assert "0x1000" in text or "&1000" in text or "4096" in text
         # Default cpu / renderer applied.
         assert "nmos6502" in text
