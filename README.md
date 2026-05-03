@@ -1,6 +1,6 @@
 # Dasmos
 
-A pluggable tracing disassembler for retro CPUs, version `0.1.1`.
+A pluggable tracing disassembler for retro CPUs, version `0.1.2`.
 
 <p align="center">
   <a href="https://pypi.org/project/dasmos/"><img src="https://img.shields.io/pypi/v/dasmos.svg" alt="PyPI"></a>
