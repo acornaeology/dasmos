@@ -145,6 +145,24 @@ MEMORY_ACCESSORS: dict[str, str] = {
 }
 
 
+def _inject_encoding_kwarg(call: ast.Call) -> None:
+    """Append ``encoding="utf-8"`` to ``call`` unless it already has
+    an ``encoding=`` keyword.
+
+    Used during porting to make ``foo_filepath.read_text()`` /
+    ``write_text(...)`` calls explicit about their encoding instead
+    of inheriting the platform's locale default (cp1252 on Windows,
+    which mangles non-Latin-1 characters that show up in dasmos
+    output — em-dash, arrows, Greek letters, etc.).
+    """
+    for kw in call.keywords:
+        if kw.arg == "encoding":
+            return
+    call.keywords.append(
+        ast.keyword(arg="encoding", value=ast.Constant(value="utf-8")),
+    )
+
+
 class Py8disToDasmosTransformer(ast.NodeTransformer):
     """Walks a py8dis driver AST and rewrites it as a dasmos driver.
 
@@ -392,6 +410,15 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
                     attr=MEMORY_ACCESSORS[name],
                     ctx=ast.Load(),
                 )
+        elif isinstance(node.func, ast.Attribute):
+            # ``something.read_text()`` / ``something.write_text(x)`` —
+            # inject encoding="utf-8" so the ported driver doesn't
+            # inherit the platform's locale default. py8dis drivers
+            # commonly do ``output_filepath.write_text(output)`` at
+            # the bottom; on Windows that uses cp1252 and chokes on
+            # the U+2192 (→) and similar arrows the renderer emits.
+            if node.func.attr in ("read_text", "write_text"):
+                _inject_encoding_kwarg(node)
         return node
 
     # -- specials --------------------------------------------------------

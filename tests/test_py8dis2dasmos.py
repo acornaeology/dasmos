@@ -299,6 +299,43 @@ class TestCommentRewriting:
         assert "from dasmos import Align" not in out
 
 
+class TestEncodingInjection:
+
+    def test_write_text_gets_explicit_utf8_encoding(self):
+        # py8dis drivers commonly end with
+        # ``output_filepath.write_text(output)`` — that uses the
+        # platform's locale default (cp1252 on Windows) and chokes
+        # on the U+2192 (→) and similar Unicode characters dasmos
+        # emits in comments / banners. The porter must inject an
+        # explicit encoding="utf-8" so the ported driver runs
+        # cross-platform.
+        out = port("""
+            from py8dis.commands import *
+            load(0xE000, "rom.bin", "6502")
+            output_filepath.write_text(output)
+        """)
+        assert "write_text(output, encoding='utf-8')" in out
+
+    def test_read_text_gets_explicit_utf8_encoding(self):
+        out = port("""
+            from py8dis.commands import *
+            load(0xE000, "rom.bin", "6502")
+            data = some_filepath.read_text()
+        """)
+        assert "read_text(encoding='utf-8')" in out
+
+    def test_existing_encoding_kwarg_left_alone(self):
+        # If the driver already specifies encoding= explicitly,
+        # don't double up.
+        out = port("""
+            from py8dis.commands import *
+            load(0xE000, "rom.bin", "6502")
+            output_filepath.write_text(output, encoding='latin-1')
+        """)
+        assert "encoding='latin-1'" in out
+        assert "encoding='utf-8'" not in out
+
+
 class TestGoConversion:
 
     def test_go_becomes_disassemble_render_print(self):
