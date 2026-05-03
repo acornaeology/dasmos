@@ -22,6 +22,27 @@ verbatim.
 
 ## Install
 
+> The `uv` and `uvx` commands shown below come from
+> [Astral's uv](https://docs.astral.sh/uv/). If you don't have it
+> yet, see the [uv installation guide](https://docs.astral.sh/uv/getting-started/installation/)
+> — one-line installers are available for macOS, Linux, and Windows.
+
+For one-shot CLI use, no install needed — `uvx` fetches and runs in
+a transient environment:
+
+```sh
+uvx dasmos disassemble myrom.bin --load-addr '&8000'
+```
+
+To add `dasmos` to a project (required for driver scripts that
+`import dasmos`):
+
+```sh
+uv add dasmos
+```
+
+Or with pip:
+
 ```sh
 pip install dasmos
 ```
@@ -47,6 +68,8 @@ Commands:
   describe-cpu          Describe a specific CPU plug-in.
   describe-environment  Describe a specific environment plug-in.
   describe-renderer     Describe a specific renderer plug-in.
+  disassemble           Disassemble ROM and write the rendered output.
+  init                  Scaffold a starter dasmos driver at DRIVER_PATH.
   list-cpus             List the available CPU plug-ins.
   list-environments     List the available environment plug-ins.
   list-renderers        List the available renderer plug-ins.
@@ -75,24 +98,25 @@ $ dasmos list-cpus
 
 ```console
 $ dasmos list-renderers
-      Renderers registered under      
-          'dasmos.renderer'           
-┏━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ Name    ┃ Description              ┃
-┡━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━┩
-│ beebasm │ Beebasm-syntax renderer. │
-└─────────┴──────────────────────────┘
+ Renderers registered under 'dasmos.renderer' 
+┏━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Name    ┃ Description                      ┃
+┡━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ beebasm │ Beebasm-syntax renderer.         │
+│ json    │ JSON structured-output renderer. │
+└─────────┴──────────────────────────────────┘
 ```
 
 ```console
 $ dasmos list-environments
-   Environments registered under 'dasmos.environment'   
-┏━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ Name               ┃ Description                     ┃
-┡━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
-│ acorn_mos          │ Acorn MOS environment.          │
-│ acorn_sideways_rom │ Acorn sideways ROM environment. │
-└────────────────────┴─────────────────────────────────┘
+          Environments registered under 'dasmos.environment'           
+┏━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Name               ┃ Description                                    ┃
+┡━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ acorn_bbc_hardware │ Acorn BBC Micro hardware-register Environment. │
+│ acorn_mos          │ Acorn MOS environment.                         │
+│ acorn_sideways_rom │ Acorn sideways ROM environment.                │
+└────────────────────┴────────────────────────────────────────────────┘
 ```
 
 Environments layer onto a disassembler additively — a driver can

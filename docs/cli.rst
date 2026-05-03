@@ -1,6 +1,43 @@
 Command-line reference
 ======================
 
+Install
+-------
+
+.. note::
+
+   The ``uv`` and ``uvx`` commands shown below come from
+   `Astral's uv <https://docs.astral.sh/uv/>`_. If you don't have
+   it yet, see the `uv installation guide
+   <https://docs.astral.sh/uv/getting-started/installation/>`_ —
+   one-line installers are available for macOS, Linux, and Windows.
+
+For one-shot CLI use, no install needed — ``uvx`` fetches dasmos
+into a transient environment and runs it:
+
+.. code-block:: console
+
+   uvx dasmos disassemble myrom.bin --load-addr '&8000'
+
+To add dasmos to a project (required for driver scripts that
+``import dasmos``):
+
+.. code-block:: console
+
+   uv add dasmos
+
+Or with pip:
+
+.. code-block:: console
+
+   pip install dasmos
+
+Either install form puts a ``dasmos`` script on your ``PATH``.
+
+
+Overview
+--------
+
 dasmos installs a single ``dasmos`` script, organised as a Click
 command group. Three command families:
 
