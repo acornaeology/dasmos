@@ -1,21 +1,31 @@
 name: Release
 
-# Atomic release workflow: on a `v*` tag, runs the full test matrix as
-# the publication gate. Only when all tests pass do we publish to PyPI.
+# Atomic release workflow: on a `v*` tag, runs the full test matrix,
+# the README sync check, and the strict Sphinx build in parallel as
+# three gates. Only when ALL three are green does anything get
+# published — and then the two publications (PyPI + GitHub Pages) run
+# in parallel. A failing test matrix, a stale README, or a failing
+# docs build holds back both publications, so every shipped version
+# has green tests against the built wheel, a generator-synced README,
+# a warning-free docs build, a live PyPI package, and matching
+# published docs as a single unit.
 #
-# A failing test matrix holds back the publication, so every shipped
-# version has green tests against the built wheel on every supported
-# OS x Python combination.
+# Pages uses the artifact produced by `docs-build` (uploaded via
+# `actions/upload-pages-artifact`) and deployed by
+# `actions/deploy-pages` in `deploy-docs`. Keep both in this one
+# workflow: the upload and deploy must share a workflow run.
 #
 # `workflow_dispatch` is enabled so a release can be re-attempted
-# manually if a publication fails transiently after the gate passes.
+# manually if one of the parallel publications fails transiently
+# after the gates pass. Individual failed jobs can also be re-run
+# from the Actions UI.
 
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
 
-# Default read-only permissions for the workflow; the publishing job
+# Default read-only permissions for the workflow; each publishing job
 # narrows its own permissions to what it actually needs.
 permissions:
   contents: read
@@ -28,14 +38,40 @@ jobs:
 
   readme-check:
     # Same gate ci.yml runs on every push — a v-tag with a stale
-    # README is held back from PyPI.
+    # README is held back from PyPI and Pages.
     uses: ./.github/workflows/readme-check.yml
+
+  docs-build:
+    name: Build Sphinx site (strict, gate for release)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          cache-dependency-glob: pyproject.toml
+
+      - name: Install docs dependencies
+        run: uv sync --group docs
+
+      - name: Build the Sphinx site with -W
+        run: uv run --group docs sphinx-build -b html -W docs docs/_build/html
+
+      - name: Upload Pages artifact
+        # deploy-docs (below) consumes this artifact via
+        # actions/deploy-pages. The upload + deploy must happen in the
+        # same workflow run.
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/_build/html
 
   publish-pypi:
     name: Publish to PyPI
-    # Both gates must pass before publication. If either fails, this
-    # job does not run.
-    needs: [test, readme-check]
+    # All three gates must pass before publication. If any fails,
+    # neither this job nor deploy-docs executes.
+    needs: [test, readme-check, docs-build]
     runs-on: ubuntu-latest
     # The `pypi` GitHub deployment environment is the gate for the
     # PYPI_TOKEN secret (and/or trusted-publishing OIDC config).
@@ -65,3 +101,24 @@ jobs:
         run: uv publish
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
+
+  deploy-docs:
+    name: Deploy docs to GitHub Pages
+    needs: [test, readme-check, docs-build]
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    # Allow only one concurrent Pages deployment; don't cancel an
+    # in-flight run because interrupting a deployment can leave Pages
+    # in a stuck "pending" state.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
