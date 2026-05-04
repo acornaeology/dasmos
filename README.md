@@ -36,11 +36,6 @@ all ship as composable plug-ins, so adding support for a new chip
 family or a new assembler dialect is a self-contained extension
 rather than a fork.
 
-[py8dis-original]: https://github.com/ZornsLemma/py8dis
-[py8dis-fork]: https://github.com/acornaeology/py8dis
-[acornaeology]: https://github.com/acornaeology
-[beebdis]: https://github.com/prime6809/BeebDis
-
 ## Install
 
 > The `uv` and `uvx` commands shown below come from
