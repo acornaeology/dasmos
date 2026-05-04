@@ -68,20 +68,6 @@ _BEEBASM = _find_beebasm()
 
 
 @pytest.mark.beebasm
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Multi-source-same-destination move pattern: ADFS registers "
-        "three moves all targeting &0D0A (nmi_write_move, "
-        "nmi_tube_write_move, nmi_tube_read_move). The renderer "
-        "currently re-emits the destination label .nmi_rw_code once "
-        "per move, which beebasm rejects as 'Symbol already defined'. "
-        "py8dis emits the destination label once and copies multiple "
-        "source spans into it. Closing this gap is the gating work "
-        "for ADFS round-trip success — flip @xfail to live once the "
-        "renderer learns the pattern."
-    ),
-)
 class TestAdfsPorterEndToEnd:
     """Load-bearing acceptance test: the unmodified py8dis driver,
     ported through scripts/py8dis2dasmos.py and run against the ADFS

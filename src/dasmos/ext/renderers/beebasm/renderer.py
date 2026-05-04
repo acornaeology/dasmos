@@ -620,9 +620,21 @@ class BeebasmRenderer(TextRenderer):
         for ann in ir.annotations.get_for_align(binary_addr, Align.BEFORE_LABEL):
             lines.extend(self._render_annotation(ann))
 
-        # Inline labels at this runtime address.
+        # Inline labels at this runtime address. Skip if a previous
+        # body walk has already emitted the inline anchor — this
+        # happens for multi-source-same-destination moves: the label
+        # at the shared destination is emitted once (during the move
+        # whose body walk reaches the address first), and the
+        # subsequent moves' body walks hit the same runtime address
+        # and would otherwise re-emit ``.<name>`` (which beebasm
+        # rejects with "Symbol already defined"). The ``copyblock``
+        # / ``clear`` directives in the per-move trailers still
+        # resolve the name correctly via the single inline definition.
         label = ir.labels.get_label(runtime_addr)
-        if label is not None:
+        if (
+            label is not None
+            and runtime_addr not in self._inline_emitted_runtime_addrs
+        ):
             xref = self._format_inline_xref_summary(label, runtime_addr)
             if xref is not None:
                 lines.append(xref)
