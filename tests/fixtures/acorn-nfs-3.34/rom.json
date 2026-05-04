@@ -1,0 +1,23 @@
+{
+    "title": "Acorn NFS 3.34",
+    "size": 8192,
+    "md5": "d6761cb566cd87b0c1117b5b600cff16",
+    "sha256": "08a0a94cfef9403e4b7757a20a2514ccccaf6d38330dd3e7d683f67e56969e84",
+    "links": [
+        {
+            "label": "Acorn NFS 3.34 in The BBC Micro ROM Library",
+            "url": "https://tobylobster.github.io/rom_library/?md5=d6761cb566cd87b0c1117b5b600cff16",
+            "icon": "chip"
+        },
+        {
+            "label": "Disassembly source on GitHub",
+            "url": "https://github.com/acornaeology/acorn-nfs/blob/master/versions/nfs-3.34/output/nfs-3.34.asm",
+            "icon": "github"
+        },
+        {
+            "label": "Discuss this disassembly on the Stardot Forums thread: A new annotated disassembly of Acorn NFS",
+            "url": "https://www.stardot.org.uk/forums/viewtopic.php?t=32531",
+            "icon": "chat"
+        }
+    ]
+}
