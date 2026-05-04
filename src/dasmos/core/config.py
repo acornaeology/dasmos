@@ -1,19 +1,14 @@
 """Per-disassembly configuration.
 
-py8dis's ``config.py`` carried about 25 module-level
-``get_<name>``/``set_<name>`` pairs around private module attributes.
-The dasmos rewrite replaces them with a single :class:`Config`
-dataclass that the :class:`~dasmos.Disassembler` orchestration class
-owns. Two ``Config`` instances are independent, which is the property
-the orchestration layer needs.
+A single :class:`Config` dataclass owned by the
+:class:`~dasmos.Disassembler` orchestration class. Two ``Config``
+instances are independent, which is the property the orchestration
+layer needs.
 
-Two settings from py8dis's config module that belong elsewhere:
-
-- ``_assembler`` (the configured assembler instance) — moves to a
-  field on the Disassembler.
-- ``_cmos`` (whether the active CPU is CMOS-flavored) — kept here as
-  a convenience for assembler plug-ins that emit a ``cpu`` directive,
-  but really a property of the active CPU plug-in.
+The configured renderer instance lives on the Disassembler rather than
+in this dataclass; ``cmos`` (whether the active CPU is CMOS-flavored)
+sits here as a convenience for renderer plug-ins that emit a ``cpu``
+directive, but is really a property of the active CPU plug-in.
 """
 
 from dataclasses import dataclass
@@ -23,7 +18,7 @@ from dataclasses import dataclass
 class Config:
     """Per-disassembly configuration knobs.
 
-    All fields are mutable on the instance; defaults match py8dis.
+    All fields are mutable on the instance.
     """
 
     # Casing

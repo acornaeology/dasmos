@@ -74,11 +74,9 @@ class Constant:
 class SubroutineEntry:
     """Subroutine metadata registered via :meth:`Disassembler.subroutine`.
 
-    Mirrors the py8dis-fork ``Subroutine`` record so the JSON
-    renderer can emit a directly-comparable shape (downstream
-    consumers expect this). Internally we hold the runtime address
-    plus the kwargs the driver supplied; rendering computes
-    fall-through and per-name fields at emission time.
+    Holds the runtime address plus the kwargs the driver supplied;
+    rendering computes fall-through and per-name fields at emission
+    time.
     """
 
     runtime_addr: int
@@ -121,8 +119,7 @@ class Disassembler:
         self._subroutine_hooks: dict[int, object] = {}
         # Auto-label generation policy. Each prefix is configurable so
         # a domain label that happens to start with the same prefix
-        # doesn't collide with a synthesised one. Defaults match
-        # py8dis's naming scheme.
+        # doesn't collide with a synthesised one.
         self.auto_labels_enabled = auto_labels_enabled
         self.auto_label_data_prefix = auto_label_data_prefix
         self.auto_label_code_prefix = auto_label_code_prefix
@@ -164,7 +161,7 @@ class Disassembler:
         # wants to resolve the target's label name AFTER the trace
         # has filled out the auto-label store). Resolved by
         # :meth:`_resolve_deferred_expressions` after auto-label
-        # generation. Mirrors py8dis ``expr_label`` semantics.
+        # generation.
         self._deferred_expressions: list[tuple[int, int, object]] = []
         # Post-trace JSR analyzers registered by Environment plug-ins
         # (or driver scripts). Each maps a target runtime address to
@@ -280,8 +277,7 @@ class Disassembler:
 
     def using_move(self, move_id: int):
         """Push ``move_id`` onto the active-move stack for the duration
-        of the ``with`` block. Replaces py8dis's ``with move_id:``
-        idiom (D-006 / D-011).
+        of the ``with`` block (D-006 / D-011).
         """
         return self._moves.using(move_id)
 
@@ -372,17 +368,14 @@ class Disassembler:
         named values (magic numbers, OSBYTE call numbers, hardware
         register addresses) — not necessarily addresses of code or
         data the disassembler will reach. The structured-output
-        renderers surface them as a dedicated ``constants`` section
-        (mirroring the py8dis-fork schema).
+        renderers surface them as a dedicated ``constants`` section.
 
-        Constants are tracked SEPARATELY from labels (matches py8dis
-        where ``constant()`` populates ``disassembly.constants``,
-        not the LabelManager). Mixing them would cause the hook-
-        registered OSBYTE constants (e.g. ``osbyte_clear_escape =
-        &7c``) to pollute operand resolution at zero-page address
-        ``&7c``: any unrelated code reading from ``&7c`` would
-        suddenly render as ``lda osbyte_clear_escape`` — a false
-        positive.
+        Constants are tracked SEPARATELY from labels. Mixing them
+        would cause the hook-registered OSBYTE constants (e.g.
+        ``osbyte_clear_escape = &7c``) to pollute operand resolution
+        at zero-page address ``&7c``: any unrelated code reading
+        from ``&7c`` would suddenly render as
+        ``lda osbyte_clear_escape`` — a false positive.
 
         The ``BeebasmRenderer`` emits constants as equates in their
         own block alongside the label-equate table.
@@ -422,7 +415,7 @@ class Disassembler:
 
         Also registers ``name`` as an optional label at ``runtime_addr``
         so JSR operands resolve to the symbolic name in the rendered
-        output. Mirrors py8dis's ``hook_subroutine`` behaviour.
+        output.
         """
         self._raise_if_disassembled("hook_subroutine")
         self._labels.add_label(
@@ -451,10 +444,9 @@ class Disassembler:
         the source bytes render symbolically (``equw <label>`` or
         ``equb < (<label>)`` / ``equb > (<label>)``).
 
-        Mirrors py8dis's ``code_ptr``. Used for jump tables where the
-        low and high bytes of subroutine addresses are stored in
-        separate parallel tables (see :meth:`rts_code_ptr` for the
-        RTS-pop-and-INC variant).
+        Used for jump tables where the low and high bytes of
+        subroutine addresses are stored in separate parallel tables
+        (see :meth:`rts_code_ptr` for the RTS-pop-and-INC variant).
         """
         self._raise_if_disassembled("code_ptr")
         if runtime_addr_hi is None:
@@ -466,14 +458,13 @@ class Disassembler:
             | (self._memory.get_u8(binary_hi) << 8)
         ) + offset
         self.entry(target, name=label_name)
-        # py8dis-fork format: ``label-offset`` for adjacent equw,
+        # Format: ``label-offset`` for adjacent equw,
         # ``<(label-offset)`` / ``>(label-offset)`` for split lo/hi
         # tables (no space — matches the standard 6502 lo/hi
         # operator notation). The label name is resolved LAZILY at
         # render time via :meth:`_register_deferred_expression` so
         # subroutines registered LATER in the driver script still
-        # surface symbolically (mirrors py8dis ``expr_label`` which
-        # also resolves names at output time).
+        # surface symbolically.
         offset_str = "" if offset == 0 else f"-{offset}"
         if int(binary_hi) == int(binary_lo) + 1:
             self.word(runtime_addr_lo)
@@ -520,10 +511,10 @@ class Disassembler:
         ``runtime_addr``; returns the runtime address of the byte
         right after the NUL terminator.
 
-        Mirrors py8dis's ``stringz()``. Scans forward through loaded
-        memory until the first ``0`` byte; classifies the whole span
-        (including the terminator) as a String. Driver scripts use
-        the return value to chain through a sequence of strings::
+        Scans forward through loaded memory until the first ``0``
+        byte; classifies the whole span (including the terminator)
+        as a String. Driver scripts use the return value to chain
+        through a sequence of strings::
 
             addr = d.stringz(0x9000)
             addr = d.stringz(addr)  # next string follows
@@ -586,10 +577,10 @@ class Disassembler:
 
         ``value`` is the byte the fill should expand to. If omitted,
         it's inferred from the loaded memory (the byte at
-        ``runtime_addr``) — matching py8dis's idiom of ``fill(addr, n)``
-        for runs of the same value the binary already contains. If
-        ``value`` is supplied AND disagrees with the loaded byte,
-        raises :class:`DisassemblerError`.
+        ``runtime_addr``) — the natural shape for runs of the same
+        value the binary already contains. If ``value`` is supplied
+        AND disagrees with the loaded byte, raises
+        :class:`DisassemblerError`.
         """
         self._raise_if_disassembled("fill")
         binary_addr = self._resolve_to_binary_addr(runtime_addr, move_id)
@@ -722,9 +713,9 @@ class Disassembler:
         an entry point.
 
         Use this for data regions you want to mark visually without
-        the trace engine treating the address as code. (Replaces
-        py8dis's ``subroutine(..., is_entry_point=False, hook=None)``
-        idiom — see ``docs/design/commands-sweep-memo.md`` C2/C3.)
+        the trace engine treating the address as code. See
+        ``docs/design/commands-sweep-memo.md`` C2/C3 for the
+        rationale.
 
         For a subroutine that needs both visual separation AND
         entry-point registration, call :meth:`subroutine` with the
@@ -762,8 +753,7 @@ class Disassembler:
         out-of-image OS calls (``osbyte``, ``osword``, …) that
         shouldn't seed tracing of unloaded memory — the trace is not
         seeded AND the label is registered as OPTIONAL (so it only
-        emits when actually JSR'd to). This is the ``is_entry_point``
-        knob from py8dis: same semantic, on the dasmos method.
+        emits when actually JSR'd to).
 
         If ``title`` or ``description`` (or ``on_entry`` / ``on_exit``)
         is given, also attaches a banner-style annotation.
@@ -1020,7 +1010,7 @@ class Disassembler:
         target's label name (now that auto-label generation is done),
         and write the final text to :attr:`_expressions`. Falls back
         to the literal hex address only when no name exists at all
-        for the target — matches py8dis's behaviour.
+        for the target.
         """
         for binary_addr, target, build_text in self._deferred_expressions:
             label = self._labels.get_label(target)
@@ -1048,11 +1038,11 @@ class Disassembler:
         """Populate :attr:`_cpu_state_at` by walking classified code
         in binary order, advancing a CPU state through each opcode.
 
-        py8dis-fork calls this an "optimistic" walk — straight-line,
-        ignoring branches; state propagates linearly and resets
-        only on data classifications. Despite the imprecision it's
-        good enough for OSBYTE-style detection (the LDA #imm and
-        the JSR osbyte are usually in the same straight-line block).
+        This is an "optimistic" walk — straight-line, ignoring
+        branches; state propagates linearly and resets only on data
+        classifications. Despite the imprecision it's good enough for
+        OSBYTE-style detection (the LDA #imm and the JSR osbyte are
+        usually in the same straight-line block).
 
         Skipped silently when the CPU plug-in opts out (i.e.
         ``Cpu.initial_state`` returns None).
@@ -1179,13 +1169,12 @@ class Disassembler:
             offset = self._memory.get_u8(operand_addr)
             if offset >= 0x80:
                 offset -= 0x100
-            # Mirrors py8dis OpcodeConditionalBranch.target: do the
-            # branch-target arithmetic in runtime space so a branch
-            # whose source byte is inside a moved region resolves to
-            # the runtime address (matching where the label was
-            # registered against ``with d.using_move(...)``), not the
-            # binary source address. Outside any move b2r is the
-            # identity, so non-moved code is unaffected.
+            # Do the branch-target arithmetic in runtime space so a
+            # branch whose source byte is inside a moved region
+            # resolves to the runtime address (matching where the
+            # label was registered against ``with d.using_move(...)``),
+            # not the binary source address. Outside any move b2r is
+            # the identity, so non-moved code is unaffected.
             from dasmos.core.memory import BinaryAddr
             base_runtime = int(self._moves.b2r(BinaryAddr(binary_addr)))
             return base_runtime + opcode.length() + offset
@@ -1200,8 +1189,7 @@ class Disassembler:
         label-resolution paths — no special auto-label code path
         downstream.
 
-        Heuristics (py8dis-compatible defaults; each prefix is set on
-        the Disassembler constructor):
+        Heuristics (each prefix is set on the Disassembler constructor):
 
         - ``<data_prefix><addr>``       — address has data classification
         - ``<code_prefix><addr>``       — address has code, no other
@@ -1220,9 +1208,8 @@ class Disassembler:
                 # ``expr_label``). Synthesising ``l0221`` here
                 # would compete with the expression and cause the
                 # operand to render as ``sta l0221`` instead of
-                # ``sta evntv+1``. Mirrors py8dis-fork ``ol2``
-                # which suppresses auto-label generation at alias
-                # addresses via the ``base_runtime_addr`` kwarg.
+                # ``sta evntv+1``. Suppresses auto-label generation
+                # at alias addresses.
                 or any(existing.expressions.values())
             ):
                 continue
@@ -1240,7 +1227,7 @@ class Disassembler:
     def _synthesise_auto_label_name(
         self, runtime_addr: int, ref_binary_addrs: list[int],
     ) -> str:
-        """Pick a prefix per the py8dis heuristics and return the
+        """Pick a prefix per the auto-label heuristics and return the
         full ``<prefix><addr>`` name. ``ref_binary_addrs`` is
         deduplicated and sorted by the caller.
         """
@@ -1288,13 +1275,12 @@ class Disassembler:
 
         Lets the renderer express the mid-instruction label as an
         offset of the base (``nmi1_transfer_addr = sub_cfe15+1``)
-        instead of as a literal hex equate. Mirrors py8dis's
-        behaviour for in-range mid-instruction labels.
+        instead of as a literal hex equate.
 
         Uses ``auto_label_subroutine_prefix`` for the synthesised
-        base name (matches py8dis: the bases py8dis creates for this
-        purpose use the ``sub_c`` form regardless of the actual flow
-        control at the base address).
+        base name regardless of the actual flow control at the base
+        address — the ``sub_c`` form is the right shape for an offset
+        target whether or not the byte happens to be a JSR target.
         """
         from dasmos.core.disassembly import INSIDE_A_CLASSIFICATION
         from dasmos.core.memory import BinaryAddr, RuntimeAddr
@@ -1309,8 +1295,8 @@ class Disassembler:
             # Skip mid-instruction labels inside moved regions: the
             # inline body walk visits those bytes at their MOVE-DEST
             # runtime (via b2r), so the natural-runtime label can't be
-            # anchored inline. py8dis keeps these as literal hex
-            # equates; we do the same.
+            # anchored inline — emit it as a literal hex equate
+            # instead.
             if int(self._moves.b2r(BinaryAddr(binary_addr))) != int(runtime_addr):
                 continue
             c = self._classifications.get_classification(binary_addr)

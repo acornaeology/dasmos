@@ -1,22 +1,21 @@
 """CPU register-state tracking for post-trace analysis.
 
-Where py8dis-fork carries an "optimistic" linear-sweep CPU state
-(``cpu.cpu_state_optimistic[binary_addr]`` — straight-line state
-ignoring branches), dasmos exposes a strongly-typed
-:class:`CpuState` per-CPU that the trace pipeline computes ONCE and
-hooks read directly.
+A strongly-typed :class:`CpuState` per CPU plug-in, computed once by
+the trace pipeline and read directly by hooks. The state is built by
+an "optimistic" linear sweep — straight-line execution that ignores
+branches.
 
-What "exceeds py8dis" here:
+Design points:
 
-- **Explicit dataclass model** instead of py8dis's ad-hoc dict-of-
-  dicts indexed by ``"a"`` / ``"x"`` / etc. Makes the state
-  inspectable, type-checkable, and test-isolatable.
+- **Explicit dataclass model** rather than an ad-hoc dict-of-dicts
+  indexed by register name. Makes the state inspectable,
+  type-checkable, and test-isolatable.
 - **Per-CPU pluggable types**: each CPU plug-in owns its own
   :class:`CpuState` subclass and its own update rules; the
   Disassembler doesn't hard-code 6502 state shape.
-- **State BEFORE the instruction is the snapshot** kept (py8dis
-  stores AFTER), which matches what hooks need: a JSR analyzer
-  asks "what was A *just before* this JSR fired?".
+- **State BEFORE the instruction is the snapshot** kept, which
+  matches what hooks need: a JSR analyzer asks "what was A *just
+  before* this JSR fired?".
 - **Source-address tracking** on each register: a
   :class:`RegisterValue` carries both the value AND the binary
   address of the instruction that last set it (the LDA #imm),

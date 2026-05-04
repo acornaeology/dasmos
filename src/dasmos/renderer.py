@@ -21,13 +21,10 @@ Both ``TextRenderer`` and ``StructuredRenderer`` are conveniences;
 nothing prevents a renderer from subclassing :class:`Renderer`
 directly if neither of the conveniences fits.
 
-Lifted from py8dis's ``assembler.py`` (49 lines) and the protocol
-duck-typed across its concrete assemblers, with the dasmos design
-changes captured in ``docs/design/decisions.md`` (D-003, D-009,
-D-015):
+Design points (see ``docs/design/decisions.md`` D-003, D-009, D-015):
 
-- Renamed ``assembler`` to ``renderer`` because the JSON renderer
-  isn't a text-syntax assembler — see D-003.
+- The extension is named ``renderer`` rather than ``assembler``
+  because the JSON renderer isn't a text-syntax assembler.
 - ``pending_assertions`` and ``output_filename`` are per-instance,
   not class-level, so two renderer instances do not share state.
 - The protocol is declared with ``@abstractmethod``: a plug-in that

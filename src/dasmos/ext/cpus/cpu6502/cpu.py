@@ -2,9 +2,8 @@
 
 The classic MOS 6502 (also known as the 6502A in some Acorn
 contexts) — the processor at the heart of the BBC Micro, the Acorn
-Electron, the Commodore 64 and many others. This module ports the
-opcode table from py8dis's ``cpu6502.py`` (1,495 lines) into the
-dasmos plug-in shape:
+Electron, the Commodore 64 and many others. This module presents
+the 6502 in the dasmos plug-in shape:
 
 - :class:`Operation` — enum of the 56 distinct mnemonics (canonical
   lowercase MOS form as the value).
@@ -13,8 +12,8 @@ dasmos plug-in shape:
   and operand kind (immediate / address / relative offset / none).
 - :data:`OPCODES` — the 151-entry instruction table mapping opcode
   byte to :class:`~dasmos.cpu.Opcode`. Bytes not in the dict are
-  *undocumented* opcodes and are deliberately omitted (matching
-  py8dis); the trace engine treats them as undefined.
+  *undocumented* opcodes and are deliberately omitted; the trace
+  engine treats them as undefined.
 - :class:`Nmos6502Cpu` — the plug-in class registered under the
   ``dasmos.cpu`` entry-point namespace.
 
@@ -150,20 +149,16 @@ class AddressingMode(Enum):
 # ---------------------------------------------------------------------------
 #
 # 151 entries — every documented NMOS 6502 opcode. The undocumented
-# opcodes (the so-called "illegal" ones) are deliberately omitted,
-# matching py8dis's stance. Bytes not in this dict are treated as
-# undefined by the trace engine.
+# opcodes (the so-called "illegal" ones) are deliberately omitted.
+# Bytes not in this dict are treated as undefined by the trace engine.
 #
-# The table was generated mechanically from py8dis/cpu6502.py via the
-# script in commit message; cycle counts come from that table where
-# they were given as plain integers (cycle counts with extra-cycle
-# letters like "4f" and "5b" are recorded as 0 here pending a proper
-# cycle model — see TODO at end of module).
+# Cycle counts with extra-cycle letters (page-crossing penalties like
+# "4f" / "5b" in older references) are recorded as 0 here pending a
+# proper cycle model — see TODO at end of module.
 #
-# CPU-state-update side effects (which py8dis's per-opcode `update=`
-# callbacks model) are not in the table — those land with the
-# CpuState port (post-trace label-naming heuristics, planned for the
-# orchestration trace-loop port).
+# CPU-state-update side effects are not in the table — those are
+# handled by :meth:`Nmos6502Cpu.update_state` below, which encodes
+# the rules a post-trace analyzer cares about.
 
 OPCODES: dict[int, Opcode] = {
     0x00: Opcode(Operation.BRK, AddressingMode.IMPLIED,           FlowControl.BREAK,              cycles=7),
@@ -319,15 +314,9 @@ OPCODES: dict[int, Opcode] = {
     0xfe: Opcode(Operation.INC, AddressingMode.ABSOLUTE_X,        FlowControl.SEQUENTIAL,         cycles=7),
 }
 
-# TODO: Page-crossing cycle penalties (the "f", "a", "b" suffixes in
-# py8dis's cycle counts) are dropped — opcodes with them carry
-# ``cycles=0``. Add a proper cycle model when an upstream consumer
-# actually needs cycle accuracy.
-
-# TODO: Per-opcode CPU-state-update side effects (py8dis's `update=`
-# callbacks: `update_clear_nza`, `update_ORA_immediate`, etc.) land
-# with the CpuState port — they're for post-trace label-naming
-# heuristics and aren't needed by the trace loop itself.
+# TODO: Page-crossing cycle penalties are dropped — opcodes that
+# have them carry ``cycles=0``. Add a proper cycle model when an
+# upstream consumer actually needs cycle accuracy.
 
 
 @dataclass
@@ -406,8 +395,8 @@ _FLAG_ONLY_OPERATIONS = {
 # register the operation doesn't touch. PHA/PLA conservatively
 # clear A (we don't model the stack); same for PLP affecting flags.
 # Branches and JMPs leave state untouched (taken/not-taken handled
-# at the trace pipeline's BFS level, which we don't try to refine
-# here per py8dis's "optimistic" approach).
+# at the trace pipeline's BFS level, not refined here — the linear
+# state sweep is deliberately optimistic).
 _PRESERVING_OPERATIONS = {
     Operation.STA, Operation.STX, Operation.STY,
     Operation.NOP, Operation.PHP, Operation.PHA,

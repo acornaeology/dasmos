@@ -7,10 +7,9 @@ points and embeds a NUL-terminated title and copyright string. This
 environment recognises that layout, registers the conventional names,
 and seeds the trace from any entry point that's a ``JMP abs``.
 
-Mirrors the label-defining work done by py8dis's
-``acorn.is_sideways_rom()``. Unlike :class:`AcornMosEnvironment` (which
-just registers labels) this one **inspects loaded memory** at &8000 to
-decide what's where — so it must be activated AFTER ``d.load(...)``::
+Unlike :class:`AcornMosEnvironment` (which just registers labels)
+this one **inspects loaded memory** at &8000 to decide what's where —
+so it must be activated AFTER ``d.load(...)``::
 
     d = Disassembler.create(cpu="6502", environments=["acorn_mos"])
     d.load("rom.bin", 0x8000)

@@ -1,10 +1,8 @@
 """BBC Micro hardware-register Environment for dasmos.
 
-Mirrors the BBC-default register set py8dis-fork's
-``acorn.hardware(MACHINE_BBC)`` installs (``acorn.py`` lines ~3000-
-3145): CRTC, ACIA, serial ULA, station ID, video ULA, ROMSEL, the
-two VIAs, the 8271/1770 floppy controllers, the ALDC Econet
-controller, the ADC, and the Tube control registers.
+The BBC-default register set: CRTC, ACIA, serial ULA, station ID,
+video ULA, ROMSEL, the two VIAs, the 8271/1770 floppy controllers,
+the ALDC Econet controller, the ADC, and the Tube control registers.
 
 All registered as :meth:`Disassembler.optional_label` — they emit
 in the equate table only when actually referenced by the disassembled
@@ -26,9 +24,8 @@ if TYPE_CHECKING:
     from dasmos.disassembler import Disassembler
 
 
-# Each tuple is (addr, name). Sourced verbatim from py8dis acorn.py
-# `hardware(MACHINE_BBC)` (lines ~3009-3145, BBC B / B+ branches
-# only). Master and Electron branches are deliberately excluded.
+# Each tuple is (addr, name). BBC B / B+ branches only — Master and
+# Electron variants are deliberately excluded.
 
 # 6845 CRTC
 _CRTC = [
@@ -67,8 +64,8 @@ _ROMSEL = [
 
 
 def _via_labels(base: int, name: str) -> list[tuple[int, str]]:
-    """Mirror py8dis ``label_via(base, name)`` — registers the 16
-    consecutive 6522 VIA register addresses with conventional names.
+    """Register the 16 consecutive 6522 VIA register addresses with
+    conventional names.
     """
     return [
         (base + 0,  f"{name}_via_orb_irb"),

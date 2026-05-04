@@ -24,8 +24,8 @@ Hook signature::
 - ``jsr_binary_addr`` is the binary address of the JSR opcode byte.
 - The return value is the binary address where the trace continues.
 
-This module ships the most common hooks (mirroring py8dis's set);
-drivers can also register their own callables.
+This module ships the most common hooks; drivers can also register
+their own callables.
 """
 
 from __future__ import annotations
@@ -47,9 +47,8 @@ def stringhi_hook(d: "Disassembler", jsr_binary_addr: int) -> int:
     1-byte NOP whose bit-7-set encoding makes it both a valid string
     terminator and a no-op instruction).
 
-    Mirrors py8dis's :func:`py8dis.commands.stringhi_hook`. Suitable
-    for the Acorn / BBC ``print_embedded_text`` idiom (called via
-    ``JSR &FE98`` in the 6502 Tube Client ROM).
+    Suitable for the Acorn / BBC ``print_embedded_text`` idiom (called
+    via ``JSR &FE98`` in the 6502 Tube Client ROM).
     """
     string_start = jsr_binary_addr + 3
     addr = string_start

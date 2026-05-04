@@ -10,34 +10,27 @@ The four data classifications live here. The :class:`Opcode` class
 (which marks a span as code) lives with the CPU plug-in because its
 behaviour is CPU-specific.
 
-Lifted from py8dis's ``classification.py`` (482 lines) with the
-following design changes:
+Design points:
 
 - The four data classes inherit from :class:`Classification`, an
-  abstract base. py8dis used duck-typing; the explicit ABC documents
-  the polymorphism contract.
-- Each classification is now **pure data**. py8dis baked the
-  rendering method (``as_string_list``) into every class, calling
-  into ``mainformatter`` and the configured assembler. That tangles
-  model with renderer; the rendering moves to the formatter layer
-  with the assembler port (task #14).
+  abstract base; the explicit ABC documents the polymorphism contract.
+- Each classification is **pure data**. Rendering belongs to the
+  renderer layer, not on the model objects, so the model can be
+  serialised, snapshot-tested, and walked without dragging a renderer
+  along.
 - The :class:`ExpressionRegistry` is a class, not a module-level
   ``expressions`` dict. Multiple instances coexist without
   interference.
-- :class:`String`'s constructor no longer captures a callstack via
-  ``utils.find_external_callstack()`` — it was an expensive side
-  effect for diagnostics-only data nobody read in practice.
-- Validation failures raise :class:`ClassificationError` instead of
+- Validation failures raise :class:`ClassificationError` rather than
   firing assertions.
-- The ``INSIDE_A_CLASSIFICATION = 0`` magic constant from py8dis is
-  not exported here — the disassembly port (task #12) will use a
-  proper sentinel object that can't be confused with a real value.
+- The "inside a multi-byte classification" marker is a sentinel
+  object owned by the disassembly module rather than a magic ``0``
+  that could be confused with a real value.
 - The string-scanning algorithms (``stringterm_binary``,
   ``stringhi_binary``, ``stringn_binary``, ``autostring``,
   ``classify_leftovers``) and the operand-rendering helpers
-  (``get_constant8/16``, ``get_address8/16``, ``check_expr``) are
-  not in this module — they belong with the disassembly engine and
-  the assembler abstraction respectively.
+  (``get_constant8/16``, ``get_address8/16``, ``check_expr``) live
+  with the disassembly engine and the renderer abstraction respectively.
 """
 
 from abc import ABC, abstractmethod
@@ -203,9 +196,9 @@ class ExpressionRegistry:
         """Register ``expression`` at ``binary_addr``.
 
         Silently ignored if an expression is already registered at
-        that address — preserves py8dis's idempotent-registration
-        behaviour, which lets multi-pass classifiers add expressions
-        without special-casing duplicates.
+        that address — registration is idempotent so that multi-pass
+        classifiers can add expressions without special-casing
+        duplicates.
         """
         binary_addr = BinaryAddr(binary_addr)
         if binary_addr not in self._expressions:

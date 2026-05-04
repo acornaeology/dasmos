@@ -6,31 +6,22 @@ distinguishes 'where the bytes live in the file' (BinaryAddr) from
 distinct only when the user has registered a relocation via the
 MoveManager.
 
-Lifted from py8dis's ``memorymanager.py`` with the following changes:
+Design points:
 
 - All state lives on a :class:`MemoryImage` instance — no
   module-level globals. Multiple ``MemoryImage`` instances coexist
-  freely. (py8dis kept ``memory_binary`` and ``load_ranges`` as
-  module attributes, which prevented running two disassemblies in
-  the same process.)
-- Failures raise :class:`MemoryAccessError` instead of calling
-  ``sys.exit`` via ``utils.die``.
+  freely, so two disassemblies can run in the same process.
+- Failures raise :class:`MemoryAccessError` rather than terminating
+  the process.
 - :class:`RuntimeView` takes an injected resolver callable rather than
-  reaching into a sibling ``movemanager`` module via a function-local
-  cyclic import.
+  reaching into a sibling module, avoiding a cyclic import.
 - The address-space size is parameterised (default ``0x10000`` for
   6502); a flat ``list`` still backs storage. Sparse storage will be
   needed when 32-bit CPUs (ARM, 32016) land — TODO at that point.
 - Cross-type comparisons of :class:`BinaryLocation` and
-  :class:`RuntimeLocation` correctly return ``False`` (was buggy:
-  py8dis's ``RuntimeLocation.__eq__`` referenced an attribute that
-  doesn't exist on the class).
-- :func:`is_valid_binary_addr` no longer references an undefined
-  ``runtime_addr`` in its ``allow_final_address`` branch (typo in
-  py8dis).
-- Same-typed address subtraction explicitly returns plain ``int`` (a
-  delta is not an address). py8dis only wrapped ``__add__``, so the
-  type was silently lost on subtraction.
+  :class:`RuntimeLocation` return ``False`` rather than raising.
+- Same-typed address subtraction explicitly returns plain ``int`` —
+  a delta is not an address.
 """
 
 import hashlib

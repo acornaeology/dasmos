@@ -10,29 +10,22 @@ byte in the binary needs a single classification). A runtime address
 may be the destination of more than one move — disambiguation is
 driven by the active-move stack.
 
-Lifted from py8dis's ``movemanager.py`` (264 lines) and ``movedefinition.py``
-(41 lines) with the following changes:
+Design points:
 
 - All state lives on a :class:`MoveManager` instance — no module-level
-  globals (``active_move_ids``, ``move_definitions``,
-  ``move_id_for_binary_addr``, the cache pair).
+  globals.
 - The active-move stack is owned by the manager. Driver scripts use
-  ``with mm.using(id): ...`` instead of py8dis's ``with id: ...``,
-  paying a small syntactic tax for testability and the ability to run
-  multiple disassemblies in one process.
-- :class:`MoveId` is gone — a move id is just an ``int``. Validation
-  is handled by the manager.
-- :meth:`MoveManager.r2b_checked` raises :class:`MoveError` instead of
-  calling ``sys.exit`` via ``utils.die``; no longer requires an
-  assembler to be configured.
+  ``with mm.using(id): ...``, paying a small syntactic tax for
+  testability and the ability to run multiple disassemblies in one
+  process.
+- A move id is just an ``int``; validation is handled by the manager.
+- :meth:`MoveManager.r2b_checked` raises :class:`MoveError` rather
+  than terminating the process, and does not require a renderer to
+  be configured.
 - The cache that powers :meth:`MoveManager.move_ids_for_runtime_addr`
-  is invalidated explicitly on every ``add_move``, replacing py8dis's
-  fragile length-tracking approach.
-- :meth:`MoveManager.make_runtime_location` does not have the
-  ``RuntimeAddr(binary_loc)`` typo present in py8dis's
-  ``make_runloc``.
+  is invalidated explicitly on every ``add_move``.
 - ``add_move`` raises :class:`MoveError` for length ≤ 0, dest == src,
-  or overflowing the address space (replacing bare assertions).
+  or overflowing the address space.
 """
 
 from collections import defaultdict
@@ -290,8 +283,6 @@ class MoveManager:
         """Coerce an int or :class:`RuntimeLocation` to a
         :class:`RuntimeLocation`, using the topmost active move (or
         BASE_MOVE_ID) for the move_id when an int is given.
-
-        (Regression-tested: py8dis's equivalent had a name-typo bug.)
         """
         if isinstance(runtime_loc, RuntimeLocation):
             return runtime_loc

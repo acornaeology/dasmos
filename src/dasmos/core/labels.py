@@ -7,31 +7,20 @@ ranges, and reference expressions used at use-sites. The
 runtime-address → :class:`Label` mapping and is the single point of
 validation.
 
-Lifted from py8dis's ``label.py`` (365 lines) and ``labelmanager.py``
-(130 lines) with the following design changes:
+Design points:
 
 - All state lives on a :class:`LabelManager` instance — no
   module-level ``labels`` dict. Two managers coexist freely.
-- :class:`Label` is now **pure data**. py8dis's ``Label`` mixed model
-  and renderer (``gather_inline_label_definitions``,
-  ``explicit_definition_string_list``, ``_memory_map_brief``) — those
-  methods are deliberately not ported here. Rendering belongs to the
-  assembler/formatter layer (see tasks #13 / #14) and will read this
-  data layer rather than living inside it.
+- :class:`Label` is **pure data**. Rendering belongs to the renderer
+  layer and reads this data layer rather than living inside it.
 - All validation lives on the :class:`LabelManager` rather than
   scattered through ``Label`` methods. Names must be Python
   identifiers; expressions must *not* be identifiers (that would be a
   name); move_ids are checked against the injected
   :class:`~dasmos.core.move.MoveManager`.
-- Failures raise :class:`LabelError` rather than firing assertions
-  or calling ``utils.die``.
-- The ``description``-attribute / ``description()``-method name clash
-  in py8dis is gone — the debug stringifier was only ever used for
-  diagnostics and is dropped in favour of ``__repr__``.
+- Failures raise :class:`LabelError` rather than firing assertions.
 - The default move_id for an add-* call is the topmost active move
-  (or BASE_MOVE_ID if none) — same as py8dis but explicitly via the
-  injected MoveManager rather than via a module-level
-  ``movemanager.active_move_ids``.
+  (or BASE_MOVE_ID if none), resolved via the injected MoveManager.
 """
 
 from collections import defaultdict
@@ -202,10 +191,7 @@ class Label:
 
 
 def _is_identifier(s: str) -> bool:
-    """A label name is a Python-style identifier.
-
-    Simpler / equivalent to py8dis's hand-written ``is_simple_name``.
-    """
+    """A label name is a Python-style identifier."""
     return bool(s) and s.isidentifier()
 
 
@@ -239,9 +225,8 @@ class LabelManager:
     def addr_for_name(self, name: str) -> RuntimeAddr | None:
         """Find the runtime address of a label by one of its names.
 
-        Linear in total label count — same as py8dis. Fine for a
-        one-off lookup; callers needing repeated lookups should
-        cache.
+        Linear in total label count. Fine for a one-off lookup;
+        callers needing repeated lookups should cache.
         """
         for runtime_addr, label in sorted(self._labels.items()):
             for name_list in label.explicit_names.values():

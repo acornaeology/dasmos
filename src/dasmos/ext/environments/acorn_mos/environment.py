@@ -1,15 +1,13 @@
 """Acorn MOS environment — workspace + vectors + OS-call labels.
 
-Mirrors the label-defining content of py8dis's ``mos_labels()`` from
-``py8dis/acorn.py``: the conventional names for the BBC MOS's zero-
-page workspace addresses, its vector table at &200, and the OS-call
-entry points at &FFB9-&FFF7.
+Defines the conventional names for the BBC MOS's zero-page workspace
+addresses, its vector table at &200, and the OS-call entry points at
+&FFB9-&FFF7.
 
-The hook side of py8dis's acorn module (the OSBYTE / OSWORD / OSFILE
-hooks that emit per-call commentary) is **deliberately not** ported
-here — those hooks are large and orthogonal. They'll land alongside
-the markdown comment port (task #26) since the commentary they emit
-is the natural consumer of richer comment rendering.
+Per-call commentary emitted by the OSBYTE / OSWORD / OSFILE hooks
+will land alongside the markdown comment port (task #26) since the
+commentary they emit is the natural consumer of richer comment
+rendering.
 
 This environment is parameterless. Drivers activate it via either::
 
@@ -35,8 +33,7 @@ if TYPE_CHECKING:
 
 
 # Zero-page MOS workspace addresses commonly inspected from sideways
-# ROMs and second-processor code. The names match py8dis (and the
-# Acorn MOS source itself).
+# ROMs and second-processor code. Names follow the Acorn MOS source.
 _WORKSPACE_LABELS = {
     0x00f2: "os_text_ptr",
     0x00f4: "romsel_copy",
@@ -81,11 +78,11 @@ _MOS_VECTORS = [
 ]
 
 
-# OS-call entry points at &FFB9-&FFF7. py8dis registers each as an
+# OS-call entry points at &FFB9-&FFF7. Registered as
 # ``optional_label`` (the OS calls are out of range — they live in
 # MOS ROM, not in the disassembled image — so the label only emits
-# in the equate table when actually JSR'd to). The hooks py8dis
-# attaches (osbyte_hook, oswrch_hook, …) are not ported in this
+# in the equate table when actually JSR'd to). Per-call commentary
+# hooks (osbyte_hook, oswrch_hook, …) are not provided in this
 # minimal environment; see module docstring.
 _OS_CALLS = {
     0xffb9: "osrdsc",
@@ -138,10 +135,8 @@ class AcornMosEnvironment(Environment):
             # Register the high byte as ``<name>+1`` via an
             # EXPRESSION (``expr_label``) — labels can't carry
             # ``+`` in their identifier text, but expressions can.
-            # Mirrors py8dis-fork's ``ol2`` helper which marks
-            # the high byte as an alias for the base label using
-            # the ``base_runtime_addr=addr`` kwarg. The
-            # JsonRenderer's ``_first_registered_name`` reads
+            # Marks the high byte as an alias for the base label.
+            # The JsonRenderer's ``_first_registered_name`` reads
             # both names AND expressions; the auto-label generator
             # skips addresses with expressions to avoid
             # synthesising a competing ``l0221`` for &0221.

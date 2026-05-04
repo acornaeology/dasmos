@@ -303,7 +303,7 @@ class Cpu(Extension):
         Maps opcode byte (``0x00``–``0xFF``) to an :class:`Opcode`.
         Bytes not in the dict are treated as undefined by the trace
         engine — for the NMOS 6502 plug-in the undocumented opcodes
-        are deliberately omitted, matching py8dis.
+        are deliberately omitted.
         """
 
     # -- optional CPU-state tracking ------------------------------------

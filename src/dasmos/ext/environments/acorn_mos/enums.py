@@ -1,16 +1,12 @@
 """OS-call enum tables.
 
 Each enum maps the value passed in the appropriate register
-(typically A) when calling the corresponding MOS routine, to the
-canonical symbolic name py8dis-fork uses (e.g.
-``osbyte_read_buffer = &91``). The hook system uses these to
-register a :meth:`Disassembler.constant` and an auto-expression at
-the operand byte of the preceding ``LDA #imm`` so the rendered
-disassembly reads as ``lda #osbyte_read_buffer`` instead of
-``lda #&91``.
-
-Vendored verbatim from py8dis-fork's ``acorn.py``. Update those
-tables (re-vendor) when py8dis adds new entries.
+(typically A) when calling the corresponding MOS routine, to a
+canonical symbolic name (e.g. ``osbyte_read_buffer = &91``). The
+hook system uses these to register a :meth:`Disassembler.constant`
+and an auto-expression at the operand byte of the preceding
+``LDA #imm`` so the rendered disassembly reads as
+``lda #osbyte_read_buffer`` instead of ``lda #&91``.
 """
 
 from __future__ import annotations
@@ -284,11 +280,10 @@ EVENT_ENUM: dict[int, str] = {
 # JSR osbyte`` registers BOTH ``osbyte_flush_buffer`` (for A) AND
 # ``buffer_printer`` (for X). Format: action_byte → enum dict.
 #
-# OSBYTE &99 (insert into input buffer) is DELIBERATELY OMITTED:
-# py8dis-fork's osbyte_hook for &99 uses an inline comment
-# (``Insert character Y into keyboard buffer``) instead of a
-# symbolic-name substitution, since the choice is binary in practice
-# (&00 keyboard / &01 RS423) and reads more naturally as a comment.
+# OSBYTE &99 (insert into input buffer) is DELIBERATELY OMITTED: the
+# choice is binary in practice (&00 keyboard / &01 RS423) and reads
+# more naturally as an inline comment (``Insert character Y into
+# keyboard buffer``) than as a symbolic-name substitution.
 OSBYTE_X_SECONDARY_ENUMS: dict[int, dict[int, str]] = {
     0x0d: EVENT_ENUM,   # Disable event X
     0x0e: EVENT_ENUM,   # Enable event X

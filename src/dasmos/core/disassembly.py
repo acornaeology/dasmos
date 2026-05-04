@@ -11,18 +11,10 @@ remaining bytes are marked with the sentinel
 :data:`INSIDE_A_CLASSIFICATION` so the store knows they have been
 spoken for.
 
-This module is a deliberately minimal slice of py8dis's
-``disassembly.py`` (~1000 lines). The other concerns from that file
-— label-name suggestion, the output engine, constants, comments and
-annotations — depend on the assembler and trace layers and will land
-with the formatter port (task #13) and the orchestration layer port
-(task #18), where their dependencies will exist for real rather than
-as stubs.
-
-Lifted differences from py8dis:
+Design points:
 
 - The :data:`INSIDE_A_CLASSIFICATION` sentinel is a proper
-  ``object()`` rather than the magic integer 0. ``is`` comparisons are
+  ``object()`` rather than a magic integer. ``is`` comparisons are
   unambiguous; the type checker can also see the discriminator.
 - All state lives on a :class:`ClassificationStore` instance — no
   module-level 64K ``classifications`` list. Two stores coexist.
@@ -30,10 +22,10 @@ Lifted differences from py8dis:
   gracefully when 32-bit CPUs land. Random access is still O(1).
 - :meth:`ClassificationStore.add_classification` raises
   :class:`ClassificationError` on overlap rather than asserting.
-- :func:`split_classification` from py8dis becomes
-  :meth:`ClassificationStore.split_at` — same load-bearing behaviour
-  (replace the original with two Byte classifications when split in
-  the interior; no-op at start, end, or on an unclassified address).
+- :meth:`ClassificationStore.split_at` replaces the original
+  classification with two :class:`Byte` classifications when split
+  in the interior; no-op at start, end, or on an unclassified
+  address.
 """
 
 from typing import Iterator
@@ -125,9 +117,8 @@ class ClassificationStore:
         existing classification, or is one-past-the-end.
 
         The replacement is always Byte regardless of the original
-        type, matching py8dis. Used at move boundaries where exact
-        type preservation is unimportant because the underlying bytes
-        are unchanged.
+        type. Used at move boundaries where exact type preservation
+        is unimportant because the underlying bytes are unchanged.
         """
         binary_addr_int = int(BinaryAddr(binary_addr))
         value = self._classifications.get(binary_addr_int)

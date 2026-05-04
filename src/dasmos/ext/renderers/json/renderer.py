@@ -1,7 +1,6 @@
 """JSON structured-output renderer for dasmos.
 
-Emits a JSON-serialisable dictionary with the same schema as the
-acornaeology py8dis fork's ``structured.py`` (``emit_structured()``):
+Emits a JSON-serialisable dictionary:
 
 .. code-block:: python
 
@@ -29,12 +28,6 @@ acornaeology py8dis fork's ``structured.py`` (``emit_structured()``):
       ]
     }
 
-The schema mirror is deliberate so the parity test can deep-diff
-dasmos output against the vendored py8dis snapshot for the same ROM
-(see ``tests/test_nfs_roundtrip.py`` and the
-``project_jsonrenderer_schema`` memory). Schema can evolve later
-once py8dis-fork parity is achieved.
-
 This renderer doesn't need the assembler-syntax protocol (no equ/
 mnemonic/comment-prefix concerns), so it derives directly from
 :class:`dasmos.renderer.Renderer` rather than ``TextRenderer``.
@@ -58,9 +51,7 @@ if TYPE_CHECKING:
 class JsonRenderer(Renderer[StructuredOutput]):
     """JSON structured-output renderer.
 
-    Output keys match py8dis-fork's ``emit_structured()`` so the
-    rendered dict can be diffed directly against py8dis output for
-    the same ROM. See module docstring for the full schema.
+    See module docstring for the full schema.
     """
 
     def __init__(self, name: str = "json", *, indent: int | None = 2, **kwargs):
@@ -94,8 +85,8 @@ class JsonRenderer(Renderer[StructuredOutput]):
 
     def _build_constants(self, ir) -> list[dict[str, Any]]:
         """``constants`` registered via :meth:`Disassembler.constant`,
-        in driver-registration order. py8dis-fork schema: each entry
-        is ``{name, value}`` with optional ``comment``.
+        in driver-registration order. Each entry is ``{name, value}``
+        with optional ``comment``.
         """
         out: list[dict[str, Any]] = []
         for c in ir.constants:
@@ -107,19 +98,16 @@ class JsonRenderer(Renderer[StructuredOutput]):
 
     def _build_subroutines(self, ir) -> list[dict[str, Any]]:
         """``subroutines`` registered via
-        :meth:`Disassembler.subroutine`. Each entry mirrors the
-        py8dis-fork schema: ``addr`` (runtime), optional ``binary_addr``,
-        optional ``name``, ``title``, ``description``, ``on_entry``,
-        ``on_exit``, plus ``fall_through: True`` when the subroutine's
-        last code item doesn't terminate control flow.
+        :meth:`Disassembler.subroutine`. Each entry: ``addr`` (runtime),
+        optional ``binary_addr``, optional ``name``, ``title``,
+        ``description``, ``on_entry``, ``on_exit``, plus
+        ``fall_through: True`` when the subroutine's last code item
+        doesn't terminate control flow.
 
-        Fall-through detection mirrors py8dis: walk forward to the
-        next subroutine in the same move region, compare the previous
-        item's mnemonic against ``RTS``/``JMP``/``BRK``/``RTI``;
-        anything else is a fall-through. The "ALWAYS branch" inline-
-        comment heuristic py8dis uses is omitted here for now (it
-        depends on optional cycle-count annotations dasmos doesn't
-        yet emit).
+        Fall-through detection: walk forward to the next subroutine
+        in the same move region, compare the previous item's mnemonic
+        against ``RTS`` / ``JMP`` / ``BRK`` / ``RTI``; anything else
+        is a fall-through.
         """
         items = self._build_items(ir)
         return self._build_subroutines_with_fall_through(ir, items)
@@ -211,10 +199,10 @@ class JsonRenderer(Renderer[StructuredOutput]):
         """Memory-map entries for outside-ROM labels carrying metadata
         (``description=`` / future ``length=`` / ``group=`` / ``access=``).
 
-        py8dis includes only labels that have at least one of
-        description / length / group / access. dasmos labels currently
-        carry only ``description``; the other three slots stay
-        unpopulated until that infrastructure lands.
+        Includes only labels that have at least one of description /
+        length / group / access. Labels currently carry only
+        ``description``; the other three slots stay unpopulated until
+        that infrastructure lands.
         """
         result: list[dict[str, Any]] = []
         for runtime_addr_obj, label in sorted(
@@ -288,7 +276,7 @@ class JsonRenderer(Renderer[StructuredOutput]):
         if sub_labels:
             entry["sub_labels"] = sub_labels
 
-        # py8dis-fork emits comments_before in PER-BYTE-OFFSET order:
+        # ``comments_before`` is emitted in PER-BYTE-OFFSET order:
         # for each byte position within the classification, output
         # the annotations at that position, THEN the xref summary
         # for that position. This interleaves the xref for a sub-
@@ -359,7 +347,7 @@ class JsonRenderer(Renderer[StructuredOutput]):
                 # ``target_label`` carries the EXPLICIT name only —
                 # expression aliases (``dispatch_0_hi-1``,
                 # ``evntv+1``) are emitted in the ``operand`` text
-                # but not as a target_label per py8dis convention.
+                # but not as a target_label.
                 name = self._first_explicit_name(target_label)
                 if name is not None:
                     entry["target_label"] = name
@@ -367,21 +355,20 @@ class JsonRenderer(Renderer[StructuredOutput]):
     # -- helpers --------------------------------------------------------
 
     def _operand_text(self, ir, binary_addr: int, opcode: Opcode) -> str | None:
-        """Reproduce the operand text py8dis-fork emits — used by the
-        JSON parity oracle to diff against py8dis's structured output.
+        """Reproduce the operand text that goes into the ``operand``
+        field of a code item.
 
-        Formatting matches py8dis exactly:
+        Formatting:
 
         - Implied → no operand.
-        - Accumulator → ``A`` (uppercase, regardless of lower_case).
+        - Accumulator → no operand (the bare ``lsr`` / ``ror`` /
+          ``rol`` / ``asl`` mnemonic is unambiguous on the 6502).
         - Immediate values 0..9 → decimal (``#0``); 10..255 → hex
-          (``#&7f``). Mirrors py8dis ``mainformatter.uint_formatter``.
-        - Index-register suffix is lowercase (``,y`` / ``,x``) — py8dis
-          drivers run with ``lower_case=True``.
+          (``#&7f``).
+        - Index-register suffix is lowercase (``,y`` / ``,x``).
         - Address-style operands resolve to a label name when one
           exists, otherwise the hex literal.
-        - Relative-branch arithmetic in runtime space (mirrors py8dis
-          ``OpcodeConditionalBranch.target``).
+        - Relative-branch arithmetic in runtime space.
         """
         mode = opcode.addressing_mode
         kind = mode.operand_kind
@@ -391,11 +378,8 @@ class JsonRenderer(Renderer[StructuredOutput]):
         if mode_name == "IMPLIED":
             return None
         if mode_name == "ACCUMULATOR":
-            # py8dis omits the implicit ``A`` operand entirely when
-            # ``lower_case=True`` (its drivers' default) — the bare
-            # ``lsr`` / ``ror`` / ``rol`` / ``asl`` mnemonic is
-            # unambiguous on the 6502. Returning None keeps the JSON
-            # diffable against py8dis output.
+            # The bare ``lsr`` / ``ror`` / ``rol`` / ``asl`` mnemonic
+            # is unambiguous on the 6502 — no implicit ``A`` operand.
             return None
 
         # User-supplied expression at the operand address takes
@@ -424,8 +408,7 @@ class JsonRenderer(Renderer[StructuredOutput]):
         else:
             return None
 
-        # Mode-specific wrapping. Index-register letters lowercase to
-        # match py8dis (``lower_case=True`` on its drivers).
+        # Mode-specific wrapping. Index-register letters are lowercase.
         if mode_name in ("ZERO_PAGE", "ABSOLUTE", "RELATIVE", "IMMEDIATE"):
             return symbol
         if mode_name in ("ZERO_PAGE_X", "ABSOLUTE_X"):
@@ -446,8 +429,8 @@ class JsonRenderer(Renderer[StructuredOutput]):
 
     @staticmethod
     def _small_int(n: int) -> str:
-        """Mirror py8dis ``mainformatter.uint_formatter``: values 0-9
-        as decimal, 10..255 as ``&xx`` hex.
+        """Format a byte as a small-int operand: values 0-9 as decimal,
+        10..255 as ``&xx`` hex.
         """
         if n < 10:
             return str(n)
@@ -464,9 +447,8 @@ class JsonRenderer(Renderer[StructuredOutput]):
     @staticmethod
     def _first_registered_name(label) -> str | None:
         """The first registered name (or expression alias) for this
-        label, in insertion order across all move_ids. Mirrors
-        py8dis-fork's ``Label.get_already_emitted_name`` —
-        INSERTION order wins, not alphabetical.
+        label, in insertion order across all move_ids. INSERTION order
+        wins, not alphabetical.
 
         Falls back to expression text when no explicit name exists
         — this is how aliases like ``evntv+1`` (registered via
@@ -484,9 +466,9 @@ class JsonRenderer(Renderer[StructuredOutput]):
     @staticmethod
     def _first_explicit_name(label) -> str | None:
         """The first EXPLICIT name (no expression aliases) for this
-        label. Used for the ``target_label`` field where py8dis only
-        cites real label names, not the expression aliases that show
-        up in ``operand`` text.
+        label. Used for the ``target_label`` field, which cites real
+        label names only — expression aliases are confined to the
+        ``operand`` text.
         """
         for name_list in label.explicit_names.values():
             for explicit in name_list:
@@ -496,7 +478,6 @@ class JsonRenderer(Renderer[StructuredOutput]):
     def _target_runtime(self, ir, binary_addr: int, opcode: Opcode) -> int | None:
         """Compute the runtime address of an opcode's branch / address
         operand (the ``target`` field). ``None`` for no-target modes.
-        Mirrors py8dis ``OpcodeXxx.target``.
         """
         mode = opcode.addressing_mode
         kind = mode.operand_kind
@@ -521,8 +502,8 @@ class JsonRenderer(Renderer[StructuredOutput]):
     ) -> list[str | None] | None:
         """List of expression strings parallel to the values, with
         ``None`` where no expression exists. Returns ``None`` when no
-        element has an expression (matches py8dis behaviour: omit the
-        ``expressions`` key entirely if not used).
+        element has an expression — the caller omits the
+        ``expressions`` key entirely in that case.
         """
         out: list[str | None] = []
         has_any = False
@@ -538,7 +519,7 @@ class JsonRenderer(Renderer[StructuredOutput]):
     ) -> list[str]:
         """Build the ``comments_before`` list, interleaving the
         xref summary for each byte offset with the annotations
-        attached at that offset (mirrors py8dis-fork ordering).
+        attached at that offset.
 
         For each byte position within the classification:
 
@@ -587,9 +568,8 @@ class JsonRenderer(Renderer[StructuredOutput]):
                 after.extend(self._annotation_texts(ann))
         return inline, after
 
-    # py8dis-style banner separator (87 ``*`` characters) — emitted
-    # as a comments_before entry preceding the title/description so
-    # the parity diff sees the same shape as py8dis output.
+    # Banner separator (87 ``*`` characters) — emitted as a
+    # comments_before entry preceding the title/description.
     _BANNER_SEPARATOR = "*" * 87
 
     def _annotation_texts(self, ann) -> list[str]:
@@ -604,10 +584,9 @@ class JsonRenderer(Renderer[StructuredOutput]):
         - The ``On Exit:`` block (if ``on_exit`` non-empty), same
           format.
 
-        Each section is separated by ``\\n\\n`` — mirroring
-        py8dis-fork ``mainformatter`` so the parity test sees the
-        same text as a single comments_before entry. Comments and
-        bare Annotations each become a single entry.
+        Each section is separated by ``\\n\\n`` so the rendering is
+        emitted as a single comments_before entry. Comments and bare
+        Annotations each become a single entry.
         """
         if isinstance(ann, Banner):
             out = [self._BANNER_SEPARATOR]
@@ -632,11 +611,10 @@ class JsonRenderer(Renderer[StructuredOutput]):
     @staticmethod
     def _format_register_block(label: str, mapping: dict[str, str]) -> str:
         """Format a single ``On Entry:`` / ``On Exit:`` block for the
-        banner body. py8dis-fork format: header line, then one
+        banner body. Layout: header line, then one
         ``    <REG>: <description>`` line per dict entry. Register
-        names are uppercased to match py8dis's convention (its
-        drivers register lowercase keys but the formatter uppercases
-        them on output).
+        names are uppercased on output regardless of the case the
+        driver registered them in.
         """
         lines = [f"{label}:"]
         for reg, desc in mapping.items():
@@ -664,9 +642,8 @@ class JsonRenderer(Renderer[StructuredOutput]):
     @staticmethod
     def _format_xref_summary_text(ir, binary_addr: int, length: int) -> str | None:
         """Build the ``&<addr> referenced N time(s) by &<r1>, ...``
-        text py8dis emits as a comments_before entry on every
-        labelled item with incoming references. Mirrors py8dis
-        ``mainformatter._format_xrefs`` exactly:
+        text emitted as a comments_before entry on every labelled item
+        with incoming references.
 
         - The cited address is the BINARY address of the item.
         - Each ref is emitted as the RUNTIME address of the JSR/branch

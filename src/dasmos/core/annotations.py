@@ -40,9 +40,8 @@ from dasmos.core.memory import BinaryAddr
 class Align(Enum):
     """Where a comment or annotation appears relative to a line.
 
-    The five positions match py8dis's convention so the porter has a
-    1:1 mapping. Most driver-script calls use ``BEFORE_LABEL`` (the
-    default) or ``INLINE``; the others are rarer.
+    Most driver-script calls use ``BEFORE_LABEL`` (the default) or
+    ``INLINE``; the others are rarer.
     """
 
     BEFORE_LABEL = "before_label"
@@ -96,17 +95,15 @@ class Banner:
     """A multi-line decorated comment block at a specific address.
 
     Renders as a renderer-defined separator (Beebasm uses a row of
-    asterisks per py8dis convention) followed by the title and
-    description text, providing strong visual separation in the
-    disassembled listing.
+    asterisks) followed by the title and description text, providing
+    strong visual separation in the disassembled listing.
 
     The two main use cases:
 
     - Subroutine headers: ``d.subroutine(addr, name, title=..., description=...)``
       registers the entry point AND attaches a Banner.
     - Data-region labels: ``d.banner(addr, title=..., description=...)``
-      adds a Banner without registering an entry point — replaces
-      py8dis's ``subroutine(..., is_entry_point=False)`` idiom.
+      adds a Banner without registering an entry point.
     """
 
     title: str = ""

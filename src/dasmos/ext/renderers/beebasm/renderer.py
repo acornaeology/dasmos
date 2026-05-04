@@ -18,11 +18,6 @@ validated:
                                                           ▼
                                                   binary' (== binary)
 
-Lifted from py8dis's ``beebasm.py`` (333 lines) plus the rendering
-helpers from ``mainformatter.py``. The split between "compute
-operand text" and "emit surrounding line" is dasmos-specific; py8dis
-mixed both in the same class.
-
 Deferred from this first cut (lands with later ports):
 
 - Inline hex-dump comments (need :class:`AnnotationStore`).
@@ -54,24 +49,23 @@ from dasmos.cpu import Opcode, OperandKind
 from dasmos.output import TextOutput
 from dasmos.renderer import TextRenderer
 
-# Trailing column for inline comments. A future config knob; matches
-# py8dis's default.
+# Trailing column for inline comments. A future config knob.
 INLINE_COMMENT_COLUMN = 40
 
 # When ``byte_column`` is enabled, instructions are padded further so
-# the byte annotation has room before any user comment. Matches py8dis.
+# the byte annotation has room before any user comment.
 INSTRUCTION_PAD_WITH_BYTE_COLUMN = 70
 
 # Total width occupied by a byte-column annotation
 # (``<addr>: <hex>  <ascii>``) — used when both byte column and user
 # comment are present on the same line. Roughly: ``&XXXX: `` (7) +
 # bytes section (8 = max 3 bytes "XX YY ZZ") + gap + ascii (3-char
-# field). Matches the visual width of py8dis's column.
+# field).
 BYTE_COLUMN_TOTAL_WIDTH = 27
 
 # Banner separator width: a row of this many ``*`` characters,
 # prefixed by the comment prefix and a space, between the title and
-# the surrounding text. Matches py8dis's default of 87.
+# the surrounding text.
 BANNER_SEPARATOR_WIDTH = 87
 
 if TYPE_CHECKING:
@@ -138,7 +132,7 @@ class BeebasmRenderer(TextRenderer):
         # When True, attach a ``; <addr>: <hex bytes>  <ascii>``
         # annotation to the first content line of every classification.
         # Off by default — drivers that want a clean rendered listing
-        # leave it off; the porter and py8dis-parity tests opt in.
+        # leave it off; the porter and parity tests opt in.
         self.byte_column = byte_column
         # Byte-column flavour:
         # - ``"dasmos"`` (default): ``&xxxx`` prefix, b2r-resolved
@@ -157,9 +151,9 @@ class BeebasmRenderer(TextRenderer):
         self.byte_column_format = byte_column_format
         # Default chunking widths for ``Byte`` / ``Word`` blocks
         # whose own ``cols()`` is None (the typical case for blocks
-        # registered without an explicit cols=). Chosen to match
-        # py8dis when the porter sets ``default_byte_cols=12`` and
-        # ``default_word_cols=6`` for its py8dis-compat preset.
+        # registered without an explicit cols=). The porter overrides
+        # these (``default_byte_cols=12`` / ``default_word_cols=6``)
+        # for its py8dis-compat preset.
         self.default_byte_cols = default_byte_cols
         self.default_word_cols = default_word_cols
         # When True, emit the trailing ``; Automatically generated
@@ -284,8 +278,8 @@ class BeebasmRenderer(TextRenderer):
         return f"save {save_args}"
 
     def code_start(self, start_addr, end_addr, first: bool) -> list[str]:
-        # Blank line before, ORG line, blank line after — matches
-        # py8dis's spacing for readability and round-trip stability.
+        # Blank line before, ORG line, blank line after — readability
+        # plus round-trip stability.
         return ["", f"    org {self.hex4(int(start_addr))}", ""]
 
     def code_end(self) -> list[str]:
@@ -346,9 +340,8 @@ class BeebasmRenderer(TextRenderer):
         """Walk the IR's classifications and emit a beebasm source
         listing.
 
-        Emission order (mirrors ``py8dis``'s ``mainformatter`` — see
-        ``py8dis_reference_*.asm`` fixtures, where ``org &<move-src>``
-        appears in the file BEFORE ``org &<load-start>``):
+        Emission order (``org &<move-src>`` appears in the file BEFORE
+        ``org &<load-start>``):
 
         1. Explicit-label table for out-of-range labels (prepended at
            the end so it can include externals discovered during the
@@ -402,8 +395,9 @@ class BeebasmRenderer(TextRenderer):
 
         moves_by_src = self._moves_by_src_addr(ir)
         # Map ``MoveDefinition`` → 1-based id (for the byte-column
-        # ``[<move_id>]`` suffix in py8dis format). Built once per
-        # render so each move-enter doesn't recompute it.
+        # ``[<move_id>]`` suffix in the ``"py8dis"`` byte-column
+        # format). Built once per render so each move-enter doesn't
+        # recompute it.
         move_ids: dict[int, int] = {
             id(move): i + 1
             for i, src in enumerate(sorted(moves_by_src))
@@ -434,9 +428,8 @@ class BeebasmRenderer(TextRenderer):
 
         # Track PC through the walk so we can emit ``org &<addr>``
         # whenever we resume after a skipped (move-source) range —
-        # mirrors py8dis, which emits ``org &9665`` to resume the
-        # main walk at the byte just after the last move source in
-        # NFS-3.65 (line 6545 of the reference output).
+        # the main walk needs to resume at the byte just after the
+        # last move source.
         expected_pc = int(load_start)
         for binary_addr, classification in ir.classifications.iter_classified_starts():
             ba = int(binary_addr)
@@ -499,9 +492,8 @@ class BeebasmRenderer(TextRenderer):
 
         # Constants (registered via Disassembler.constant) are
         # tracked separately from labels — emit them as their own
-        # equate block above the memory-map. Mirrors py8dis where
-        # constants live in disassembly.constants and emit as
-        # ``name = value`` lines distinct from label equates.
+        # equate block above the memory-map: ``name = value`` lines
+        # distinct from label equates.
         constant_lines = self._build_constant_equates(ir)
         if constant_lines:
             header = [f"{self.comment_prefix()} Constants"]
@@ -514,7 +506,7 @@ class BeebasmRenderer(TextRenderer):
         (deduped by name — multiple registrations of the same
         ``(value, name)`` pair, common when several JSR sites trigger
         the same OSBYTE-hook substitution, collapse to one equate).
-        Emitted in registration order to match py8dis output.
+        Emitted in registration order.
         """
         seen: set[str] = set()
         lines: list[str] = []
@@ -646,8 +638,8 @@ class BeebasmRenderer(TextRenderer):
             # ``move.dest + (binary_addr - move.src) + offset`` and
             # beebasm evaluates ``base+offset`` at assembly time
             # against the inline anchor's PC, which IS at the base's
-            # runtime. (Mirrors py8dis line 331 of the NFS reference:
-            # ``tube_cmd_lo = tube_dispatch_cmd+1`` inside move 1.)
+            # runtime. (Example: ``tube_cmd_lo = tube_dispatch_cmd+1``
+            # inside move 1 of NFS-3.65.)
             base_names = sorted(label.explicit_name_texts())
             if base_names:
                 base_name = base_names[0]
@@ -839,10 +831,10 @@ class BeebasmRenderer(TextRenderer):
                 )
             lines.append(line)
             # If this address has tracked references, follow the equate
-            # with a ``; &xxxx referenced N times by …`` summary —
-            # mirrors py8dis. The body walk would normally emit this
-            # inline, but mid-instruction labels (which dominate this
-            # table) have no inline body-walk anchor.
+            # with a ``; &xxxx referenced N times by …`` summary. The
+            # body walk would normally emit this inline, but
+            # mid-instruction labels (which dominate this table) have
+            # no inline body-walk anchor.
             label_at_addr = ir.labels.get_label(addr)
             if label_at_addr is not None:
                 xref = self._format_inline_xref_summary(label_at_addr, addr)
@@ -909,8 +901,7 @@ class BeebasmRenderer(TextRenderer):
         """Return the lines that switch beebasm's PC from the source
         position into the relocated destination range.
 
-        Mirrors py8dis's pattern (without the ``Move N:`` move-id since
-        we don't expose move ids the same way):
+        Layout::
 
             <blank>
             ; Move <id>: &<src> to &<dest> for length <N>
@@ -989,9 +980,8 @@ class BeebasmRenderer(TextRenderer):
 
     def _build_stats_block(self, ir) -> list[str]:
         """Build the trailing ``; Stats:`` block — one-glance summary
-        of the disassembly's composition. Mirrors the py8dis layout so
-        consumers comparing outputs see familiar shape; the numbers
-        come from walking the classification store.
+        of the disassembly's composition. The numbers come from walking
+        the classification store.
         """
         code_bytes = 0
         data_bytes = 0
@@ -1068,8 +1058,8 @@ class BeebasmRenderer(TextRenderer):
         Mirrors how :meth:`_render_byte` / :meth:`_render_word` /
         :meth:`_render_string` chunk the underlying classification
         into rows. Body walk uses this to attach a byte-column
-        annotation per row (matching py8dis: every ``equb`` row gets
-        its own ``; <addr>: <bytes>  <ascii>``).
+        annotation per row — every ``equb`` row gets its own
+        ``; <addr>: <bytes>  <ascii>``.
         """
         if isinstance(classification, Byte):
             cols = classification.cols() or self.default_byte_cols
@@ -1114,8 +1104,8 @@ class BeebasmRenderer(TextRenderer):
           with bare 4-digit hex and the binary file position. Inside
           a relocated region, also append
           ``:<runtime_hex>[<move_id>]`` so a reader can see both the
-          file address and the execution address. Matches the format
-          used by the legacy py8dis fork's output.
+          file address and the execution address. Use this format for
+          byte-for-byte annotation parity with py8dis output.
 
         Up to 3 bytes are shown; longer runs are truncated with ``...``.
         """
@@ -1301,18 +1291,17 @@ class BeebasmRenderer(TextRenderer):
     def _render_banner_lines(self, banner: Banner) -> list[str]:
         """Render a Banner as a multi-line decorated comment block.
 
-        The format follows py8dis: a separator line of
-        :data:`BANNER_SEPARATOR_WIDTH` asterisks, the title, a blank
-        comment line, then the description. Description text is
-        emitted with explicit line breaks preserved (no word-wrap in
-        this first cut — that lands with the markdown_asm port).
+        Layout: a separator line of :data:`BANNER_SEPARATOR_WIDTH`
+        asterisks, the title, a blank comment line, then the
+        description. Description text is emitted with explicit line
+        breaks preserved (no word-wrap in this first cut — that lands
+        with the markdown_asm port).
 
         ``on_entry`` / ``on_exit`` register-usage dicts (when present)
         each render as a ``; On Entry:`` / ``; On Exit:`` sub-block,
-        with one ``;     <REG>: <description>`` line per dict entry —
-        matching py8dis's banner format. The dict round-trips through
-        the IR as structured data so a future JSON renderer can emit
-        it as a real dict.
+        with one ``;     <REG>: <description>`` line per dict entry.
+        The dict round-trips through the IR as structured data so a
+        future JSON renderer can emit it as a real dict.
         """
         prefix = self.comment_prefix()
         sep = f"{prefix} " + ("*" * BANNER_SEPARATOR_WIDTH)
@@ -1337,8 +1326,8 @@ class BeebasmRenderer(TextRenderer):
                 out.append(prefix)
             out.append(f"{prefix} {label_text}")
             for key, value in mapping.items():
-                # Match py8dis: register names render uppercase; the
-                # value text is whatever the user supplied.
+                # Register names render uppercase; the value text is
+                # whatever the user supplied.
                 out.append(f"{prefix}     {key.upper()}: {value}")
         return out
 
@@ -1482,15 +1471,14 @@ class BeebasmRenderer(TextRenderer):
             offset = ir.memory.get_u8(operand_addr)
             if offset >= 0x80:
                 offset -= 0x100
-            # Mirrors py8dis OpcodeConditionalBranch.target: arithmetic
-            # in runtime space so a branch inside a moved region
-            # resolves to the right runtime label. With moves-first
-            # emission, the SAME source byte may be emitted under more
-            # than one move (overlap region); ``active_move`` pins
-            # this resolution to the move whose body we're currently
-            # rendering. Outside a move (or when called without
-            # active_move), b2r is the identity / picks the only/
-            # most-recent containing move.
+            # Branch-target arithmetic in runtime space so a branch
+            # inside a moved region resolves to the right runtime
+            # label. With moves-first emission, the SAME source byte
+            # may be emitted under more than one move (overlap
+            # region); ``active_move`` pins this resolution to the
+            # move whose body we're currently rendering. Outside a
+            # move (or when called without active_move), b2r is the
+            # identity / picks the only / most-recent containing move.
             if active_move is not None:
                 base_runtime = (
                     int(active_move.dest_runtime_addr)
@@ -1710,8 +1698,7 @@ class BeebasmRenderer(TextRenderer):
 
         Naive first cut: emits ``equs`` for runs of printable
         characters and ``equb`` for non-printable bytes, on a single
-        line. Round-trip-correct; not necessarily the prettiest
-        rendering py8dis produces.
+        line. Round-trip-correct; not the prettiest possible rendering.
         """
         bytes_ = [
             ir.memory.get_u8(int(binary_addr) + i) for i in range(c.length())

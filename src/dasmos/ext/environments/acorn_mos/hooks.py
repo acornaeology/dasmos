@@ -19,8 +19,8 @@ The state-tracker design (see ``dasmos.core.cpu_state`` +
 ``Nmos6502Cpu.update_state``) preserves the previous-load-imm
 chain across stores and other-register-touching instructions,
 so patterns like ``LDA #imm ; STA somewhere ; LDX #other ; JSR
-osbyte`` still resolve — strictly more capable than the earlier
-backward-peek heuristic, and matches/exceeds py8dis-fork.
+osbyte`` still resolve — strictly more capable than a simple
+backward-peek heuristic.
 """
 
 from __future__ import annotations
@@ -99,7 +99,7 @@ def osword_analyzer(
        given a name (typically the OSWORD parameter block), register
        ``<(label)`` / ``>(label)`` expressions at the LDX / LDY
        operand bytes so they render as ``ldx #<(myblock)`` /
-       ``ldy #>(myblock)``. Mirrors py8dis-fork ``xy_addr``.
+       ``ldy #>(myblock)``.
     """
     # Primary: A → OSWORD_ENUM
     a = state_before_jsr.a
@@ -172,9 +172,6 @@ def osbyte_analyzer(
     in X (event for &0D/&0E, buffer for &15/&8A/&91/&98/&99). When
     so, looks up X's previous-immediate-load address in the
     secondary enum and substitutes that too.
-
-    Mirrors py8dis ``osbyte_hook`` which calls ``enum_lookup`` per
-    OSBYTE action with the appropriate (register, enum) pair.
     """
     # Primary: A → OSBYTE_ENUM
     a = state_before_jsr.a
