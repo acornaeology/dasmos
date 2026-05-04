@@ -548,3 +548,113 @@ class TestAcornMosOsCallHooks:
         ir = d.disassemble()
         assert ir.expressions.get_or_none(0x1003) is None
         assert ir.expressions.get_or_none(0x1005) is None
+
+
+class TestAcornMosInlineAutoComments:
+    """Inline auto-comments at the JSR site for OSFIND / OSFILE /
+    OSGBPB / OSEVEN. The analyzers translate the recognised action
+    code to a terse description per the style guide at
+    ``docs/design/auto-comment-style.md``.
+    """
+
+    @staticmethod
+    def _make(tmp_path, program: bytes, load_addr: int = 0x1000):
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(program)
+        d = Disassembler.create(
+            cpu="6502", environments=["acorn_mos"],
+        )
+        d.load(bin_path, load_addr)
+        d.entry(load_addr)
+        return d
+
+    @staticmethod
+    def _inline_comment_at(ir, binary_addr: int) -> str | None:
+        """Return the inline-comment text at ``binary_addr`` (or
+        None). Multiple inline comments at the same address are not
+        expected here.
+        """
+        from dasmos.core.annotations import Align, Comment
+        anns = ir.annotations.get_for_align(binary_addr, Align.INLINE)
+        for ann in anns:
+            if isinstance(ann, Comment):
+                return ann.text
+        return None
+
+    def test_osfind_open_for_input_attaches_inline_comment(self, tmp_path):
+        # LDA #&40 ; JSR osfind ; RTS — A=&40 is osfind_open_input.
+        # JSR opcode lands at binary &1002.
+        d = self._make(
+            tmp_path,
+            bytes([0xa9, 0x40, 0x20, 0xce, 0xff, 0x60]),
+        )
+        ir = d.disassemble()
+        assert self._inline_comment_at(ir, 0x1002) == "open file for input"
+
+    def test_osfind_close_attaches_inline_comment(self, tmp_path):
+        # LDA #&00 ; JSR osfind ; RTS — A=0 is osfind_close.
+        d = self._make(
+            tmp_path,
+            bytes([0xa9, 0x00, 0x20, 0xce, 0xff, 0x60]),
+        )
+        ir = d.disassemble()
+        assert self._inline_comment_at(ir, 0x1002) == "close one or all files"
+
+    def test_osfile_save_attaches_inline_comment(self, tmp_path):
+        # LDA #&00 ; JSR osfile ; RTS — A=0 is osfile_save.
+        d = self._make(
+            tmp_path,
+            bytes([0xa9, 0x00, 0x20, 0xdd, 0xff, 0x60]),
+        )
+        ir = d.disassemble()
+        assert self._inline_comment_at(ir, 0x1002) == "save block of memory"
+
+    def test_osgbpb_read_filenames_attaches_inline_comment(self, tmp_path):
+        # LDA #&08 ; JSR osgbpb ; RTS — A=8 is read filenames.
+        d = self._make(
+            tmp_path,
+            bytes([0xa9, 0x08, 0x20, 0xd1, 0xff, 0x60]),
+        )
+        ir = d.disassemble()
+        assert self._inline_comment_at(ir, 0x1002) == (
+            "read filenames in current directory"
+        )
+
+    def test_oseven_known_event_attaches_inline_comment(self, tmp_path):
+        # LDY #&04 ; JSR oseven ; RTS — Y=4 is vsync.
+        d = self._make(
+            tmp_path,
+            bytes([0xa0, 0x04, 0x20, 0xbf, 0xff, 0x60]),
+        )
+        ir = d.disassemble()
+        assert self._inline_comment_at(ir, 0x1002) == "generate event: vsync"
+
+    def test_oseven_unknown_event_attaches_no_inline_comment(self, tmp_path):
+        # LDY #&20 (not in EVENT_ENUM) ; JSR oseven ; RTS.
+        # The analyzer skips entirely — no inline comment.
+        d = self._make(
+            tmp_path,
+            bytes([0xa0, 0x20, 0x20, 0xbf, 0xff, 0x60]),
+        )
+        ir = d.disassemble()
+        assert self._inline_comment_at(ir, 0x1002) is None
+
+    def test_unrecognised_a_value_attaches_no_inline_comment(self, tmp_path):
+        # LDA #&55 (not in OSFIND_ENUM) ; JSR osfind ; RTS.
+        # Style guide §5.4: when the analyzer can't say anything
+        # specific, say nothing.
+        d = self._make(
+            tmp_path,
+            bytes([0xa9, 0x55, 0x20, 0xce, 0xff, 0x60]),
+        )
+        ir = d.disassemble()
+        assert self._inline_comment_at(ir, 0x1002) is None
+
+    def test_no_preceding_lda_attaches_no_inline_comment(self, tmp_path):
+        # NOP ; NOP ; JSR osfind ; RTS — A is unknown at the JSR.
+        d = self._make(
+            tmp_path,
+            bytes([0xea, 0xea, 0x20, 0xce, 0xff, 0x60]),
+        )
+        ir = d.disassemble()
+        assert self._inline_comment_at(ir, 0x1002) is None

@@ -14,6 +14,10 @@ recent ``LDA #imm`` that set up the call, then:
 2. Registers an auto-expression (:meth:`Disassembler.expr`) at
    the LDA's immediate-operand byte so the rendered listing reads
    ``lda #osbyte_<name>`` instead of ``lda #&xx``.
+3. Optionally attaches an inline auto-comment at the JSR call
+   site naming what the call does (``open file for input``,
+   ``generate event: vsync``, …). The wording follows the style
+   guide at ``docs/design/auto-comment-style.md``.
 
 The state-tracker design (see ``dasmos.core.cpu_state`` +
 ``Nmos6502Cpu.update_state``) preserves the previous-load-imm
@@ -27,6 +31,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from dasmos.core.annotations import Align
+from dasmos.core.memory import BinaryAddr
 from dasmos.ext.environments.acorn_mos.enums import (
     EVENT_ENUM,
     OSBYTE_ENUM,
@@ -41,7 +47,94 @@ if TYPE_CHECKING:
     from dasmos.disassembler import Disassembler
 
 
-def _analyzer_for(enum: dict[int, str], reg: str = "a"):
+# -- Inline-comment tables (per docs/design/auto-comment-style.md) --
+
+# OSFIND: action codes → terse JSR-site comment fragment.
+OSFIND_INLINE: dict[int, str] = {
+    0x00: "close one or all files",
+    0x40: "open file for input",
+    0x80: "open file for output",
+    0xc0: "open file for update",
+}
+
+# OSFILE: action codes → terse JSR-site comment fragment.
+OSFILE_INLINE: dict[int, str] = {
+    0x00: "save block of memory",
+    0x01: "write catalogue info",
+    0x02: "write load address",
+    0x03: "write execution address",
+    0x04: "write attributes",
+    0x05: "read catalogue info",
+    0x06: "delete file",
+    0x07: "create empty file",
+    0xff: "load file",
+}
+
+# OSGBPB: action codes → terse JSR-site comment fragment.
+OSGBPB_INLINE: dict[int, str] = {
+    0x01: "write bytes (at given pointer)",
+    0x02: "append bytes (at current pointer)",
+    0x03: "read bytes (at given pointer)",
+    0x04: "read bytes (at current pointer)",
+    0x05: "read title, boot option, drive",
+    0x06: "read current directory + drive",
+    0x07: "read current library + drive",
+    0x08: "read filenames in current directory",
+}
+
+# OSEVEN: terse human name for each event number, used to build
+# ``generate event: <name>`` at the JSR site. Mirrors the long
+# names in ``EVENT_ENUM`` but tighter for the inline column.
+EVENT_NAMES_TERSE: dict[int, str] = {
+    0: "output buffer empty",
+    1: "input buffer full",
+    2: "character into input buffer",
+    3: "ADC conversion complete",
+    4: "vsync",
+    5: "interval timer reached zero",
+    6: "escape detected",
+    7: "RS423 error",
+    8: "network error",
+    9: "user event",
+}
+
+
+def _attach_inline_jsr_comment(
+    disassembler: "Disassembler",
+    jsr_binary_addr: int,
+    text: str,
+) -> None:
+    """Attach a JSR-site inline comment if no existing inline
+    annotation conflicts. Translates the binary address to runtime
+    via the active-move stack so the comment routes to the right
+    classification under relocation.
+
+    The duplicate-annotation warning in :class:`AnnotationStore`
+    will fire if the analyzer somehow attaches the same text twice
+    or if a driver-supplied inline comment with the same text is
+    already registered — both indicate a real authoring conflict.
+    """
+    runtime_addr = int(disassembler.moves.b2r(BinaryAddr(jsr_binary_addr)))
+    # Skip if any inline comment is already at this address —
+    # driver-supplied comments win over auto-generated ones.
+    existing = disassembler.annotations.get_for_align(
+        jsr_binary_addr, Align.INLINE,
+    )
+    for ann in existing:
+        # Skip just for inline-comment duplicates; banner / xref
+        # blocks at the same address are independent.
+        from dasmos.core.annotations import Comment
+        if isinstance(ann, Comment):
+            return
+    disassembler.comment(runtime_addr, text, align=Align.INLINE)
+
+
+def _analyzer_for(
+    enum: dict[int, str],
+    reg: str = "a",
+    *,
+    inline_for_value: dict[int, str] | None = None,
+):
     """Build a post-trace JSR analyzer that reads ``state.<reg>``
     (the CPU state IMMEDIATELY BEFORE the JSR) to find the last
     immediate load to that register. If the value is in ``enum``
@@ -51,6 +144,12 @@ def _analyzer_for(enum: dict[int, str], reg: str = "a"):
     ``reg`` defaults to ``"a"`` (the OSBYTE / OSWORD / OSFIND /
     OSFILE / OSGBPB convention). Future analyzers for OS calls
     that take their argument in X or Y just pass ``reg="x"``.
+
+    ``inline_for_value`` (optional) is a ``value → comment`` table.
+    When the analyzer recognises the value AND the table has a
+    matching entry, an inline auto-comment is attached at the JSR
+    call site. Style is per
+    ``docs/design/auto-comment-style.md``.
     """
 
     def analyzer(
@@ -79,6 +178,14 @@ def _analyzer_for(enum: dict[int, str], reg: str = "a"):
         operand_addr = load_imm_addr + 1
         if disassembler.expressions.get_or_none(operand_addr) is None:
             disassembler.expr(operand_addr, name)
+        # Inline auto-comment at the JSR site, if the per-call
+        # table provided one.
+        if inline_for_value is not None:
+            inline_text = inline_for_value.get(value)
+            if inline_text is not None:
+                _attach_inline_jsr_comment(
+                    disassembler, jsr_binary_addr, inline_text,
+                )
 
     return analyzer
 
@@ -154,9 +261,9 @@ def _maybe_register_xy_address(disassembler, state) -> None:
         disassembler.expr(y_operand, f">({name})")
 
 
-osfind_analyzer = _analyzer_for(OSFIND_ENUM)
-osfile_analyzer = _analyzer_for(OSFILE_ENUM)
-osgbpb_analyzer = _analyzer_for(OSGBPB_ENUM)
+osfind_analyzer = _analyzer_for(OSFIND_ENUM, inline_for_value=OSFIND_INLINE)
+osfile_analyzer = _analyzer_for(OSFILE_ENUM, inline_for_value=OSFILE_INLINE)
+osgbpb_analyzer = _analyzer_for(OSGBPB_ENUM, inline_for_value=OSGBPB_INLINE)
 
 
 def osbyte_analyzer(
@@ -205,5 +312,13 @@ def osbyte_analyzer(
                             disassembler.expr(x_operand, x_name)
 
 
-# OSEVEN takes an event number in Y.
-oseven_analyzer = _analyzer_for(EVENT_ENUM, reg="y")
+# OSEVEN takes an event number in Y. The JSR-site comment is
+# ``generate event: <terse-name>`` per the style guide.
+oseven_analyzer = _analyzer_for(
+    EVENT_ENUM,
+    reg="y",
+    inline_for_value={
+        n: f"generate event: {terse}"
+        for n, terse in EVENT_NAMES_TERSE.items()
+    },
+)
