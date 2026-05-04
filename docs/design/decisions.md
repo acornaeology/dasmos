@@ -431,3 +431,91 @@ existing `MemoryImage` / `MoveManager` / `LabelManager` /
 
 **Consequences**: More classes, each less complicated. The
 `Disassembler` is a delegating coordinator, not a god class.
+
+## 2026-05-04 — move subsystem redesign
+
+### D-022: Move handle is a typed object, not a bare integer id
+
+**Status**: accepted, implemented (commits `03fd9f7`, `2bfda49`,
+follow-on tidy `<this commit>`).
+
+**Context**: The original implementation returned an `int` from
+`Disassembler.add_move(...)` — really a positional index into
+`MoveManager._moves`, an internal-implementation detail leaking
+into the API. Driver scripts did `with d.using_move(move_id):` to
+push the move onto the active stack; structurally this matched
+py8dis's surface but missed py8dis's ergonomic
+`with move_id:` shortcut, where py8dis returned a context-manager
+shaped object directly.
+
+**Decision**: Replace the bare-int handle with a typed `Move` class
+(in `dasmos.core.move`). `Move` carries the dest / src / length
+geometry, an explicit human-readable `name`, a back-reference to
+its owning `MoveManager`, and an internal `_move_id` (the integer
+position used by the manager). `Move.__enter__` / `__exit__`
+implement the context-manager protocol so `with move: ...` works
+directly; `Disassembler.using_move` is removed.
+
+**Consequences**:
+
+- The `name` field is the basis for future moves-as-first-class
+  artifacts in JSON output and the `@move-name` URI variant in
+  markdown comments. Optional at construction; fabricated as
+  `move_<index>` when omitted. Two moves with the same explicit
+  name raise `MoveError` — almost always an authoring mistake.
+- Moves are bound to their owning `MoveManager`. Equality is by
+  identity. Passing a Move from one Disassembler to another's
+  annotation method raises `DisassemblerError` at the API
+  boundary (`Disassembler._move_to_id`).
+- Internal stores (`LabelManager`, `AnnotationStore`, etc.) keep
+  their `move_id: int` API. The Disassembler converts at the
+  boundary via a `_shift_move_kwarg(kwargs)` helper.
+- The renderer-internal `BinaryLocation.move_id` and similar IR
+  fields stay as ints — they're internal positional ids consumed
+  only by code that has the `MoveManager` in hand and can
+  round-trip via `MoveManager.move_for_id(...)`.
+- The `Move.__init__` constructor *requires* `name`, `manager`,
+  and `move_id`. There is no public-facing standalone Move; tests
+  that need a Move for geometry-method assertions construct via
+  `MoveManager.add_move` like everyone else.
+
+### D-023: Multi-source-same-destination moves render via inline-label dedup
+
+**Status**: accepted, implemented (commit `2bfda49`).
+
+**Context**: Acorn ROMs commonly stage three different routine
+variants into the same RAM region (NMI handler, Tube write, Tube
+read, etc.). ADFS-1.30 has three moves all targeting `&0D0A`.
+The renderer's per-move body walk emits inline labels at runtime
+addresses; for a label whose runtime address falls inside *every*
+move's destination range, the first walk emits `.<name>:`, then
+the second / third walks re-emit the same label, and beebasm
+rejects with "Symbol already defined".
+
+**Decision**: Suppress duplicate inline-label emission via the
+existing `_inline_emitted_runtime_addrs` set. The set was already
+populated on first emission (consumed by the post-walk equate
+block to avoid double-defining the same label). Now the body walk
+also *consults* it before emitting `.<name>:`; if the address has
+already been anchored, the inline emission is skipped. The
+per-move trailing `copyblock` / `clear` / `org` directives still
+resolve the symbol via the single inline anchor.
+
+**Consequences**:
+
+- ADFS-1.30 round-trips byte-equivalently end-to-end (the
+  previously-`xfail` `test_full_driver_round_trips` now passes
+  cleanly).
+- The fix is one-line plus comments — much smaller than the
+  initial sketch in `docs/design/move-redesign-memo.md` §3.3 (which
+  proposed a structural rework of how multi-source destinations
+  emit). The simpler fix worked because beebasm's pass-2 symbol
+  resolution happily indexes into the single inline definition;
+  the only real constraint was "don't emit `.name:` twice".
+- py8dis emits the destination label as a top-level equate
+  (`name = &addr`) and never inline; dasmos picks the
+  inline-on-first-walk path. Either is correct beebasm; dasmos's
+  choice keeps the renderer simpler at the cost of ordering the
+  label's emission with the move whose body walk reaches it
+  first. No downstream consumer cares about which move "owns"
+  the inline anchor.

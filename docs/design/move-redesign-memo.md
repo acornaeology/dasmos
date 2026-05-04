@@ -1,9 +1,9 @@
 # Move subsystem redesign memo
 
-**Status:** thinking-out-loud draft, 2026-05-04. Inputs to a future
-decision-record entry in `decisions.md`. Surfaced by the ADFS-1.30
-fixture vendoring (the multi-source-same-destination pattern that
-beebasm currently rejects with "Symbol already defined").
+**Status:** implemented 2026-05-04. The decisions made here are
+recorded as **D-022** (typed Move handle) and **D-023**
+(multi-source-same-dest renderer fix) in `decisions.md`. Open
+questions §4.3, §4.4 and §4.5 remain open and tracked here.
 
 ---
 
@@ -256,39 +256,51 @@ mechanical given §3.2.
 
 ## 4. Open questions
 
-1. **Default move when none is named?** If a driver does
-   `d.add_move(d, s, l)` without `name=`, do we fabricate
-   `move_<index>` (mostly invisible, used only in diagnostics) or
-   refuse and force the user to pick a name? My lean: fabricate. A
-   single-source move doesn't need a name; a multi-source set does
-   if the user wants per-variant cross-refs.
+### 4.1 Default move when none is named — RESOLVED
 
-2. **Should `Move` instances be comparable across `Disassembler`
-   instances?** Probably not — a Move is bound to its manager. An
-   ergonomic side-effect: passing a Move from one disassembler's
-   `add_move` to another's `comment(move_id=...)` should error
-   loudly. Identity-based equality + a back-reference to the manager
-   handles this.
+Resolved during step 1: fabricate `move_<index>` when the driver
+omits `name=`. A single-source move doesn't need a name for
+cross-references; a multi-source set does if the user wants
+per-variant URI variants, and should pass an explicit name. Two
+moves with the same explicit name raise `MoveError` —
+collision-by-accident is almost always an authoring mistake.
 
-3. **What about moves that overlap but share neither dest nor src?**
-   Today's "last add_move covering a binary address wins" semantic
-   for source-byte stealing is a reasonable default; this redesign
-   doesn't have to change it. Worth noting in the doc but not
-   blocking.
+### 4.2 Move equality across managers — RESOLVED
 
-4. **Static vs. dynamic move?** Acorn code occasionally has *only at
-   runtime* moves — code that detects the live MOS version and
-   chooses where to copy a routine. Today's `add_move` is static
-   (declared once, fixed forever). Should the API ever express
-   conditional moves? Probably not in the disassembler — that's
-   beyond the static-disassembly remit; leave it as a comment-level
-   concern. Worth a sentence in the docs.
+Resolved during step 1: `Move` is identity-equal (default object
+behaviour). Bound to its owning `MoveManager` via a back-reference;
+`Disassembler._move_to_id` checks the membership and raises
+`DisassemblerError` when a Move is used with the wrong
+disassembler.
 
-5. **Beebasm directive choice.** py8dis uses `copyblock` + `clear` +
-   `org` for multi-source-same-dest. Is that the only viable
-   beebasm-syntax encoding, or could a different sequence yield a
-   shorter / more readable output? Worth a quick survey of beebasm
-   docs before locking the renderer's emission shape.
+### 4.3 Overlapping moves with neither shared dest nor shared src
+
+**Open.** Today's "last `add_move` covering a binary address wins"
+semantic for source-byte stealing is preserved. Renderers and
+analysis don't currently distinguish "this byte belongs to move N
+even though move M also overlaps". Worth revisiting if a real
+fixture surfaces a pattern dasmos can't represent.
+
+### 4.4 Conditional / runtime moves
+
+**Open, unlikely to land.** Acorn code occasionally has runtime-
+selected moves (the MOS version dictates which destination is
+live). Today's `add_move` is static — declared once, fixed forever.
+Expressing conditional moves on the disassembler API is probably
+beyond static-disassembly remit; leave as a comment-level concern
+unless a fixture forces the issue.
+
+### 4.5 Beebasm directive choice — DEFERRED, not currently blocking
+
+The original sketch in §3.3 proposed a structural rework of how
+multi-source destinations emit (group moves by destination, emit
+the label once, emit each source span as a separate variant block
+with `copyblock` cycles). The actual fix turned out simpler — see
+**D-023**: just dedup the inline-label emission and let the
+existing per-move emission walks proceed normally. The current
+emission shape produces ADFS round-trip-correct output, so the
+"survey beebasm directives for a shorter / more readable
+encoding" question is genuinely open but isn't blocking anything.
 
 ---
 
@@ -334,14 +346,17 @@ follow-ons that can land independently in any order.
 
 ---
 
-## 7. Recommendation
+## 7. Recommendation — landed
 
-Move forward with (1) — the API rename to a typed `Move` handle —
-as a self-contained, low-risk improvement. It removes the porter
-hack, simplifies driver-script ergonomics, and clears the way for
-(2) to address the ADFS gating issue with a cleaner data model.
+Steps (1) and (2) shipped together over 2026-05-04: typed `Move`
+handle landed first as a self-contained API rename (removing the
+porter's `with`-rewrite and the `using_move` shim along the way),
+and the multi-source-same-dest renderer fix landed immediately
+after. The latter turned out to be a one-line dedup rather than
+the structural rework §3.3 imagined.
 
-Nothing in this memo precludes shipping (1) before deciding the
-final shape of (2). The renderer rework can happen after the API
-shape is settled, with its own design pass if it turns out to be
-fiddly.
+Steps (3) and (4) — JSON exposure of moves, `@move-name` URI
+variant — remain unimplemented but are no longer gated on (1) or
+(2). They can be picked up independently when the consumer-side
+need surfaces (HTML site generator, multi-variant cross-references
+in narrative comments).

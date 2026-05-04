@@ -44,7 +44,7 @@ from typing import TYPE_CHECKING
 from dasmos.core.annotations import Align, Annotation, Banner, Comment
 from dasmos.core.classification import Byte, Fill, String, Word
 from dasmos.core.memory import BinaryAddr
-from dasmos.core.move import MoveDefinition
+from dasmos.core.move import Move
 from dasmos.cpu import Opcode, OperandKind
 from dasmos.output import TextOutput
 from dasmos.renderer import TextRenderer
@@ -394,7 +394,7 @@ class BeebasmRenderer(TextRenderer):
             return TextOutput("\n".join(lines) + "\n")
 
         moves_by_src = self._moves_by_src_addr(ir)
-        # Map ``MoveDefinition`` → 1-based id (for the byte-column
+        # Map ``Move`` → 1-based id (for the byte-column
         # ``[<move_id>]`` suffix in the ``"py8dis"`` byte-column
         # format). Built once per render so each move-enter doesn't
         # recompute it.
@@ -878,13 +878,13 @@ class BeebasmRenderer(TextRenderer):
     # -- move-aware emission --------------------------------------------
 
     @staticmethod
-    def _moves_by_src_addr(ir) -> dict[int, "MoveDefinition"]:
-        """Sorted ``{src_binary_addr: MoveDefinition}`` for every
+    def _moves_by_src_addr(ir) -> dict[int, "Move"]:
+        """Sorted ``{src_binary_addr: Move}`` for every
         registered (non-base) relocation. The base move (id 0) is
         skipped since it's the identity 1:1 mapping over the whole
         address space.
         """
-        out: dict[int, "MoveDefinition"] = {}
+        out: dict[int, "Move"] = {}
         for move_id, defn in enumerate(ir.moves.all_moves):
             if move_id == 0:
                 continue  # base move = identity, no relocation directives
@@ -906,8 +906,8 @@ class BeebasmRenderer(TextRenderer):
 
     def _emit_move_enter(
         self,
-        moves_by_src: dict[int, "MoveDefinition"],
-        move: "MoveDefinition",
+        moves_by_src: dict[int, "Move"],
+        move: "Move",
         src_label: str | None,
     ) -> list[str]:
         """Return the lines that switch beebasm's PC from the source
@@ -942,7 +942,7 @@ class BeebasmRenderer(TextRenderer):
 
     def _emit_move_exit(
         self,
-        move: "MoveDefinition",
+        move: "Move",
         src_label: str | None,
         dest_label: str | None,
     ) -> list[str]:

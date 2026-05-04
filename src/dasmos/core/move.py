@@ -87,16 +87,23 @@ class Move:
         src_binary_addr,
         length: int,
         *,
-        name: str | None = None,
-        manager: "MoveManager | None" = None,
-        move_id: int = BASE_MOVE_ID,
+        name: str,
+        manager: "MoveManager",
+        move_id: int,
     ):
-        # ``name`` / ``manager`` / ``move_id`` default to placeholders
-        # so this class can be constructed directly for unit-testing
-        # the geometry helpers without a manager. In normal use,
-        # :meth:`MoveManager.add_move` is the only construction site
-        # and supplies all three.
-        self.name = name if name is not None else f"<move_{move_id}>"
+        # All fields are required. Move objects are only ever
+        # legitimately constructed by :meth:`MoveManager.add_move`,
+        # which supplies the back-reference and registry id. Tests
+        # that need a Move for geometry-only assertions should
+        # likewise go through a MoveManager.
+        if not name:
+            raise MoveError("Move requires a non-empty name")
+        if length <= 0:
+            raise MoveError(
+                f"Move length must be positive: got {length} for "
+                f"name={name!r}"
+            )
+        self.name = name
         self.dest_runtime_addr = RuntimeAddr(dest_runtime_addr)
         self.src_binary_addr = BinaryAddr(src_binary_addr)
         self.length = length
@@ -118,7 +125,7 @@ class Move:
             f"length={self.length})"
         )
 
-    # -- geometry helpers (formerly on MoveDefinition) ------------------
+    # -- geometry helpers ----------------------------------------------
 
     def is_in_move_dest(self, runtime_addr, *, include_end_address: bool) -> bool:
         assert not isinstance(runtime_addr, BinaryAddr)
@@ -145,12 +152,6 @@ class Move:
         assert self.is_in_move_dest(runtime_addr, include_end_address=True)
         offset = int(runtime_addr) - int(self.dest_runtime_addr)
         return BinaryAddr(int(self.src_binary_addr) + offset)
-
-
-# Back-compat alias for renderer / test code that still names the
-# old type. ``Move`` carries everything ``MoveDefinition`` did plus
-# name and the context-manager protocol.
-MoveDefinition = Move
 
 
 class MoveManager:
@@ -296,12 +297,36 @@ class MoveManager:
 
     def _push_active(self, move_id: int) -> None:
         if not self.is_valid_move_id(move_id):
-            raise MoveError(f"unknown move id: {move_id}")
+            raise MoveError(
+                f"can't activate move id {move_id}: not registered with "
+                f"this MoveManager (registry has "
+                f"{len(self._moves) - 1} user-declared moves: ids "
+                f"1..{len(self._moves) - 1}). This usually means a "
+                f"Move was used with the wrong Disassembler, or a "
+                f"Move was constructed directly without going through "
+                f"MoveManager.add_move()."
+            )
         self._active_move_ids.append(move_id)
 
     def _pop_active(self, move_id: int) -> None:
+        if not self._active_move_ids:
+            raise MoveError(
+                f"can't deactivate move id {move_id}: active-move "
+                f"stack is empty. This can only happen when the "
+                f"with-statement protocol is broken (e.g. __exit__ "
+                f"called without a matching __enter__)."
+            )
         popped = self._active_move_ids.pop()
-        assert popped == move_id, "move-stack discipline violated"
+        if popped != move_id:
+            # Restore the popped element so the stack stays consistent
+            # for any caller that catches the exception.
+            self._active_move_ids.append(popped)
+            raise MoveError(
+                f"move-stack discipline violated: tried to deactivate "
+                f"move id {move_id} but the topmost active move is "
+                f"{popped}. with-blocks for moves must nest in LIFO "
+                f"order; manual stack manipulation will trip this check."
+            )
 
     def b2r(self, binary_addr) -> RuntimeAddr:
         """Convert a binary address to its (unique) runtime address."""

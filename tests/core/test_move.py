@@ -1,9 +1,9 @@
 """Unit tests for dasmos.core.move.
 
-Covers MoveDefinition, the MoveManager registry, and the active-move
-context manager. Mirrors the small inline tests at the bottom of
-py8dis's movemanager.py and adds regression tests for the bugs noted
-in the port plan.
+Covers the Move handle, the MoveManager registry, and the
+active-move context-manager protocol. Mirrors the small inline tests
+at the bottom of py8dis's movemanager.py and adds regression tests
+for the bugs noted in the port plan.
 """
 
 import pytest
@@ -11,40 +11,87 @@ import pytest
 from dasmos.core.memory import BinaryAddr, BinaryLocation, RuntimeAddr, RuntimeLocation
 from dasmos.core.move import (
     BASE_MOVE_ID,
-    MoveDefinition,
+    Move,
     MoveError,
     MoveManager,
 )
 
 
-class TestMoveDefinition:
+@pytest.fixture
+def geometry_move():
+    """Return a Move configured for geometry-method testing.
 
-    def test_is_in_move_dest_interior(self):
-        md = MoveDefinition(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
-        assert md.is_in_move_dest(RuntimeAddr(0x70), include_end_address=False)
-        assert md.is_in_move_dest(RuntimeAddr(0x75), include_end_address=False)
-        assert not md.is_in_move_dest(RuntimeAddr(0x6F), include_end_address=False)
+    Constructed via a real MoveManager (the only legitimate way to
+    obtain a Move) — there is no standalone geometry-only Move
+    factory because Moves are bound to their manager and that
+    binding is load-bearing for context-manager use elsewhere.
+    """
+    mm = MoveManager()
+    return mm.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
 
-    def test_is_in_move_dest_end_address(self):
-        md = MoveDefinition(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
+
+class TestMoveGeometry:
+    """Geometry helpers — purely on the Move's static fields."""
+
+    def test_is_in_move_dest_interior(self, geometry_move):
+        m = geometry_move
+        assert m.is_in_move_dest(RuntimeAddr(0x70), include_end_address=False)
+        assert m.is_in_move_dest(RuntimeAddr(0x75), include_end_address=False)
+        assert not m.is_in_move_dest(RuntimeAddr(0x6F), include_end_address=False)
+
+    def test_is_in_move_dest_end_address(self, geometry_move):
+        m = geometry_move
         # 0x70 + 10 = 0x7A is one-past-the-end
-        assert not md.is_in_move_dest(RuntimeAddr(0x7A), include_end_address=False)
-        assert md.is_in_move_dest(RuntimeAddr(0x7A), include_end_address=True)
-        assert not md.is_in_move_dest(RuntimeAddr(0x7B), include_end_address=True)
+        assert not m.is_in_move_dest(RuntimeAddr(0x7A), include_end_address=False)
+        assert m.is_in_move_dest(RuntimeAddr(0x7A), include_end_address=True)
+        assert not m.is_in_move_dest(RuntimeAddr(0x7B), include_end_address=True)
 
-    def test_is_in_move_src_interior(self):
-        md = MoveDefinition(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
-        assert md.is_in_move_src(BinaryAddr(0x1900), include_end_address=False)
-        assert md.is_in_move_src(BinaryAddr(0x1905), include_end_address=False)
-        assert not md.is_in_move_src(BinaryAddr(0x18FF), include_end_address=False)
+    def test_is_in_move_src_interior(self, geometry_move):
+        m = geometry_move
+        assert m.is_in_move_src(BinaryAddr(0x1900), include_end_address=False)
+        assert m.is_in_move_src(BinaryAddr(0x1905), include_end_address=False)
+        assert not m.is_in_move_src(BinaryAddr(0x18FF), include_end_address=False)
 
-    def test_convert_binary_to_runtime_round_trips(self):
-        md = MoveDefinition(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
-        assert md.convert_binary_to_runtime_addr(BinaryAddr(0x1903)) == RuntimeAddr(0x73)
+    def test_convert_binary_to_runtime_round_trips(self, geometry_move):
+        assert geometry_move.convert_binary_to_runtime_addr(
+            BinaryAddr(0x1903),
+        ) == RuntimeAddr(0x73)
 
-    def test_convert_runtime_to_binary_round_trips(self):
-        md = MoveDefinition(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
-        assert md.convert_runtime_to_binary_addr(RuntimeAddr(0x73)) == BinaryAddr(0x1903)
+    def test_convert_runtime_to_binary_round_trips(self, geometry_move):
+        assert geometry_move.convert_runtime_to_binary_addr(
+            RuntimeAddr(0x73),
+        ) == BinaryAddr(0x1903)
+
+
+class TestMoveConstructor:
+    """Direct construction errors — these only fire when someone
+    bypasses :meth:`MoveManager.add_move` and constructs a Move by
+    hand. Exercise the validation messages so they don't regress.
+    """
+
+    def test_rejects_empty_name(self):
+        mm = MoveManager()
+        with pytest.raises(MoveError, match="non-empty name"):
+            Move(
+                RuntimeAddr(0x70), BinaryAddr(0x1900), 10,
+                name="", manager=mm, move_id=99,
+            )
+
+    def test_rejects_zero_length(self):
+        mm = MoveManager()
+        with pytest.raises(MoveError, match="length must be positive"):
+            Move(
+                RuntimeAddr(0x70), BinaryAddr(0x1900), 0,
+                name="x", manager=mm, move_id=99,
+            )
+
+    def test_rejects_negative_length(self):
+        mm = MoveManager()
+        with pytest.raises(MoveError, match="length must be positive"):
+            Move(
+                RuntimeAddr(0x70), BinaryAddr(0x1900), -1,
+                name="x", manager=mm, move_id=99,
+            )
 
 
 class TestMoveManager:
@@ -221,6 +268,27 @@ class TestActiveMoveStack:
             with m1:
                 raise RuntimeError("boom")
         assert mm.active_move_ids == []
+
+    def test_push_active_with_unknown_id_raises_with_diagnostic(self):
+        # Hand-poke an out-of-range id via the Move's internal field
+        # to exercise the diagnostic path. This shouldn't happen
+        # under normal use — Move objects come from add_move, which
+        # always supplies a valid id — but the error message guides
+        # diagnosis when it does.
+        mm = MoveManager()
+        m = mm.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
+        m._move_id = 99
+        with pytest.raises(
+            MoveError,
+            match="not registered with this MoveManager",
+        ):
+            with m:
+                pass
+
+    def test_pop_active_on_empty_stack_raises_with_diagnostic(self):
+        mm = MoveManager()
+        with pytest.raises(MoveError, match="active-move stack is empty"):
+            mm._pop_active(1)
 
 
 class TestIndependence:
