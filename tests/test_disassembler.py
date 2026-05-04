@@ -141,18 +141,32 @@ class TestSetupDelegation:
         d.load(binary, 0x8000, md5sum="4ae71336e44bf9bf79d2752e234818a5")
 
     def test_add_move_delegates_to_move_manager(self):
+        from dasmos.core.move import Move
         d = Disassembler(cpu=_StubCpu())
-        move_id = d.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
-        assert move_id == 1  # BASE_MOVE_ID + 1
-        assert d.moves.is_valid_move_id(move_id)
+        move = d.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
+        assert isinstance(move, Move)
+        assert move._move_id == 1  # BASE_MOVE_ID + 1
+        assert d.moves.is_valid_move_id(move._move_id)
 
-    def test_using_move_is_a_context_manager(self):
+    def test_move_is_a_context_manager(self):
         d = Disassembler(cpu=_StubCpu())
-        move_id = d.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
+        move = d.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
         assert d.moves.active_move_ids == []
-        with d.using_move(move_id):
-            assert d.moves.active_move_ids == [move_id]
+        with move:
+            assert d.moves.active_move_ids == [move._move_id]
         assert d.moves.active_move_ids == []
+
+    def test_add_move_accepts_optional_name(self):
+        d = Disassembler(cpu=_StubCpu())
+        move = d.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10, name="nmi_write")
+        assert move.name == "nmi_write"
+
+    def test_add_move_fabricates_name_when_omitted(self):
+        d = Disassembler(cpu=_StubCpu())
+        move = d.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
+        # Some non-empty fabricated name; exact form is implementation
+        # detail.
+        assert move.name and isinstance(move.name, str)
 
 
 # ---------------------------------------------------------------------------

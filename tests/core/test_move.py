@@ -58,12 +58,12 @@ class TestMoveManager:
 
     def test_add_move_returns_increasing_ids(self):
         mm = MoveManager()
-        id1 = mm.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
-        id2 = mm.add_move(RuntimeAddr(0x70), BinaryAddr(0x2000), 8)
-        assert id1 == 1
-        assert id2 == 2
-        assert mm.is_valid_move_id(id1)
-        assert mm.is_valid_move_id(id2)
+        m1 = mm.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
+        m2 = mm.add_move(RuntimeAddr(0x70), BinaryAddr(0x2000), 8)
+        assert m1._move_id == 1
+        assert m2._move_id == 2
+        assert mm.is_valid_move_id(m1._move_id)
+        assert mm.is_valid_move_id(m2._move_id)
 
     def test_add_move_rejects_zero_length(self):
         mm = MoveManager()
@@ -112,52 +112,54 @@ class TestRuntimeToBinary:
     @pytest.fixture
     def mm_with_three_moves(self):
         mm = MoveManager()
-        id1 = mm.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
-        id2 = mm.add_move(RuntimeAddr(0x70), BinaryAddr(0x2000), 8)
-        id3 = mm.add_move(RuntimeAddr(0x900), BinaryAddr(0x2100), 256)
-        return mm, id1, id2, id3
+        m1 = mm.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
+        m2 = mm.add_move(RuntimeAddr(0x70), BinaryAddr(0x2000), 8)
+        m3 = mm.add_move(RuntimeAddr(0x900), BinaryAddr(0x2100), 256)
+        return mm, m1, m2, m3
 
     def test_r2b_with_no_relevant_moves_is_identity(self, mm_with_three_moves):
         mm, _, _, _ = mm_with_three_moves
-        # 0x2008 is past id2's dest (0x70..0x77) and not in any other dest.
+        # 0x2008 is past m2's dest (0x70..0x77) and not in any other dest.
         binary_addr, move_id = mm.r2b(RuntimeAddr(0x2008))
         assert binary_addr == BinaryAddr(0x2008)
         assert move_id == BASE_MOVE_ID
 
     def test_r2b_unique_move_resolves_unambiguously(self, mm_with_three_moves):
-        mm, _, _, id3 = mm_with_three_moves
+        mm, _, _, m3 = mm_with_three_moves
         binary_addr, move_id = mm.r2b(RuntimeAddr(0x900))
         assert binary_addr == BinaryAddr(0x2100)
-        assert move_id == id3
+        assert move_id == m3._move_id
 
     def test_r2b_ambiguous_returns_none(self, mm_with_three_moves):
         mm, _, _, _ = mm_with_three_moves
-        # 0x70 is the dest of id1 and id2; with nothing active, ambiguous.
+        # 0x70 is the dest of m1 and m2; with nothing active, ambiguous.
         binary_addr, move_id = mm.r2b(RuntimeAddr(0x70))
         assert binary_addr is None
         assert move_id is None
 
     def test_r2b_with_active_move_disambiguates(self, mm_with_three_moves):
-        mm, id1, id2, _ = mm_with_three_moves
-        with mm.using(id2):
+        mm, m1, m2, _ = mm_with_three_moves
+        with m2:
             binary_addr, move_id = mm.r2b(RuntimeAddr(0x70))
             assert binary_addr == BinaryAddr(0x2000)
-            assert move_id == id2
+            assert move_id == m2._move_id
 
     def test_r2b_innermost_active_move_wins(self, mm_with_three_moves):
-        mm, id1, id2, _ = mm_with_three_moves
-        with mm.using(id2):
-            with mm.using(id1):
+        mm, m1, m2, _ = mm_with_three_moves
+        with m2:
+            with m1:
                 binary_addr, move_id = mm.r2b(RuntimeAddr(0x70))
                 assert binary_addr == BinaryAddr(0x1900)
-                assert move_id == id1
+                assert move_id == m1._move_id
 
     def test_r2b_with_specific_move_id_overrides_active_stack(self, mm_with_three_moves):
-        mm, id1, id2, _ = mm_with_three_moves
-        with mm.using(id2):
-            binary_addr, move_id = mm.r2b(RuntimeAddr(0x70), specific_move_id=id1)
+        mm, m1, m2, _ = mm_with_three_moves
+        with m2:
+            binary_addr, move_id = mm.r2b(
+                RuntimeAddr(0x70), specific_move_id=m1._move_id,
+            )
             assert binary_addr == BinaryAddr(0x1900)
-            assert move_id == id1
+            assert move_id == m1._move_id
 
     def test_r2b_checked_raises_on_ambiguous(self, mm_with_three_moves):
         mm, _, _, _ = mm_with_three_moves
@@ -165,9 +167,9 @@ class TestRuntimeToBinary:
             mm.r2b_checked(RuntimeAddr(0x70))
 
     def test_r2b_checked_returns_binary_location_when_unambiguous(self, mm_with_three_moves):
-        mm, _, _, id3 = mm_with_three_moves
+        mm, _, _, m3 = mm_with_three_moves
         loc = mm.r2b_checked(RuntimeAddr(0x900))
-        assert loc == BinaryLocation(0x2100, id3)
+        assert loc == BinaryLocation(0x2100, m3._move_id)
 
 
 class TestMoveIdsForRuntimeAddr:
@@ -178,53 +180,47 @@ class TestMoveIdsForRuntimeAddr:
 
     def test_returns_all_moves_targeting_addr(self):
         mm = MoveManager()
-        id1 = mm.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
-        id2 = mm.add_move(RuntimeAddr(0x70), BinaryAddr(0x2000), 8)
+        m1 = mm.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
+        m2 = mm.add_move(RuntimeAddr(0x70), BinaryAddr(0x2000), 8)
         mm.add_move(RuntimeAddr(0x900), BinaryAddr(0x2100), 256)
-        assert mm.move_ids_for_runtime_addr(RuntimeAddr(0x70)) == {id1, id2}
+        assert mm.move_ids_for_runtime_addr(RuntimeAddr(0x70)) == {m1._move_id, m2._move_id}
 
     def test_cache_invalidated_after_add_move(self):
         mm = MoveManager()
         # Populate the cache.
         assert mm.move_ids_for_runtime_addr(RuntimeAddr(0x70)) == set()
         # Add a move; cache must reflect the new state on next read.
-        id1 = mm.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
-        assert mm.move_ids_for_runtime_addr(RuntimeAddr(0x70)) == {id1}
+        m1 = mm.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
+        assert mm.move_ids_for_runtime_addr(RuntimeAddr(0x70)) == {m1._move_id}
 
 
 class TestActiveMoveStack:
 
-    def test_using_pushes_and_pops(self):
+    def test_with_pushes_and_pops(self):
         mm = MoveManager()
-        id1 = mm.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
+        m1 = mm.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
         assert mm.active_move_ids == []
-        with mm.using(id1):
-            assert mm.active_move_ids == [id1]
-        assert mm.active_move_ids == []
-
-    def test_using_nested_lifo(self):
-        mm = MoveManager()
-        id1 = mm.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
-        id2 = mm.add_move(RuntimeAddr(0x90), BinaryAddr(0x2000), 8)
-        with mm.using(id1):
-            with mm.using(id2):
-                assert mm.active_move_ids == [id1, id2]
-            assert mm.active_move_ids == [id1]
+        with m1:
+            assert mm.active_move_ids == [m1._move_id]
         assert mm.active_move_ids == []
 
-    def test_using_pops_on_exception(self):
+    def test_with_nested_lifo(self):
         mm = MoveManager()
-        id1 = mm.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
+        m1 = mm.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
+        m2 = mm.add_move(RuntimeAddr(0x90), BinaryAddr(0x2000), 8)
+        with m1:
+            with m2:
+                assert mm.active_move_ids == [m1._move_id, m2._move_id]
+            assert mm.active_move_ids == [m1._move_id]
+        assert mm.active_move_ids == []
+
+    def test_with_pops_on_exception(self):
+        mm = MoveManager()
+        m1 = mm.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
         with pytest.raises(RuntimeError):
-            with mm.using(id1):
+            with m1:
                 raise RuntimeError("boom")
         assert mm.active_move_ids == []
-
-    def test_using_rejects_invalid_move_id(self):
-        mm = MoveManager()
-        with pytest.raises(MoveError, match="move id"):
-            with mm.using(99):
-                pass
 
 
 class TestIndependence:
@@ -234,13 +230,13 @@ class TestIndependence:
         # globals in py8dis prevent this property.
         mm_a = MoveManager()
         mm_b = MoveManager()
-        id1_a = mm_a.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
+        m1_a = mm_a.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
         # mm_b sees no moves.
-        assert not mm_b.is_valid_move_id(id1_a)
+        assert not mm_b.is_valid_move_id(m1_a._move_id)
         assert mm_b.b2r(BinaryAddr(0x1900)) == RuntimeAddr(0x1900)
         # And mm_b's active stack is independent.
-        with mm_a.using(id1_a):
-            assert mm_a.active_move_ids == [id1_a]
+        with m1_a:
+            assert mm_a.active_move_ids == [m1_a._move_id]
             assert mm_b.active_move_ids == []
 
 
@@ -248,12 +244,12 @@ class TestLocationCoercion:
 
     def test_make_binary_location_from_int_uses_topmost_active(self):
         mm = MoveManager()
-        id1 = mm.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
-        with mm.using(id1):
+        m1 = mm.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
+        with m1:
             loc = mm.make_binary_location(0x1900)
             assert isinstance(loc, BinaryLocation)
             assert loc.binary_addr == BinaryAddr(0x1900)
-            assert loc.move_id == id1
+            assert loc.move_id == m1._move_id
 
     def test_make_binary_location_from_int_with_no_active_uses_base(self):
         mm = MoveManager()
@@ -270,12 +266,12 @@ class TestLocationCoercion:
         # in the constructor instead of `runtime_loc`), so this code
         # path raised NameError if exercised.
         mm = MoveManager()
-        id1 = mm.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
-        with mm.using(id1):
+        m1 = mm.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
+        with m1:
             loc = mm.make_runtime_location(0x70)
             assert isinstance(loc, RuntimeLocation)
             assert loc.runtime_addr == RuntimeAddr(0x70)
-            assert loc.move_id == id1
+            assert loc.move_id == m1._move_id
 
     def test_make_runtime_location_passes_through(self):
         mm = MoveManager()

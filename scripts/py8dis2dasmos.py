@@ -183,19 +183,6 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
 
     def __init__(self):
         self.assembler_name = "beebasm"
-        # Names assigned from ``move()`` calls (or their ported form,
-        # ``d.add_move(...)``). py8dis drivers commonly write::
-        #
-        #     foo_move_id = move(dest, src, length)
-        #     with foo_move_id:
-        #         label(...)
-        #
-        # The ``with`` form needs the move_id wrapped in
-        # ``d.using_move(...)`` since dasmos treats move_ids as bare
-        # ints rather than as context managers. We track the LHS
-        # names of move-producing assignments here so visit_With can
-        # rewrite the right context expressions.
-        self._move_id_names: set[str] = set()
 
     def visit_Module(self, node: ast.Module) -> ast.Module:
         new_body: list[ast.stmt] = []
@@ -440,47 +427,6 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
                 _inject_encoding_kwarg(node)
         return node
 
-    def visit_Assign(self, node: ast.Assign) -> ast.Assign:
-        """Track names assigned from ``move(...)`` (which visit_Call
-        will already have rewritten to ``d.add_move(...)``). Used by
-        :meth:`visit_With` to wrap context expressions.
-        """
-        self.generic_visit(node)  # rewrite move() → d.add_move(...) first
-        if (
-            isinstance(node.value, ast.Call)
-            and isinstance(node.value.func, ast.Attribute)
-            and isinstance(node.value.func.value, ast.Name)
-            and node.value.func.value.id == "d"
-            and node.value.func.attr == "add_move"
-        ):
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    self._move_id_names.add(target.id)
-        return node
-
-    def visit_With(self, node: ast.With) -> ast.With:
-        """Rewrite ``with <move_id_name>:`` to
-        ``with d.using_move(<move_id_name>):``. py8dis's ``move()``
-        returns a context-manager-shaped object; dasmos's ``add_move``
-        returns a bare int that needs ``d.using_move(...)`` to push
-        onto the active-move stack for the duration of the block.
-        """
-        self.generic_visit(node)  # rewrite body first
-        for item in node.items:
-            if (
-                isinstance(item.context_expr, ast.Name)
-                and item.context_expr.id in self._move_id_names
-            ):
-                item.context_expr = ast.Call(
-                    func=ast.Attribute(
-                        value=ast.Name(id="d", ctx=ast.Load()),
-                        attr="using_move",
-                        ctx=ast.Load(),
-                    ),
-                    args=[item.context_expr],
-                    keywords=[],
-                )
-        return node
 
     # -- specials --------------------------------------------------------
 
@@ -690,6 +636,12 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
         """Apply per-method kwarg transformations after the
         ``foo(...)`` → ``d.foo(...)`` rewrite.
 
+        - ``move_id=`` → ``move=`` (universal). py8dis's ``move()``
+          returned a context-manager-shaped value; dasmos's
+          ``add_move()`` returns a typed :class:`~dasmos.core.move.Move`
+          handle, and the kwarg name on every dasmos method is
+          ``move=`` rather than ``move_id=``. ``move_id=None`` is
+          dropped entirely (it was the redundant default).
         - ``comment(..., inline=True)`` →
           ``comment(..., align=Align.INLINE)`` (sweep memo C1).
           ``inline=False`` is silently dropped — it was the default in
@@ -700,9 +652,22 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
           ``is_entry_point=`` (the True case is the new default;
           the False case is rewritten upstream into a label + banner
           pair), ``on_entry=`` / ``on_exit=`` (py8dis register-usage
-          docs not yet ported), ``at_binary_addr=`` (py8dis-specific),
-          and ``move_id=None`` (the default, redundant).
+          docs not yet ported), ``at_binary_addr=`` (py8dis-specific).
         """
+        # Universal: rewrite move_id= → move= and drop move_id=None.
+        new_kwargs: list[ast.keyword] = []
+        for kw in node.keywords:
+            if (
+                kw.arg == "move_id"
+                and isinstance(kw.value, ast.Constant)
+                and kw.value.value is None
+            ):
+                continue
+            if kw.arg == "move_id":
+                kw.arg = "move"
+            new_kwargs.append(kw)
+        node.keywords = new_kwargs
+
         if method_name == "comment":
             new_kwargs: list[ast.keyword] = []
             for kw in node.keywords:
@@ -735,18 +700,9 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
             # beebasm renderer folds them into the banner block; a
             # JSON renderer would emit them as a real dict).
             DROPPED = {"hook", "is_entry_point", "at_binary_addr"}
-            new_kwargs = []
-            for kw in node.keywords:
-                if kw.arg in DROPPED:
-                    continue
-                if (
-                    kw.arg == "move_id"
-                    and isinstance(kw.value, ast.Constant)
-                    and kw.value.value is None
-                ):
-                    continue
-                new_kwargs.append(kw)
-            node.keywords = new_kwargs
+            node.keywords = [
+                kw for kw in node.keywords if kw.arg not in DROPPED
+            ]
 
     def _convert_subroutine_to_label_banner(
         self, call: ast.Call,
@@ -767,6 +723,10 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
         name: ast.expr | None = call.args[1] if len(call.args) > 1 else None
 
         # Pass through kwargs except the ones we explicitly consume.
+        # ``move_id=`` is renamed to ``move=`` (and ``move_id=None``
+        # dropped) by ``_transform_kwargs`` — that runs after this
+        # method's caller substitutes the new node, so we apply the
+        # same rule locally on the kwargs we forward.
         banner_kwargs: list[ast.keyword] = []
         for kw in call.keywords:
             if kw.arg in ("hook", "is_entry_point", "on_entry",
@@ -778,6 +738,8 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
                 and kw.value.value is None
             ):
                 continue
+            if kw.arg == "move_id":
+                kw.arg = "move"
             banner_kwargs.append(kw)
 
         # label(addr, name)  — only if a name was supplied.

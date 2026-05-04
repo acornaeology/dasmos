@@ -338,11 +338,10 @@ class TestEncodingInjection:
 
 class TestMoveContextManager:
 
-    def test_with_move_id_var_wrapped_in_using_move(self):
-        # py8dis's ``move()`` returns a context-manager-shaped object;
-        # dasmos's ``add_move`` returns a bare int. The porter must
-        # wrap the move-id in ``d.using_move(...)`` so the ``with``
-        # block still pushes / pops the active move correctly.
+    def test_with_move_passes_through_unchanged(self):
+        # dasmos's ``add_move()`` returns a Move object that's itself
+        # a context manager. The porter therefore leaves the
+        # ``with foo_move_id:`` form alone — no rewrite needed.
         out = port("""
             from py8dis.commands import *
             load(0xE000, "rom.bin", "6502")
@@ -352,21 +351,22 @@ class TestMoveContextManager:
         """)
         # The assignment side becomes d.add_move(...).
         assert "foo_move_id = d.add_move" in out
-        # The with side wraps the var.
-        assert "with d.using_move(foo_move_id):" in out
+        # The with form is unchanged: Move is itself a context manager.
+        assert "with foo_move_id:" in out
+        # The old wrapping shape is gone.
+        assert "d.using_move" not in out
 
-    def test_with_unrelated_var_left_alone(self):
-        # ``with`` over a name that wasn't assigned from move() is
-        # not a move-context — leave it. (Drivers rarely do this but
-        # we shouldn't actively break unrelated patterns.)
+    def test_move_id_kwarg_renamed_to_move(self):
+        # py8dis: ``label(addr, name, move_id=foo)``; dasmos:
+        # ``d.label(addr, name, move=foo)``. Variable name unchanged.
         out = port("""
             from py8dis.commands import *
             load(0xE000, "rom.bin", "6502")
-            with open("x.txt") as f:
-                pass
+            foo_move_id = move(0x0D00, 0xBC79, 0x49)
+            label(0x0D00, "bar", move_id=foo_move_id)
         """)
-        # Only assignments from add_move trigger the rewrite.
-        assert "d.using_move" not in out
+        assert "move=foo_move_id" in out
+        assert "move_id=foo_move_id" not in out
 
 
 class TestGoConversion:

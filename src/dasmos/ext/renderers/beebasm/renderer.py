@@ -873,7 +873,7 @@ class BeebasmRenderer(TextRenderer):
         address space.
         """
         out: dict[int, "MoveDefinition"] = {}
-        for move_id, defn in enumerate(ir.moves._move_definitions):
+        for move_id, defn in enumerate(ir.moves.all_moves):
             if move_id == 0:
                 continue  # base move = identity, no relocation directives
             out[int(defn.src_binary_addr)] = defn

@@ -185,15 +185,15 @@ class TestLabelManagerAddLabel:
         assert "foo" in {n.text for n in lab.explicit_names[BASE_MOVE_ID]}
 
     def test_add_label_uses_active_move_when_no_id_given(self, lm, mm):
-        id1 = mm.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
-        with mm.using(id1):
+        m1 = mm.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
+        with m1:
             lm.add_label(0x8000, "foo")
         lab = lm.get_label(RuntimeAddr(0x8000))
-        assert "foo" in {n.text for n in lab.explicit_names[id1]}
+        assert "foo" in {n.text for n in lab.explicit_names[m1._move_id]}
 
     def test_add_label_explicit_move_id_overrides_active(self, lm, mm):
-        id1 = mm.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
-        with mm.using(id1):
+        m1 = mm.add_move(RuntimeAddr(0x70), BinaryAddr(0x1900), 10)
+        with m1:
             lm.add_label(0x8000, "foo", move_id=BASE_MOVE_ID)
         lab = lm.get_label(RuntimeAddr(0x8000))
         assert "foo" in {n.text for n in lab.explicit_names[BASE_MOVE_ID]}

@@ -1820,7 +1820,7 @@ class TestMoveContext:
     For the simplest case — moved code that doesn't reference its
     own runtime addresses — the round-trip property holds without
     any pseudopc emission in the renderer. The byte sequence stays
-    the same; only the names attached via ``with d.using_move(id):``
+    the same; only the names attached via ``with id:``
     change.
 
     A richer test (with code that DOES reference its own runtime
@@ -1829,32 +1829,34 @@ class TestMoveContext:
     drivers do (deferred per ADFS port plan).
     """
 
-    def test_add_move_returns_move_id(self, tmp_path):
+    def test_add_move_returns_move_handle(self, tmp_path):
         # Pure API test — no beebasm round-trip needed.
         from dasmos.disassembler import Disassembler
+        from dasmos.core.move import Move
         bin_path = tmp_path / "p.bin"
         bin_path.write_bytes(b"\xa0\x00\x60")
         d = Disassembler.create(cpu="6502")
         d.load(bin_path, 0x8000)
-        move_id = d.add_move(
+        move = d.add_move(
             dest_runtime_addr=0x100,
             src_binary_addr=0x8000,
             length=3,
+            name="zp_overlay",
         )
-        # First non-base move id is 1.
-        assert move_id == 1
-        assert d.moves.is_valid_move_id(move_id)
+        assert isinstance(move, Move)
+        assert move.name == "zp_overlay"
+        assert d.moves.is_valid_move_id(move._move_id)
 
-    def test_using_move_pushes_and_pops(self, tmp_path):
+    def test_move_pushes_and_pops_as_context_manager(self, tmp_path):
         from dasmos.disassembler import Disassembler
         bin_path = tmp_path / "p.bin"
         bin_path.write_bytes(b"\xa0\x00\x60")
         d = Disassembler.create(cpu="6502")
         d.load(bin_path, 0x8000)
-        move_id = d.add_move(0x100, 0x8000, 3)
+        move = d.add_move(0x100, 0x8000, 3)
         assert d.moves.active_move_ids == []
-        with d.using_move(move_id):
-            assert d.moves.active_move_ids == [move_id]
+        with move:
+            assert d.moves.active_move_ids == [move._move_id]
         assert d.moves.active_move_ids == []
 
     def test_label_inside_using_move_appears_at_moved_address(
@@ -1886,7 +1888,7 @@ class TestMoveContext:
                 src_binary_addr=0x8000,
                 length=3,
             )
-            with d.using_move(move_id):
+            with move_id:
                 d.entry(0x100, name="zp_handler")
 
         text = roundtrip_via_beebasm(source, 0x8000, configure)
@@ -1894,12 +1896,12 @@ class TestMoveContext:
         # binary classification's position.
         assert ".zp_handler" in text
 
-    def test_label_via_using_move_with_explicit_move_id_kwarg(
+    def test_label_with_explicit_move_kwarg(
         self, roundtrip_via_beebasm,
     ):
-        # Same flow but with explicit move_id= passed to entry()
-        # rather than going through the with-block context.
-        # ADFS uses both forms — see commands-sweep memo §3.
+        # Same flow but with explicit move= passed to label() rather
+        # than going through the with-block context. ADFS uses both
+        # forms — see commands-sweep memo §3.
         source = """
             org &8000
         .anywhere
@@ -1909,14 +1911,14 @@ class TestMoveContext:
         """
 
         def configure(d):
-            move_id = d.add_move(
+            move = d.add_move(
                 dest_runtime_addr=0x200,
                 src_binary_addr=0x8000,
                 length=3,
             )
-            # No 'with' block — pass move_id directly to label().
+            # No 'with' block — pass move= directly to label().
             d.entry(0x8000)  # entry seed at binary
-            d.label(0x200, "explicit_handler", move_id=move_id)
+            d.label(0x200, "explicit_handler", move=move)
 
         text = roundtrip_via_beebasm(source, 0x8000, configure)
         assert ".explicit_handler" in text
@@ -1937,7 +1939,7 @@ class TestMoveContext:
         def configure(d):
             d.entry(0x8000)
             move_id = d.add_move(0x100, 0x8000, 2)
-            with d.using_move(move_id):
+            with move_id:
                 d.comment(0x100, "this code runs at zero-page-ish")
 
         text = roundtrip_via_beebasm(source, 0x8000, configure)
@@ -1977,12 +1979,12 @@ class TestMoveContext:
             d.entry(0x8000, name="start")
             # Move 1: &8003..&8005 → &0070..&0072
             m1 = d.add_move(0x70, 0x8003, 3)
-            with d.using_move(m1):
+            with m1:
                 d.label(0x70, "page70")
             # Move 2: &8006..&800b → &0080..&0085 (BNE operand byte
             # at &8006 is the boundary)
             m2 = d.add_move(0x80, 0x8006, 6)
-            with d.using_move(m2):
+            with m2:
                 d.label(0x80, "page80")
 
         text = roundtrip_via_beebasm(source, 0x8000, configure)
@@ -2033,7 +2035,7 @@ class TestMoveContext:
             d.entry(0x8000, name="start")
             # Move starts at &8005 — the BNE's operand byte.
             mid = d.add_move(0x0070, 0x8005, 5)
-            with d.using_move(mid):
+            with mid:
                 d.label(0x70, "moved_dest")
 
         text = roundtrip_via_beebasm(source, 0x8000, configure)
@@ -2080,7 +2082,7 @@ class TestMoveContext:
         def configure(d):
             d.entry(0x8000, name="start")
             mid = d.add_move(0x70, 0x8005, 5)
-            with d.using_move(mid):
+            with mid:
                 d.label(0x70, "zp_base")
                 d.label(0x72, "zp_var")
 
@@ -2136,7 +2138,7 @@ class TestMoveContext:
             d.entry(0x8000, name="start")
             move_id = d.add_move(0x0070, 0x8003, 6)
             d.label(0x8003, "moved_src")
-            with d.using_move(move_id):
+            with move_id:
                 d.entry(0x70)
 
         text = roundtrip_via_beebasm(source, 0x8000, configure)
@@ -2195,7 +2197,7 @@ class TestMoveContext:
             d.label(0x800a, "inner_src")
             d.add_move(0x0070, 0x8004, 16)  # outer
             inner_id = d.add_move(0x0080, 0x800a, 16)  # inner (overlaps)
-            with d.using_move(inner_id):
+            with inner_id:
                 d.label(0x80, "inner_dest")
             d.label(0x70, "outer_dest")
 
@@ -2261,7 +2263,7 @@ class TestMoveContext:
                 length=4,
             )
             d.label(0x8004, "moved_src")
-            with d.using_move(move_id):
+            with move_id:
                 d.label(0x70, "moved_dest")
                 d.entry(0x70)
 

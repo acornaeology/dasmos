@@ -661,7 +661,7 @@ class JsonRenderer(Renderer[StructuredOutput]):
         for ref in label.references:
             ba = int(ref.binary_addr)
             mid = int(getattr(ref, "move_id", 0) or 0)
-            move_def = ir.moves._move_definitions[mid]
+            move_def = ir.moves.all_moves[mid]
             ref_runtime = int(
                 move_def.convert_binary_to_runtime_addr(BinaryAddr(ba))
             )

@@ -382,7 +382,7 @@ class TestByteColumnAnnotation:
             length=4,
         )
         d.label(0x8004, "moved_src")
-        with d.using_move(move_id):
+        with move_id:
             d.label(0x70, "moved_dest")
             d.entry(0x70)
         text = str(d.disassemble().render(BeebasmRenderer(

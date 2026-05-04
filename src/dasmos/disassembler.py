@@ -41,7 +41,7 @@ from dasmos.core.disassembly import (
 )
 from dasmos.core.labels import LabelManager
 from dasmos.core.memory import BinaryAddr, MemoryImage
-from dasmos.core.move import MoveManager
+from dasmos.core.move import Move, MoveManager
 from dasmos.cpu import Cpu, create_cpu
 from dasmos.exceptions import DasmosError
 from dasmos.ir import IntermediateRepresentation
@@ -270,16 +270,25 @@ class Disassembler:
         self._raise_if_disassembled("load")
         return self._memory.load(filepath, binary_addr, md5sum=md5sum)
 
-    def add_move(self, dest_runtime_addr, src_binary_addr, length: int) -> int:
-        """Register a relocation. Returns the move_id."""
-        self._raise_if_disassembled("add_move")
-        return self._moves.add_move(dest_runtime_addr, src_binary_addr, length)
+    def add_move(
+        self,
+        dest_runtime_addr,
+        src_binary_addr,
+        length: int,
+        *,
+        name: str | None = None,
+    ) -> Move:
+        """Register a relocation. Returns the :class:`Move` handle.
 
-    def using_move(self, move_id: int):
-        """Push ``move_id`` onto the active-move stack for the duration
-        of the ``with`` block (D-006 / D-011).
+        The Move is itself a context manager — ``with move: ...``
+        scopes annotations under it. Pass ``name=`` to give the move
+        a stable identity in diagnostics, JSON output, and
+        cross-references.
         """
-        return self._moves.using(move_id)
+        self._raise_if_disassembled("add_move")
+        return self._moves.add_move(
+            dest_runtime_addr, src_binary_addr, length, name=name,
+        )
 
     # -- driver-script API: environments --------------------------------
 
@@ -338,6 +347,7 @@ class Disassembler:
         :meth:`~dasmos.core.labels.LabelManager.add_label`.
         """
         self._raise_if_disassembled("label")
+        self._shift_move_kwarg(kwargs)
         return self._labels.add_label(runtime_addr, name, **kwargs)
 
     def optional_label(self, runtime_addr, name: str, **kwargs):
@@ -352,6 +362,7 @@ class Disassembler:
         labels are emitted only when used.
         """
         self._raise_if_disassembled("optional_label")
+        self._shift_move_kwarg(kwargs)
         return self._labels.add_label(
             runtime_addr, name, is_optional=True, **kwargs,
         )
@@ -388,6 +399,7 @@ class Disassembler:
     def local_label(self, runtime_addr, name: str, start_addr, end_addr, **kwargs):
         """Define a label scoped to ``[start_addr, end_addr)``."""
         self._raise_if_disassembled("local_label")
+        self._shift_move_kwarg(kwargs)
         return self._labels.add_local_label(
             runtime_addr, name, start_addr, end_addr, **kwargs,
         )
@@ -395,6 +407,7 @@ class Disassembler:
     def expr_label(self, runtime_addr, expression: str, **kwargs):
         """Register an expression to be used as a label reference."""
         self._raise_if_disassembled("expr_label")
+        self._shift_move_kwarg(kwargs)
         return self._labels.add_expression(runtime_addr, expression, **kwargs)
 
     # -- driver-script API: subroutine hooks ----------------------------
@@ -505,7 +518,7 @@ class Disassembler:
         self,
         runtime_addr,
         *,
-        move_id: int | None = None,
+        move: Move | None = None,
     ) -> int:
         """Classify a NUL-terminated string starting at
         ``runtime_addr``; returns the runtime address of the byte
@@ -520,14 +533,14 @@ class Disassembler:
             addr = d.stringz(addr)  # next string follows
         """
         return self._string_terminated(
-            runtime_addr, 0x00, "stringz", "a NUL", move_id=move_id,
+            runtime_addr, 0x00, "stringz", "a NUL", move=move,
         )
 
     def stringcr(
         self,
         runtime_addr,
         *,
-        move_id: int | None = None,
+        move: Move | None = None,
     ) -> int:
         """Classify a CR-terminated string starting at ``runtime_addr``;
         returns the runtime address of the byte right after the
@@ -540,7 +553,7 @@ class Disassembler:
         differently).
         """
         return self._string_terminated(
-            runtime_addr, 0x0D, "stringcr", "a CR (&0d)", move_id=move_id,
+            runtime_addr, 0x0D, "stringcr", "a CR (&0d)", move=move,
         )
 
     def _string_terminated(
@@ -550,7 +563,7 @@ class Disassembler:
         op_name: str,
         terminator_desc: str,
         *,
-        move_id: int | None = None,
+        move: Move | None = None,
     ) -> int:
         """Shared scan-and-classify loop for terminator-based string
         primitives. Scans loaded memory forward until ``terminator``
@@ -558,7 +571,7 @@ class Disassembler:
         byte) as a String. Returns the address right after the span.
         """
         self._raise_if_disassembled(op_name)
-        binary_addr = self._resolve_to_binary_addr(runtime_addr, move_id)
+        binary_addr = self._resolve_to_binary_addr(runtime_addr, move)
         scan = int(binary_addr)
         limit = self._cpu.address_space_size
         while scan < limit:
@@ -572,7 +585,7 @@ class Disassembler:
                 break
             scan += 1
         length = scan - int(binary_addr) + 1
-        self.string(runtime_addr, length, move_id=move_id)
+        self.string(runtime_addr, length, move=move)
         return int(runtime_addr) + length
 
     # -- driver-script API: data classification -------------------------
@@ -583,11 +596,11 @@ class Disassembler:
         length: int = 1,
         cols: int | None = None,
         *,
-        move_id: int | None = None,
+        move: Move | None = None,
     ):
         """Mark ``length`` bytes at ``runtime_addr`` as raw bytes."""
         self._raise_if_disassembled("byte")
-        binary_addr = self._resolve_to_binary_addr(runtime_addr, move_id)
+        binary_addr = self._resolve_to_binary_addr(runtime_addr, move)
         self._classifications.add_classification(binary_addr, Byte(length, cols))
 
     def word(
@@ -596,11 +609,11 @@ class Disassembler:
         length: int = 2,
         cols: int | None = None,
         *,
-        move_id: int | None = None,
+        move: Move | None = None,
     ):
         """Mark ``length`` bytes at ``runtime_addr`` as 16-bit words."""
         self._raise_if_disassembled("word")
-        binary_addr = self._resolve_to_binary_addr(runtime_addr, move_id)
+        binary_addr = self._resolve_to_binary_addr(runtime_addr, move)
         self._classifications.add_classification(binary_addr, Word(length, cols))
 
     def fill(
@@ -609,7 +622,7 @@ class Disassembler:
         length: int,
         value: int | None = None,
         *,
-        move_id: int | None = None,
+        move: Move | None = None,
     ):
         """Mark a run of ``length`` identical bytes at ``runtime_addr``.
 
@@ -621,7 +634,7 @@ class Disassembler:
         :class:`DisassemblerError`.
         """
         self._raise_if_disassembled("fill")
-        binary_addr = self._resolve_to_binary_addr(runtime_addr, move_id)
+        binary_addr = self._resolve_to_binary_addr(runtime_addr, move)
         if value is None:
             # Infer from memory; requires the byte to be loaded.
             value = self._memory.get_u8(binary_addr)
@@ -642,11 +655,11 @@ class Disassembler:
         runtime_addr,
         length: int,
         *,
-        move_id: int | None = None,
+        move: Move | None = None,
     ):
         """Mark ``length`` bytes at ``runtime_addr`` as a string."""
         self._raise_if_disassembled("string")
-        binary_addr = self._resolve_to_binary_addr(runtime_addr, move_id)
+        binary_addr = self._resolve_to_binary_addr(runtime_addr, move)
         self._classifications.add_classification(binary_addr, String(length))
 
     # -- driver-script API: expressions ---------------------------------
@@ -656,7 +669,7 @@ class Disassembler:
         runtime_addr,
         expression: str,
         *,
-        move_id: int | None = None,
+        move: Move | None = None,
     ):
         """Override the rendered operand at ``runtime_addr`` with the
         given ``expression``.
@@ -674,24 +687,25 @@ class Disassembler:
         an external constant the assembler resolves).
         """
         self._raise_if_disassembled("expr")
-        binary_addr = self._resolve_to_binary_addr(runtime_addr, move_id)
+        binary_addr = self._resolve_to_binary_addr(runtime_addr, move)
         self._expressions.add(binary_addr, expression)
 
     # -- driver-script API: comments / annotations ----------------------
 
     def _resolve_to_binary_addr(
-        self, runtime_addr, move_id: int | None,
+        self, runtime_addr, move: Move | None,
     ) -> BinaryAddr:
         """Resolve a runtime address to its binary address via the
         move manager.
 
-        Without ``move_id``, uses the active-move stack
+        Without ``move``, uses the active-move stack
         (:meth:`MoveManager.r2b_checked`); with an explicit
-        ``move_id``, requires the address to map under that specific
+        ``move``, requires the address to map under that specific
         move and raises :class:`DisassemblerError` on failure.
 
         Common to every driver method that takes a runtime address.
         """
+        move_id = self._move_to_id(move)
         if move_id is None:
             return self._moves.r2b_checked(runtime_addr).binary_addr
         from dasmos.core.memory import RuntimeAddr
@@ -701,9 +715,34 @@ class Disassembler:
         if binary_addr is None:
             raise DisassemblerError(
                 f"runtime address 0x{int(runtime_addr):x} "
-                f"does not map under move {move_id}"
+                f"does not map under move {move.name!r}"
             )
         return BinaryAddr(binary_addr)
+
+    def _move_to_id(self, move: Move | None) -> int | None:
+        """Convert a public Move handle to its internal integer id.
+        Returns None for None. Validates that the move belongs to
+        this disassembler — passing a Move from a different
+        Disassembler is a programming error.
+        """
+        if move is None:
+            return None
+        if move._manager is not self._moves:
+            raise DisassemblerError(
+                f"move {move.name!r} belongs to a different disassembler; "
+                f"each Move is bound to the MoveManager that created it."
+            )
+        return move._move_id
+
+    def _shift_move_kwarg(self, kwargs: dict) -> None:
+        """Translate a public ``move=Move`` kwarg in ``kwargs`` to
+        the internal ``move_id=int`` form, in place. Public driver
+        methods that delegate via ``**kwargs`` to internal stores
+        (LabelManager, AnnotationStore, …) call this so the stores
+        can keep their integer-id internal API.
+        """
+        if "move" in kwargs:
+            kwargs["move_id"] = self._move_to_id(kwargs.pop("move"))
 
     def comment(
         self,
@@ -713,7 +752,7 @@ class Disassembler:
         align: Align = Align.BEFORE_LABEL,
         word_wrap: bool = True,
         indent: int = 0,
-        move_id: int | None = None,
+        move: Move | None = None,
     ) -> None:
         """Attach a comment at ``runtime_addr``.
 
@@ -729,7 +768,7 @@ class Disassembler:
         ``move_id`` if given.
         """
         self._raise_if_disassembled("comment")
-        binary_addr = self._resolve_to_binary_addr(runtime_addr, move_id)
+        binary_addr = self._resolve_to_binary_addr(runtime_addr, move)
         self._annotations.add(
             binary_addr,
             Comment(text=text, align=align, word_wrap=word_wrap, indent=indent),
@@ -744,7 +783,7 @@ class Disassembler:
         on_entry: dict[str, str] | None = None,
         on_exit: dict[str, str] | None = None,
         align: Align = Align.BEFORE_LABEL,
-        move_id: int | None = None,
+        move: Move | None = None,
     ) -> None:
         """Attach a multi-line decorated comment block at
         ``runtime_addr`` — visual separation only; does not register
@@ -760,7 +799,7 @@ class Disassembler:
         same ``title`` / ``description`` kwargs.
         """
         self._raise_if_disassembled("banner")
-        binary_addr = self._resolve_to_binary_addr(runtime_addr, move_id)
+        binary_addr = self._resolve_to_binary_addr(runtime_addr, move)
         self._annotations.add(
             binary_addr,
             Banner(
@@ -780,7 +819,7 @@ class Disassembler:
         on_entry: dict[str, str] | None = None,
         on_exit: dict[str, str] | None = None,
         is_entry_point: bool = True,
-        move_id: int | None = None,
+        move: Move | None = None,
     ) -> None:
         """Register a subroutine entry at ``runtime_addr``.
 
@@ -797,7 +836,8 @@ class Disassembler:
         is given, also attaches a banner-style annotation.
         """
         self._raise_if_disassembled("subroutine")
-        binary_addr = self._resolve_to_binary_addr(runtime_addr, move_id)
+        binary_addr = self._resolve_to_binary_addr(runtime_addr, move)
+        move_id = self._move_to_id(move)
         if is_entry_point:
             self._entry_points.append(binary_addr)
         if name is not None:
@@ -998,7 +1038,7 @@ class Disassembler:
         if length < 2:
             return False
         end = addr + length
-        for mv in self._moves._move_definitions[1:]:  # skip base move
+        for mv in self._moves.all_moves[1:]:  # skip base move
             for boundary in (
                 int(mv.src_binary_addr),
                 int(mv.src_binary_addr) + mv.length,

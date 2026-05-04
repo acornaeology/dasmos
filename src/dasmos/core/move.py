@@ -14,23 +14,23 @@ Design points:
 
 - All state lives on a :class:`MoveManager` instance — no module-level
   globals.
-- The active-move stack is owned by the manager. Driver scripts use
-  ``with mm.using(id): ...``, paying a small syntactic tax for
-  testability and the ability to run multiple disassemblies in one
-  process.
-- A move id is just an ``int``; validation is handled by the manager.
+- :class:`Move` is the public handle returned by
+  :meth:`MoveManager.add_move`. It carries name + dest + src + length
+  and is itself a context manager — ``with move: ...`` pushes the
+  move onto the active-move stack for the duration of the block.
+- Internally MoveManager indexes moves by an integer position; that
+  position is an implementation detail and is not part of the public
+  API.
 - :meth:`MoveManager.r2b_checked` raises :class:`MoveError` rather
   than terminating the process, and does not require a renderer to
   be configured.
 - The cache that powers :meth:`MoveManager.move_ids_for_runtime_addr`
   is invalidated explicitly on every ``add_move``.
 - ``add_move`` raises :class:`MoveError` for length ≤ 0, dest == src,
-  or overflowing the address space.
+  overflowing the address space, or a duplicate explicit name.
 """
 
 from collections import defaultdict
-from collections.abc import Iterator
-from contextlib import contextmanager
 
 from dasmos.core.memory import (
     DEFAULT_ADDRESS_SPACE_SIZE,
@@ -44,6 +44,11 @@ from dasmos.core.memory import (
 from dasmos.exceptions import DasmosError
 
 
+# Internal sentinel for "the implicit identity-mapping move that
+# covers the whole address space 1:1". Used in BinaryLocation /
+# RuntimeLocation move_id fields when no user-declared move applies.
+# Not exposed as a public Move handle — drivers never need to reason
+# about it.
 BASE_MOVE_ID = 0
 
 
@@ -51,17 +56,69 @@ class MoveError(DasmosError):
     """Raised on illegal move operations or ambiguous resolution."""
 
 
-class MoveDefinition:
-    """A single relocation: ``length`` bytes at ``src_binary_addr`` map
-    to ``dest_runtime_addr`` at execution time.
+class Move:
+    """A registered relocation: ``length`` bytes at ``src_binary_addr``
+    map to ``dest_runtime_addr`` at execution time, identified by
+    ``name``.
+
+    Returned by :meth:`Disassembler.add_move`. Use as a context
+    manager to scope annotations under the move::
+
+        nmi_write = d.add_move(0x0D0A, 0xBCDF, 14, name="nmi_write")
+        with nmi_write:
+            d.byte(0x0D0A, length=14)
+
+    Equality and hashing are by identity — a Move belongs to exactly
+    one :class:`MoveManager` and isn't comparable across managers.
     """
 
-    __slots__ = ("dest_runtime_addr", "src_binary_addr", "length")
+    __slots__ = (
+        "name",
+        "dest_runtime_addr",
+        "src_binary_addr",
+        "length",
+        "_manager",
+        "_move_id",
+    )
 
-    def __init__(self, dest_runtime_addr, src_binary_addr, length: int):
+    def __init__(
+        self,
+        dest_runtime_addr,
+        src_binary_addr,
+        length: int,
+        *,
+        name: str | None = None,
+        manager: "MoveManager | None" = None,
+        move_id: int = BASE_MOVE_ID,
+    ):
+        # ``name`` / ``manager`` / ``move_id`` default to placeholders
+        # so this class can be constructed directly for unit-testing
+        # the geometry helpers without a manager. In normal use,
+        # :meth:`MoveManager.add_move` is the only construction site
+        # and supplies all three.
+        self.name = name if name is not None else f"<move_{move_id}>"
         self.dest_runtime_addr = RuntimeAddr(dest_runtime_addr)
         self.src_binary_addr = BinaryAddr(src_binary_addr)
         self.length = length
+        self._manager = manager
+        self._move_id = move_id
+
+    def __enter__(self) -> "Move":
+        self._manager._push_active(self._move_id)
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._manager._pop_active(self._move_id)
+
+    def __repr__(self) -> str:
+        return (
+            f"Move(name={self.name!r}, "
+            f"dest=0x{int(self.dest_runtime_addr):04x}, "
+            f"src=0x{int(self.src_binary_addr):04x}, "
+            f"length={self.length})"
+        )
+
+    # -- geometry helpers (formerly on MoveDefinition) ------------------
 
     def is_in_move_dest(self, runtime_addr, *, include_end_address: bool) -> bool:
         assert not isinstance(runtime_addr, BinaryAddr)
@@ -90,6 +147,12 @@ class MoveDefinition:
         return BinaryAddr(int(self.src_binary_addr) + offset)
 
 
+# Back-compat alias for renderer / test code that still names the
+# old type. ``Move`` carries everything ``MoveDefinition`` did plus
+# name and the context-manager protocol.
+MoveDefinition = Move
+
+
 class MoveManager:
     """Per-disassembly registry of relocations and runtime↔binary mapping.
 
@@ -101,12 +164,17 @@ class MoveManager:
     def __init__(self, address_space_size: int = DEFAULT_ADDRESS_SPACE_SIZE):
         self._address_space_size = address_space_size
         # The base move covers the entire address space 1:1 — that's
-        # how an unrelocated address resolves to itself.
-        self._move_definitions: list[MoveDefinition] = [
-            MoveDefinition(
-                RuntimeAddr(0), BinaryAddr(0), address_space_size,
-            ),
-        ]
+        # how an unrelocated address resolves to itself. It's stored
+        # at index 0 / BASE_MOVE_ID and is not exposed publicly.
+        base = Move(
+            RuntimeAddr(0),
+            BinaryAddr(0),
+            address_space_size,
+            name="<base>",
+            manager=self,
+            move_id=BASE_MOVE_ID,
+        )
+        self._moves: list[Move] = [base]
         self._move_id_for_binary_addr: list[int] = [BASE_MOVE_ID] * address_space_size
         self._active_move_ids: list[int] = []
         self._cache: dict[RuntimeAddr, set[int]] | None = None
@@ -121,19 +189,52 @@ class MoveManager:
         """A snapshot of the active-move stack; outermost first."""
         return list(self._active_move_ids)
 
+    @property
+    def moves(self) -> list[Move]:
+        """All user-declared moves, in declaration order. Excludes the
+        internal base move.
+        """
+        return list(self._moves[1:])
+
+    @property
+    def all_moves(self) -> list[Move]:
+        """All moves including the internal base move at index 0.
+        Used by renderers that need to walk every move with its
+        positional id.
+        """
+        return list(self._moves)
+
     def is_valid_move_id(self, move_id: int) -> bool:
-        return move_id == BASE_MOVE_ID or 0 <= move_id < len(self._move_definitions)
+        return move_id == BASE_MOVE_ID or 0 <= move_id < len(self._moves)
+
+    def move_for_id(self, move_id: int) -> Move:
+        """Look up a Move by its internal id. For consumers that
+        receive a bare ``move_id`` (e.g. via the IR's
+        ``BinaryLocation.move_id``) and need the full Move handle.
+        """
+        if not self.is_valid_move_id(move_id):
+            raise MoveError(f"unknown move id: {move_id}")
+        return self._moves[move_id]
 
     def add_move(
         self,
         dest_runtime_addr,
         src_binary_addr,
         length: int,
-    ) -> int:
-        """Register a relocation; return its move_id.
+        *,
+        name: str | None = None,
+    ) -> Move:
+        """Register a relocation; return the :class:`Move` handle.
 
-        Source bytes are 'stolen' from any prior overlapping move — the
-        last ``add_move`` covering a given binary address wins.
+        ``name`` is the human-readable identity of the move (used in
+        diagnostics, JSON output, and the ``@move-name`` URI variant
+        in markdown comments). When omitted, a fabricated
+        ``move_<index>`` name is used; provide one explicitly when
+        the same destination is the target of more than one move so
+        readers / cross-references can disambiguate.
+
+        Source bytes are 'stolen' from any prior overlapping move —
+        the last ``add_move`` covering a given binary address wins.
         """
         if length <= 0:
             raise MoveError(f"move length must be positive: got {length}")
@@ -163,23 +264,51 @@ class MoveManager:
                 f"0x{int(src_binary_addr):x} + {length} > 0x{self._address_space_size:x}"
             )
 
-        self._move_definitions.append(
-            MoveDefinition(dest_runtime_addr, src_binary_addr, length)
+        move_id = len(self._moves)
+        if name is None:
+            name = f"move_{move_id}"
+        else:
+            for existing in self._moves[1:]:
+                if existing.name == name:
+                    raise MoveError(
+                        f"move name {name!r} already used by an earlier "
+                        f"add_move; pick a unique name."
+                    )
+
+        new_move = Move(
+            dest_runtime_addr,
+            src_binary_addr,
+            length,
+            name=name,
+            manager=self,
+            move_id=move_id,
         )
-        move_id = len(self._move_definitions) - 1
+        self._moves.append(new_move)
         for i in range(length):
             self._move_id_for_binary_addr[int(src_binary_addr) + i] = move_id
 
         # Mutating the registry invalidates the runtime→move-ids cache.
         self._cache = None
-        return move_id
+        return new_move
+
+    # -- internal: active-move stack management (used by Move.__enter__
+    # / Move.__exit__) ---------------------------------------------------
+
+    def _push_active(self, move_id: int) -> None:
+        if not self.is_valid_move_id(move_id):
+            raise MoveError(f"unknown move id: {move_id}")
+        self._active_move_ids.append(move_id)
+
+    def _pop_active(self, move_id: int) -> None:
+        popped = self._active_move_ids.pop()
+        assert popped == move_id, "move-stack discipline violated"
 
     def b2r(self, binary_addr) -> RuntimeAddr:
         """Convert a binary address to its (unique) runtime address."""
         binary_addr = BinaryAddr(binary_addr)
         assert is_valid_binary_addr(binary_addr)
         move_id = self._move_id_for_binary_addr[int(binary_addr)]
-        md = self._move_definitions[move_id]
+        md = self._moves[move_id]
         return md.convert_binary_to_runtime_addr(binary_addr)
 
     def r2b(
@@ -215,7 +344,7 @@ class MoveManager:
                 if specific_move_id is None:
                     return None, None
 
-        md = self._move_definitions[specific_move_id]
+        md = self._moves[specific_move_id]
         if md.is_in_move_dest(runtime_addr, include_end_address=True):
             return md.convert_runtime_to_binary_addr(runtime_addr), specific_move_id
         return None, None
@@ -252,20 +381,6 @@ class MoveManager:
             runtime_addr = self.b2r(BinaryAddr(binary_addr_int))
             cache[runtime_addr].add(move_id)
         self._cache = dict(cache)
-
-    @contextmanager
-    def using(self, move_id: int) -> Iterator[int]:
-        """Push ``move_id`` onto the active-move stack for the duration
-        of the ``with`` block.
-        """
-        if not self.is_valid_move_id(move_id):
-            raise MoveError(f"unknown move id: {move_id}")
-        self._active_move_ids.append(move_id)
-        try:
-            yield move_id
-        finally:
-            popped = self._active_move_ids.pop()
-            assert popped == move_id, "move-stack discipline violated"
 
     def make_binary_location(self, binary_loc) -> BinaryLocation:
         """Coerce an int or :class:`BinaryLocation` to a
