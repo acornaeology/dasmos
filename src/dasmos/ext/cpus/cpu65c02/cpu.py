@@ -147,6 +147,14 @@ class Cmos65C02Cpu(Cpu):
     def __init__(self, name: str = CPU_NAME, **kwargs):
         super().__init__(name=name, **kwargs)
 
+    @classmethod
+    def brief_description(cls) -> str:
+        # The docstring's first line ("The CMOS 65C02 — NMOS 6502
+        # superset with 8 new mnemonics, 2 new addressing modes and
+        # 27 new opcode bytes.") is too long for the list-cpus
+        # table column. Pithier override here.
+        return "The CMOS 65C02 — 8 extra mnemonics on top of the 6502."
+
     @property
     def address_space_size(self) -> int:
         return 0x10000

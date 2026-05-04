@@ -65,26 +65,43 @@ class Extension(ABC):
         return "1.0.0"
 
     @classmethod
-    def describe(cls, *, single_line: bool = False) -> str:
-        """A description of the extension.
+    def full_description(cls) -> str:
+        """The complete, multi-paragraph description.
 
-        By default, this is the docstring of the extension class. Override it in the extension if
-        you want something different.
+        Default implementation returns the cleaned class docstring.
+        Override only if the description should come from somewhere
+        other than the docstring (rare).
 
-        Args:
-            single_line: If True, return only the first non-empty line of the description.
-                Defaults to False for full description.
-
-        Returns:
-            A string describing the extension. If single_line is True, returns only the first
-            non-empty line; otherwise returns the complete description.
+        Used by ``describe-<kind>`` CLI commands.
         """
         if cls.__doc__ is None:
             return "No description available."
-        full_description = strip_lines(inspect.cleandoc(cls.__doc__))
-        if single_line:
-            return first_line(full_description)
-        return full_description
+        return strip_lines(inspect.cleandoc(cls.__doc__))
+
+    @classmethod
+    def brief_description(cls) -> str:
+        """Pithy single-line summary, suitable for a table cell.
+
+        Default implementation returns the first non-empty line of
+        :meth:`full_description`. Override on the subclass when the
+        docstring's first line would be too long for a list-style
+        rendering — set this to a separately-authored, deliberately
+        terse summary.
+
+        Used by ``list-<kind>`` CLI commands.
+        """
+        return first_line(cls.full_description())
+
+    @classmethod
+    def describe(cls, *, single_line: bool = False) -> str:
+        """Convenience wrapper around :meth:`brief_description` /
+        :meth:`full_description`.
+
+        Args:
+            single_line: If True, return :meth:`brief_description`.
+                Otherwise return :meth:`full_description`.
+        """
+        return cls.brief_description() if single_line else cls.full_description()
 
     @classmethod
     @functools.lru_cache(maxsize=None)

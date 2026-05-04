@@ -28,6 +28,17 @@ class TestPluginRegistration:
         cpu = Nmos6502Cpu()
         assert cpu.address_space_size == 0x10000
 
+    def test_brief_description_falls_back_to_docstring_first_line(self):
+        # 6502 doesn't override brief_description, so the brief is
+        # the first non-empty line of the docstring.
+        assert Nmos6502Cpu.brief_description() == "The classic NMOS 6502."
+
+    def test_full_description_is_the_complete_docstring(self):
+        # Multi-line, paragraph-structured.
+        full = Nmos6502Cpu.full_description()
+        assert "\n" in full
+        assert full.startswith("The classic NMOS 6502.")
+
 
 class TestOperationEnum:
 

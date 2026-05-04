@@ -129,13 +129,13 @@ packages register additional entries the same way.
 
 ```console
 $ dasmos list-cpus
-                    CPUs registered under 'dasmos.cpu'                     
-┏━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ Name  ┃ Description                                                     ┃
-┡━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
-│ 6502  │ The classic NMOS 6502.                                          │
-│ 65C02 │ The CMOS 65C02 — NMOS 6502 superset with 8 new mnemonics, 2 new │
-└───────┴─────────────────────────────────────────────────────────────────┘
+                CPUs registered under 'dasmos.cpu'                
+┏━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Name  ┃ Description                                            ┃
+┡━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ 6502  │ The classic NMOS 6502.                                 │
+│ 65C02 │ The CMOS 65C02 — 8 extra mnemonics on top of the 6502. │
+└───────┴────────────────────────────────────────────────────────┘
 ```
 
 ```console

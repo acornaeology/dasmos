@@ -62,6 +62,21 @@ class TestPluginRegistration:
         cpu = Cmos65C02Cpu()
         assert cpu.address_space_size == 0x10000
 
+    def test_brief_description_overrides_docstring_first_line(self):
+        # 65C02 overrides brief_description because the docstring's
+        # first line is too long for the list-cpus table column.
+        brief = Cmos65C02Cpu.brief_description()
+        assert "\n" not in brief
+        assert "8 extra mnemonics" in brief
+        # The docstring's first line is NOT what brief returns.
+        assert brief != Cmos65C02Cpu.full_description().splitlines()[0]
+
+    def test_full_description_is_the_complete_docstring(self):
+        full = Cmos65C02Cpu.full_description()
+        # Multi-paragraph and includes the WDC-instructions caveat.
+        assert "\n" in full
+        assert "WDC" in full
+
 
 class TestOperationEnum:
 
