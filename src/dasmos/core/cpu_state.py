@@ -33,7 +33,7 @@ class CpuState(ABC):
     """Marker base class for CPU-specific register/flag state.
 
     Each CPU plug-in defines a concrete subclass (see
-    :class:`dasmos.ext.cpus.nmos6502.cpu.State6502`). The
+    :class:`dasmos.ext.cpus.cpu6502.cpu.State6502`). The
     :meth:`Cpu.initial_state` factory returns a fresh instance and
     :meth:`Cpu.update_state` mutates one in place to reflect
     executing a given instruction.

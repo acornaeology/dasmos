@@ -76,7 +76,7 @@ disassemble, then render via a renderer plug-in.
 ```python
 from dasmos import Disassembler, Align
 
-d = Disassembler.create(cpu="nmos6502")
+d = Disassembler.create(cpu="6502")
 d.load("rom.bin", 0x8000)
 d.entry(0x8000, name="start")
 d.label(0x8006, "show", description="Display routine")
@@ -129,13 +129,13 @@ packages register additional entries the same way.
 
 ```console
 $ dasmos list-cpus
-                      CPUs registered under 'dasmos.cpu'                       
-┏━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ Name      ┃ Description                                                     ┃
-┡━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
-│ cmos65c02 │ The CMOS 65C02 — NMOS 6502 superset with 8 new mnemonics, 2 new │
-│ nmos6502  │ The classic NMOS 6502.                                          │
-└───────────┴─────────────────────────────────────────────────────────────────┘
+                    CPUs registered under 'dasmos.cpu'                     
+┏━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Name  ┃ Description                                                     ┃
+┡━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ 6502  │ The classic NMOS 6502.                                          │
+│ 65C02 │ The CMOS 65C02 — NMOS 6502 superset with 8 new mnemonics, 2 new │
+└───────┴─────────────────────────────────────────────────────────────────┘
 ```
 
 ```console
@@ -170,7 +170,7 @@ activate any number of them, in either the constructor's
 docstring of a single plug-in:
 
 ```console
-$ dasmos describe-cpu nmos6502
+$ dasmos describe-cpu 6502
 The classic NMOS 6502.
 
 16-bit address space; the 56 documented mnemonics across 13
@@ -255,7 +255,7 @@ src/dasmos/disassembler.py  Disassembler (driver-script API)
 src/dasmos/core/            Memory / labels / moves / classifications
 src/dasmos/cpu.py           Cpu base + Opcode shape
 src/dasmos/renderer.py      Renderer base
-src/dasmos/ext/cpus/        Bundled CPU plug-ins (nmos6502, cmos65c02)
+src/dasmos/ext/cpus/        Bundled CPU plug-ins (cpu6502, cpu65c02)
 src/dasmos/ext/renderers/   Bundled renderer plug-ins (beebasm)
 src/dasmos/hooks.py         Subroutine hooks (stringhi_hook, …)
 scripts/py8dis2dasmos.py    py8dis → dasmos AST porter

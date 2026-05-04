@@ -86,7 +86,7 @@ def _roundtrip_via_beebasm(
     original = ROM_PATH.read_bytes()
     assert hashlib.md5(original).hexdigest() == expected_md5
 
-    d = Disassembler.create(cpu="nmos6502")
+    d = Disassembler.create(cpu="6502")
     d.load(ROM_PATH, ROM_LOAD_ADDR, md5sum=expected_md5)
     configure(d)
     ir = d.disassemble()

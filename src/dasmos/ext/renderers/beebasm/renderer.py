@@ -200,9 +200,9 @@ class BeebasmRenderer(TextRenderer):
     # -- lexical building blocks ------------------------------------------
 
     def cpus_supported(self) -> list[str]:
-        # Beebasm itself supports both 6502 and 65C02 (via ``cpu 1``);
-        # dasmos's NMOS 6502 plug-in is named ``nmos6502``.
-        return ["nmos6502", "cmos65c02"]
+        # Beebasm itself supports both 6502 and 65C02 (the latter via
+        # ``cpu 1``).
+        return ["6502", "65C02"]
 
     def hex2(self, n: int) -> str:
         return f"&{n:02x}"
@@ -252,7 +252,7 @@ class BeebasmRenderer(TextRenderer):
         ``cpu 0`` (default) selects the NMOS 6502; ``cpu 1`` enables
         the CMOS 65C02 instruction set extensions.
         """
-        if cpu_name == "cmos65c02":
+        if cpu_name == "65C02":
             return "cpu 1"
         return None
 

@@ -1,22 +1,22 @@
-"""CMOS 65C02 CPU plug-in for dasmos.
+"""NMOS 6502 CPU plug-in for dasmos.
 
 Re-exports the concrete class under the uniform symbol :class:`Cpu`
 expected by the ``dasmos.cpu`` Stevedore entry point per the
 sixty-north ``ext/`` packaging convention.
 """
 
-from dasmos.ext.cpus.cmos65c02.cpu import (
+from dasmos.ext.cpus.cpu6502.cpu import (
     AddressingMode,
-    Cmos65C02Cpu,
-    Cmos65C02Cpu as Cpu,  # the uniform symbol the entry point references
+    Nmos6502Cpu,
+    Nmos6502Cpu as Cpu,  # the uniform symbol the entry point references
     OPCODES,
     Operation,
 )
 
 __all__ = [
     "AddressingMode",
-    "Cmos65C02Cpu",
     "Cpu",
+    "Nmos6502Cpu",
     "OPCODES",
     "Operation",
 ]

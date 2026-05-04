@@ -32,7 +32,7 @@ def tiny_disassembler(tmp_path):
     """
     bin_path = tmp_path / "p.bin"
     bin_path.write_bytes(bytes([0xa0, 0x00, 0x20, 0xf4, 0xff, 0x60]))
-    d = Disassembler.create(cpu="nmos6502")
+    d = Disassembler.create(cpu="6502")
     d.load(bin_path, 0x8000)
     d.entry(0x8000, name="start")
     d.label(0xfff4, "osbyte")
@@ -49,8 +49,8 @@ class TestPluginRegistration:
     def test_supports_nmos6502_and_cmos65c02(self):
         r = JsonRenderer()
         cpus = r.cpus_supported()
-        assert "nmos6502" in cpus
-        assert "cmos65c02" in cpus
+        assert "6502" in cpus
+        assert "65C02" in cpus
 
 
 class TestTopLevelSchema:
@@ -119,7 +119,7 @@ class TestItemEmission:
         # so the parity diff against py8dis stays small.
         bin_path = tmp_path / "p.bin"
         bin_path.write_bytes(bytes([0xa9, 0x00, 0xa9, 0x09, 0xa9, 0x0a, 0xa9, 0xff]))
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.load(bin_path, 0x8000)
         d.entry(0x8000)
         ir = d.disassemble()
@@ -141,7 +141,7 @@ class TestItemEmission:
             0xa1, 0x12,
             0xb1, 0x34,
         ]))
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.load(bin_path, 0x8000)
         d.entry(0x8000)
         ir = d.disassemble()
@@ -161,7 +161,7 @@ class TestItemEmission:
     def test_byte_classification_emits_values(self, tmp_path):
         bin_path = tmp_path / "p.bin"
         bin_path.write_bytes(bytes([0x42, 0x43, 0x44]))
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.load(bin_path, 0x8000)
         d.byte(0x8000, length=3)
         ir = d.disassemble()
@@ -174,7 +174,7 @@ class TestItemEmission:
     def test_string_classification_emits_text(self, tmp_path):
         bin_path = tmp_path / "p.bin"
         bin_path.write_bytes(b"hi!")
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.load(bin_path, 0x8000)
         d.string(0x8000, length=3)
         ir = d.disassemble()
@@ -227,7 +227,7 @@ class TestConstantsSection:
     def test_emits_registered_constants(self, tmp_path):
         bin_path = tmp_path / "p.bin"
         bin_path.write_bytes(bytes([0x60]))
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.load(bin_path, 0x8000)
         d.constant(0xFE60, "system_via_orb", "System VIA port B")
         d.constant(0xFE61, "system_via_ddrb")
@@ -245,7 +245,7 @@ class TestSubroutinesSection:
     def test_emits_registered_subroutines(self, tmp_path):
         bin_path = tmp_path / "p.bin"
         bin_path.write_bytes(bytes([0x60, 0x60, 0x60]))
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.load(bin_path, 0x8000)
         d.subroutine(0x8000, "init",
                      title="Init", description="Sets things up.")
@@ -265,7 +265,7 @@ class TestSubroutinesSection:
         # Sub at &8002: rts (terminates).
         bin_path = tmp_path / "p.bin"
         bin_path.write_bytes(bytes([0xea, 0xea, 0x60]))  # nop nop rts
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.load(bin_path, 0x8000)
         d.subroutine(0x8000, "fall_in")
         d.subroutine(0x8002, "lands_here")
@@ -281,7 +281,7 @@ class TestSubroutinesSection:
         # Sub at &8000: rts (terminates).  Sub at &8001: rts.
         bin_path = tmp_path / "p.bin"
         bin_path.write_bytes(bytes([0x60, 0x60]))
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.load(bin_path, 0x8000)
         d.subroutine(0x8000, "first")
         d.subroutine(0x8001, "second")

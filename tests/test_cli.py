@@ -204,7 +204,7 @@ class TestInit:
         assert tiny_rom.as_posix() in text
         assert "0x1000" in text or "&1000" in text or "4096" in text
         # Default cpu / renderer applied.
-        assert "nmos6502" in text
+        assert "6502" in text
         assert "beebasm" in text
 
     def test_running_generated_driver_produces_asm(self, tiny_rom, tmp_path):

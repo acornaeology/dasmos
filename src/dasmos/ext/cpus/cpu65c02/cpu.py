@@ -2,7 +2,7 @@
 
 The 65C02 (often "65SC02" or "WDC65C02" in different vendors' silicon)
 is the CMOS evolution of the NMOS 6502. From dasmos's perspective it
-is a strict superset of :mod:`dasmos.ext.cpus.nmos6502`:
+is a strict superset of :mod:`dasmos.ext.cpus.cpu6502`:
 
 - 8 new mnemonics: BRA, PHX, PHY, PLX, PLY, STZ, TRB, TSB.
 - 2 new addressing modes: ``(zp)`` indirect and ``(addr,X)`` indirect
@@ -32,18 +32,25 @@ from dasmos.cpu import (
     Opcode,
     OperandKind,
 )
-from dasmos.ext.cpus.nmos6502.cpu import (
+from dasmos.ext.cpus.cpu6502.cpu import (
     OPCODES as NMOS_OPCODES,
     AddressingMode as NmosAddressingMode,
     Operation as NmosOperation,
 )
+
+# Canonical registered name of this CPU plug-in. Kept in sync with
+# the entry-point key in pyproject.toml under ``[project.entry-points
+# ."dasmos.cpu"]``. The lookup is case-insensitive at the dasmos
+# layer, but ``CPU_NAME`` is the exact form shown by
+# ``dasmos list-cpus`` and emitted in JSON output.
+CPU_NAME = "65C02"
 
 
 class Operation(Enum):
     """The 8 mnemonics 65C02 adds to NMOS 6502.
 
     The enum is deliberately *additive* — the 56 NMOS mnemonics stay
-    in :class:`dasmos.ext.cpus.nmos6502.cpu.Operation` and are reused
+    in :class:`dasmos.ext.cpus.cpu6502.cpu.Operation` and are reused
     via the :data:`OPCODES` table below. Renderers compare on
     ``operation.value`` (the canonical lowercase mnemonic), so the
     fact that two enum classes are involved is invisible at the
@@ -65,7 +72,7 @@ class AddressingMode(Enum):
     """The 2 addressing modes 65C02 adds to NMOS 6502.
 
     NMOS modes (IMPLIED, ZERO_PAGE, ABSOLUTE_X, …) come from
-    :class:`dasmos.ext.cpus.nmos6502.cpu.AddressingMode`; only the
+    :class:`dasmos.ext.cpus.cpu6502.cpu.AddressingMode`; only the
     new ones live here. As with :class:`Operation` the renderer
     dispatches on ``mode.name`` / ``operand_kind`` so split enums
     are transparent downstream.
@@ -137,7 +144,7 @@ class Cmos65C02Cpu(Cpu):
     py8dis omits them too.
     """
 
-    def __init__(self, name: str = "cmos65c02", **kwargs):
+    def __init__(self, name: str = CPU_NAME, **kwargs):
         super().__init__(name=name, **kwargs)
 
     @property

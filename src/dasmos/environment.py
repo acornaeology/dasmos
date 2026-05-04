@@ -26,7 +26,7 @@ A driver targeting an Acorn sideways ROM that runs on the host BBC
 Micro selects the union::
 
     d = Disassembler.create(
-        cpu="nmos6502",
+        cpu="6502",
         environments=["acorn-mos", "acorn-bbc-hardware", "acorn-sideways-rom"],
     )
 

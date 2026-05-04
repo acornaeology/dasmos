@@ -94,10 +94,10 @@ class TestConstruction:
         assert d.cpu is cpu
 
     def test_factory_with_string_resolves_via_stevedore(self):
-        # nmos6502 is registered; the factory should find it and
-        # build a working Disassembler.
-        d = Disassembler.create(cpu="nmos6502")
-        assert d.cpu.name == "nmos6502"
+        # 6502 is registered; the factory should find it and build a
+        # working Disassembler.
+        d = Disassembler.create(cpu="6502")
+        assert d.cpu.name == "6502"
         assert d.cpu.address_space_size == 0x10000
         # And the opcode table is populated.
         assert len(d.cpu.opcodes()) == 151
@@ -106,6 +106,16 @@ class TestConstruction:
         from dasmos.cpu import CpuExtensionError
         with pytest.raises(CpuExtensionError):
             Disassembler.create(cpu="z80_doesnt_exist_yet")
+
+    def test_factory_lookup_is_case_insensitive(self):
+        # The 65C02 plug-in is registered with an uppercase 'C'.
+        # A user typing "65c02" or "65C02" should both resolve.
+        d_lower = Disassembler.create(cpu="65c02")
+        d_upper = Disassembler.create(cpu="65C02")
+        # Whichever form the user types, the disassembler reports the
+        # canonical registered name.
+        assert d_lower.cpu.name == "65C02"
+        assert d_upper.cpu.name == "65C02"
 
 
 # ---------------------------------------------------------------------------

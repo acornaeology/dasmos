@@ -116,7 +116,7 @@ wrong-typed address).
 ### D-006: Cpu plug-in is pure data + small queries; trace loop on orchestrator
 
 **Status**: accepted; pending implementation in
-`dasmos.ext.cpus.nmos6502`.
+`dasmos.ext.cpus.cpu6502`.
 
 **Context**: py8dis's `Cpu` was a hybrid (opcode registry + trace
 engine + state). Made the CPU plug-in unnecessarily large and

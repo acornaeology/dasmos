@@ -185,7 +185,7 @@ return type at each render site.
 
 ```python
 # Direct construction with explicit instances:
-from dasmos.ext.cpus.nmos6502 import Cpu as Nmos6502Cpu
+from dasmos.ext.cpus.cpu6502 import Cpu as Nmos6502Cpu
 d = dasmos.Disassembler(cpu=Nmos6502Cpu())
 
 # Higher-level factory with string-based plug-in lookup:

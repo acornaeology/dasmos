@@ -1,6 +1,6 @@
 """Tests for the CMOS 65C02 CPU plug-in.
 
-Mirrors the structure of :mod:`tests.test_nmos6502`. The 65C02 is a
+Mirrors the structure of :mod:`tests.test_cpu6502`. The 65C02 is a
 strict superset of NMOS 6502, so the new ground here is:
 
 - The 8 new mnemonics (BRA, PHX, PHY, PLX, PLY, STZ, TRB, TSB).
@@ -24,13 +24,13 @@ import pytest
 
 from dasmos.cpu import FlowControl, OperandKind
 from dasmos.disassembler import Disassembler
-from dasmos.ext.cpus.cmos65c02 import (
+from dasmos.ext.cpus.cpu65c02 import (
     AddressingMode,
     Cmos65C02Cpu,
     OPCODES,
     Operation,
 )
-from dasmos.ext.cpus.nmos6502 import (
+from dasmos.ext.cpus.cpu6502 import (
     AddressingMode as NmosAddressingMode,
     Operation as NmosOperation,
 )
@@ -55,7 +55,7 @@ _BEEBASM = _find_beebasm()
 class TestPluginRegistration:
 
     def test_loadable_via_stevedore(self):
-        d = Disassembler.create(cpu="cmos65c02")
+        d = Disassembler.create(cpu="65C02")
         assert isinstance(d._cpu, Cmos65C02Cpu)
 
     def test_address_space_is_64k(self):
@@ -197,7 +197,7 @@ class TestRoundTripVia65C02:
         # around a zp operand), not the symbol resolution.
         bin_path = tmp_path / "in.bin"
         bin_path.write_bytes(original)
-        d = Disassembler.create(cpu="cmos65c02", auto_labels_enabled=False)
+        d = Disassembler.create(cpu="65C02", auto_labels_enabled=False)
         d.load(bin_path, 0x8000)
         d.entry(0x8000, name="start")
         ir = d.disassemble()
@@ -257,7 +257,7 @@ class TestRoundTripVia65C02:
 
         bin_path = tmp_path / "in.bin"
         bin_path.write_bytes(original)
-        d = Disassembler.create(cpu="cmos65c02")
+        d = Disassembler.create(cpu="65C02")
         d.load(bin_path, 0x8000)
         d.entry(0x8000, name="start")
         ir = d.disassemble()

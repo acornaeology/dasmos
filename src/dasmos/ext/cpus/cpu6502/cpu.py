@@ -41,6 +41,13 @@ from dasmos.cpu import (
     OperandKind,
 )
 
+# Canonical registered name of this CPU plug-in. Kept in sync with
+# the entry-point key in pyproject.toml under ``[project.entry-points
+# ."dasmos.cpu"]``. The lookup is case-insensitive at the dasmos
+# layer, but ``CPU_NAME`` is the exact form shown by
+# ``dasmos list-cpus`` and emitted in JSON output.
+CPU_NAME = "6502"
+
 
 class Operation(Enum):
     """The 56 NMOS 6502 mnemonics. Member ``value`` is the canonical
@@ -419,7 +426,7 @@ class Nmos6502Cpu(Cpu):
     deliberately omitted).
     """
 
-    def __init__(self, name: str = "nmos6502", **kwargs):
+    def __init__(self, name: str = CPU_NAME, **kwargs):
         super().__init__(name=name, **kwargs)
 
     @property

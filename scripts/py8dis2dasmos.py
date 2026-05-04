@@ -29,9 +29,9 @@ from pathlib import Path
 
 # Map py8dis CPU names to dasmos plug-in names.
 CPU_NAME_MAP: dict[str, str] = {
-    "6502": "nmos6502",
-    "65c02": "cmos65c02",
-    "65C02": "cmos65c02",  # py8dis drivers spell it uppercase
+    "6502": "6502",
+    "65c02": "65C02",
+    "65C02": "65C02",  # py8dis drivers spell it uppercase
 }
 
 # py8dis's free functions that become methods on the Disassembler.
@@ -462,7 +462,7 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
         # otherwise pass through as-is (drivers occasionally compute
         # the CPU name dynamically).
         if cpu_arg is None:
-            dasmos_cpu: ast.expr = ast.Constant(value="nmos6502")
+            dasmos_cpu: ast.expr = ast.Constant(value="6502")
         elif isinstance(cpu_arg, ast.Constant) and isinstance(cpu_arg.value, str):
             mapped = CPU_NAME_MAP.get(cpu_arg.value, cpu_arg.value)
             dasmos_cpu = ast.Constant(value=mapped)

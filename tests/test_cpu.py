@@ -54,7 +54,7 @@ class _FakeAddressingMode(Enum):
     same-value members into aliases (so ``ABSOLUTE`` and ``INDIRECT``,
     which both have ``(2, ADDRESS_16)``, would be the same member).
     Real CPU plug-ins follow the same pattern — see
-    :class:`dasmos.ext.cpus.nmos6502.AddressingMode`.
+    :class:`dasmos.ext.cpus.cpu6502.AddressingMode`.
     """
 
     IMPLIED   = ("implied",   0, OperandKind.NONE)

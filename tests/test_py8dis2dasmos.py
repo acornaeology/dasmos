@@ -175,7 +175,7 @@ class TestInitAndLoad:
             load(0xE000, "rom.bin", "6502")
         """)
         # Constructor with the mapped CPU name.
-        assert "d = dasmos.Disassembler.create(cpu='nmos6502')" in out
+        assert "d = dasmos.Disassembler.create(cpu='6502')" in out
         # Load with file/addr swapped (py8dis order: addr, file).
         assert "d.load('rom.bin', 57344)" in out  # 0xE000 → 57344 via unparse
 

@@ -47,7 +47,7 @@ def test_namespaces() -> None:
 
 def test_nmos6502_cpu_plugin_is_registered() -> None:
     # The first concrete CPU plug-in. Test gets updated as more land.
-    assert "nmos6502" in cpu_names()
+    assert "6502" in cpu_names()
 
 
 def test_beebasm_renderer_plugin_is_registered() -> None:

@@ -223,7 +223,7 @@ def _split_envs(env_options: tuple[str, ...]) -> list[str]:
     help="Address where the binary is loaded (hex with 0x/&/$ prefix or decimal).",
 )
 @click.option(
-    "-c", "--cpu", default="nmos6502", show_default=True,
+    "-c", "--cpu", default="6502", show_default=True,
     help="CPU plug-in name (see ``dasmos list-cpus``).",
 )
 @click.option(
@@ -401,7 +401,7 @@ def _format_entries_block(entries: tuple[int, ...]) -> str:
     help="Address where the binary is loaded.",
 )
 @click.option(
-    "-c", "--cpu", default="nmos6502", show_default=True,
+    "-c", "--cpu", default="6502", show_default=True,
     help="CPU plug-in name.",
 )
 @click.option(

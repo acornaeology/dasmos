@@ -159,7 +159,7 @@ def disassemble_and_render(tmp_path: Path):
     def _disassemble(binary: bytes, load_addr: int, configure: Callable):
         bin_in = tmp_path / "input.bin"
         bin_in.write_bytes(binary)
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.load(bin_in, load_addr)
         configure(d)
         ir = d.disassemble()
@@ -225,7 +225,7 @@ def roundtrip_via_beebasm(tmp_path: Path):
         # Step 2: disassemble + render via dasmos.
         bin_in = tmp_path / "step2_input.bin"
         bin_in.write_bytes(original)
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.load(bin_in, load_addr)
         configure(d)
         ir = d.disassemble()

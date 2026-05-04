@@ -13,7 +13,7 @@ is the natural consumer of richer comment rendering.
 
 This environment is parameterless. Drivers activate it via either::
 
-    d = Disassembler.create(cpu="nmos6502", environments=["acorn_mos"])
+    d = Disassembler.create(cpu="6502", environments=["acorn_mos"])
 
 or, equivalently::
 

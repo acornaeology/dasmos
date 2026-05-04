@@ -81,7 +81,7 @@ def render() -> str:
         list_cpus=_capture(["list-cpus", "--as", "display"]),
         list_renderers=_capture(["list-renderers", "--as", "display"]),
         list_environments=_capture(["list-environments", "--as", "display"]),
-        describe_nmos6502=_capture(["describe-cpu", "nmos6502"]),
+        describe_6502=_capture(["describe-cpu", "6502"]),
     )
 
 

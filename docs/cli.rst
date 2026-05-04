@@ -101,7 +101,7 @@ Options
    Address where the binary is loaded. Required because every other
    address in the run is interpreted relative to this one.
 
-``-c``, ``--cpu`` *NAME* (default: ``nmos6502``)
+``-c``, ``--cpu`` *NAME* (default: ``6502``)
    CPU plug-in name. Run ``dasmos list-cpus`` to see what's installed.
 
 ``-r``, ``--renderer`` *NAME* (default: ``beebasm``)

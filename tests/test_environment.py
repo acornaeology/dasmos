@@ -61,7 +61,7 @@ class TestActivation:
 
     def test_kwarg_activates_at_construction(self):
         d = Disassembler.create(
-            cpu="nmos6502", environments=["acorn_mos"],
+            cpu="6502", environments=["acorn_mos"],
         )
         # A handful of canonical names land in the LabelManager.
         assert "userv" in d.labels.get_label(0x0200).explicit_name_texts()
@@ -69,13 +69,13 @@ class TestActivation:
         assert "osbyte" in d.labels.get_label(0xfff4).explicit_name_texts()
 
     def test_method_activates_after_construction(self):
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         assert d.labels.get_label(0xffee) is None
         d.use_environment("acorn_mos")
         assert "oswrch" in d.labels.get_label(0xffee).explicit_name_texts()
 
     def test_method_accepts_instance(self):
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.use_environment(AcornMosEnvironment())
         assert "oswrch" in d.labels.get_label(0xffee).explicit_name_texts()
 
@@ -84,7 +84,7 @@ class TestActivation:
         # underlying LabelManager dedupes ExplicitName entries by
         # text. Verifies the layering story doesn't blow up on
         # re-application.
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.use_environment("acorn_mos")
         d.use_environment("acorn_mos")
         names = d.labels.get_label(0xffee).explicit_name_texts()
@@ -96,7 +96,7 @@ class TestActivation:
             create_environment("nonexistent")
 
     def test_use_environment_rejects_non_environment(self):
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         with pytest.raises(TypeError):
             d.use_environment(42)
 
@@ -116,7 +116,7 @@ class TestComposability:
             def setup(self, d):
                 d.optional_label(0x0070, "userworkspace")
 
-        d = Disassembler.create(cpu="nmos6502", environments=["acorn_mos"])
+        d = Disassembler.create(cpu="6502", environments=["acorn_mos"])
         d.use_environment(TestExtraEnv())
         # Both envs' labels are present.
         assert "oswrch" in d.labels.get_label(0xffee).explicit_name_texts()
@@ -133,7 +133,7 @@ class TestComposability:
                 # Add a second name at &FFEE alongside ``oswrch``.
                 d.optional_label(0xffee, "print_char")
 
-        d = Disassembler.create(cpu="nmos6502", environments=["acorn_mos"])
+        d = Disassembler.create(cpu="6502", environments=["acorn_mos"])
         d.use_environment(AliasEnv())
         names = d.labels.get_label(0xffee).explicit_name_texts()
         assert names == {"oswrch", "print_char"}
@@ -144,7 +144,7 @@ class TestAcornMosCoverage:
 
     def setup_method(self):
         self.d = Disassembler.create(
-            cpu="nmos6502", environments=["acorn_mos"],
+            cpu="6502", environments=["acorn_mos"],
         )
 
     def test_workspace_addresses(self):
@@ -204,7 +204,7 @@ class TestAcornSidewaysRom:
         """Helper: write ``rom_bytes`` to a file and load it at &8000."""
         rom = tmp_path / "rom.bin"
         rom.write_bytes(rom_bytes)
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.load(rom, 0x8000)
         return d
 
@@ -261,7 +261,7 @@ class TestAcornSidewaysRom:
 
     def test_raises_when_8000_not_loaded(self, tmp_path):
         # The environment's setup needs the ROM at &8000.
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         with pytest.raises(Exception):  # DasmosError or subclass
             d.use_environment("acorn_sideways_rom")
 
@@ -365,7 +365,7 @@ class TestAcornBbcHardwareEnvironment:
 
     def setup_method(self):
         self.d = Disassembler.create(
-            cpu="nmos6502", environments=["acorn_bbc_hardware"],
+            cpu="6502", environments=["acorn_bbc_hardware"],
         )
 
     def test_loadable_via_stevedore(self):
@@ -419,7 +419,7 @@ class TestAcornBbcHardwareEnvironment:
 
     def test_composes_with_acorn_mos(self):
         d = Disassembler.create(
-            cpu="nmos6502",
+            cpu="6502",
             environments=["acorn_mos", "acorn_bbc_hardware"],
         )
         assert "oswrch" in d.labels.get_label(0xffee).explicit_name_texts()
@@ -451,7 +451,7 @@ class TestAcornMosOsCallHooks:
         bin_path = tmp_path / "p.bin"
         bin_path.write_bytes(program)
         d = Disassembler.create(
-            cpu="nmos6502", environments=["acorn_mos"],
+            cpu="6502", environments=["acorn_mos"],
         )
         d.load(bin_path, load_addr)
         d.entry(load_addr)

@@ -29,7 +29,7 @@ disassemble, render. ``dasmos init`` writes essentially this:
    ROM_PATH = Path("nfs365.rom")
    LOAD_ADDR = 0x8000
 
-   d = dasmos.Disassembler.create(cpu="nmos6502")
+   d = dasmos.Disassembler.create(cpu="6502")
    d.load(ROM_PATH, LOAD_ADDR)
    d.entry(LOAD_ADDR)
 
@@ -54,7 +54,7 @@ analysers, and subroutine hooks for a specific target system.
 .. code-block:: python
 
    d = dasmos.Disassembler.create(
-       cpu="nmos6502",
+       cpu="6502",
        environments=["acorn_mos", "acorn_bbc_hardware"],
    )
 
@@ -305,7 +305,7 @@ A more complete picture of how the pieces compose:
    LOAD_ADDR = 0x8000
 
    d = dasmos.Disassembler.create(
-       cpu="nmos6502",
+       cpu="6502",
        environments=["acorn_mos", "acorn_bbc_hardware"],
    )
    d.load(ROM_PATH, LOAD_ADDR, md5sum=ROM_MD5)

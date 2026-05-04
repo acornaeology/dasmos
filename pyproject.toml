@@ -54,8 +54,13 @@ Issues = "https://github.com/acornaeology/dasmos/issues"
 # ca65, …) and environments (acorn-bbc-model-b, acorn-mos-1_20, …)
 # land.
 [project.entry-points."dasmos.cpu"]
-nmos6502 = "dasmos.ext.cpus.nmos6502:Cpu"
-cmos65c02 = "dasmos.ext.cpus.cmos65c02:Cpu"
+# Entry-point keys carry the canonical chip name. TOML bare keys
+# allow digits-leading and uppercase ([A-Za-z0-9_-]), so "6502" and
+# "65C02" are valid keys. The CPU lookup is case-insensitive
+# (``--cpu 65c02`` resolves to ``65C02``), but the registered name
+# is the form shown by ``dasmos list-cpus`` and used in JSON output.
+6502 = "dasmos.ext.cpus.cpu6502:Cpu"
+65C02 = "dasmos.ext.cpus.cpu65c02:Cpu"
 
 [project.entry-points."dasmos.renderer"]
 beebasm = "dasmos.ext.renderers.beebasm:Renderer"

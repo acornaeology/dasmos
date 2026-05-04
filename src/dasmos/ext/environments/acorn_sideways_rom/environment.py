@@ -12,7 +12,7 @@ Mirrors the label-defining work done by py8dis's
 just registers labels) this one **inspects loaded memory** at &8000 to
 decide what's where — so it must be activated AFTER ``d.load(...)``::
 
-    d = Disassembler.create(cpu="nmos6502", environments=["acorn_mos"])
+    d = Disassembler.create(cpu="6502", environments=["acorn_mos"])
     d.load("rom.bin", 0x8000)
     d.use_environment("acorn_sideways_rom")    # NOT in the constructor
                                                 # kwarg above

@@ -14,7 +14,7 @@ The Tube Client ROM is a 4 KB physical chip whose upper 2 KB maps at
   intentionally allowed to diverge.
 
 Exercises three pieces of infrastructure absent from the Econet Bridge
-test: the cmos65c02 CPU plug-in, the move-aware renderer (the &F859→
+test: the 65C02 CPU plug-in, the move-aware renderer (the &F859→
 &0100 7-byte relocation), and subroutine hooks (the inline-string
 idiom via JSR &FE98 / stringhi_hook).
 """

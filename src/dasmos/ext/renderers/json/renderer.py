@@ -70,7 +70,7 @@ class JsonRenderer(Renderer[StructuredOutput]):
     def cpus_supported(self) -> list[str]:
         # CPU-agnostic — we just read mnemonic / operand info from the
         # Opcode classification, no syntax-specific output.
-        return ["nmos6502", "cmos65c02"]
+        return ["6502", "65C02"]
 
     def render(self, ir: "IntermediateRepresentation") -> StructuredOutput:
         data = {

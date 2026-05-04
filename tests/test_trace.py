@@ -15,7 +15,7 @@ from dasmos.core.disassembly import INSIDE_A_CLASSIFICATION
 from dasmos.core.memory import BinaryAddr, MemoryImage, RuntimeAddr
 from dasmos.cpu import FlowControl, Opcode, OperandKind
 from dasmos.disassembler import Disassembler
-from dasmos.ext.cpus.nmos6502 import (
+from dasmos.ext.cpus.cpu6502 import (
     OPCODES,
     AddressingMode,
     Operation,
@@ -111,7 +111,7 @@ class TestTraceLoop:
         binary = tmp_path / "tiny.bin"
         binary.write_bytes(b"\xa9\x42\x60")
 
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.load(binary, 0x8000)
         d.entry(0x8000)
         ir = d.disassemble()
@@ -137,7 +137,7 @@ class TestTraceLoop:
         binary = tmp_path / "p.bin"
         binary.write_bytes(b"\x20\x06\x80\xea\x60\x42\xea\x60")
 
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.load(binary, 0x8000)
         d.entry(0x8000)
         ir = d.disassemble()
@@ -167,7 +167,7 @@ class TestTraceLoop:
         binary = tmp_path / "p.bin"
         binary.write_bytes(b"\x4c\x04\x80\x99\x60")
 
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.load(binary, 0x8000)
         d.entry(0x8000)
         ir = d.disassemble()
@@ -196,7 +196,7 @@ class TestTraceLoop:
         binary = tmp_path / "p.bin"
         binary.write_bytes(b"\xa9\x00\xf0\x01\x60\xea\x60")
 
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.load(binary, 0x8000)
         d.entry(0x8000)
         ir = d.disassemble()
@@ -223,7 +223,7 @@ class TestTraceLoop:
         binary = tmp_path / "p.bin"
         binary.write_bytes(b"\x6c\x03\x80\x05\x80\xea\x60")
 
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.load(binary, 0x8000)
         # Mark the pointer as data so it doesn't get traced as code.
         d.word(0x8003, 2)
@@ -248,7 +248,7 @@ class TestTraceLoop:
         # leftover Byte(1) treatment.
         binary = tmp_path / "p.bin"
         binary.write_bytes(b"\xad\x00")  # 2 bytes — opcode wants 3
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.load(binary, 0x8000)
         d.entry(0x8000)
         ir = d.disassemble()
@@ -266,7 +266,7 @@ class TestTraceLoop:
         binary = tmp_path / "p.bin"
         binary.write_bytes(b"\x03\x60")
 
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.load(binary, 0x8000)
         d.entry(0x8000)
         ir = d.disassemble()
@@ -284,7 +284,7 @@ class TestTraceLoop:
         binary = tmp_path / "p.bin"
         binary.write_bytes(b"\x4c\x00\x80")
 
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.load(binary, 0x8000)
         d.entry(0x8000)
         # Must terminate; the visited-set breaks the cycle.
@@ -302,7 +302,7 @@ class TestTraceLoop:
         binary = tmp_path / "p.bin"
         binary.write_bytes(b"\xea\xea\x60")
 
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.load(binary, 0x8000)
         d.byte(0x8001, 1)  # pre-classify the in-path byte as data
         d.entry(0x8000)
@@ -324,7 +324,7 @@ class TestEntryRegistration:
     def test_entry_appends_to_entry_points(self, tmp_path):
         binary = tmp_path / "p.bin"
         binary.write_bytes(b"\x60")  # RTS
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.load(binary, 0x8000)
         d.entry(0x8000)
         assert d._entry_points == [BinaryAddr(0x8000)]
@@ -332,7 +332,7 @@ class TestEntryRegistration:
     def test_entry_with_name_creates_label(self, tmp_path):
         binary = tmp_path / "p.bin"
         binary.write_bytes(b"\x60")
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.load(binary, 0x8000)
         d.entry(0x8000, name="start")
         label = d.labels.get_label(0x8000)
@@ -342,7 +342,7 @@ class TestEntryRegistration:
     def test_entry_after_disassemble_raises(self, tmp_path):
         binary = tmp_path / "p.bin"
         binary.write_bytes(b"\x60")
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.load(binary, 0x8000)
         d.disassemble()
         from dasmos.disassembler import DisassemblerError
@@ -356,7 +356,7 @@ class TestLeftoverClassification:
         # Three bytes loaded; only the first is reached as code.
         binary = tmp_path / "p.bin"
         binary.write_bytes(b"\x60\x99\xaa")  # RTS, then two unreached
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.load(binary, 0x8000)
         d.entry(0x8000)
         ir = d.disassemble()
@@ -372,7 +372,7 @@ class TestLeftoverClassification:
         # classifies every loaded byte as Byte.
         binary = tmp_path / "p.bin"
         binary.write_bytes(b"\x01\x02\x03\x04")
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.load(binary, 0x8000)
         ir = d.disassemble()
 

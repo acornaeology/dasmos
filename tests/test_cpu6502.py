@@ -9,7 +9,7 @@ renderer-agnostic Opcode design (D-021).
 """
 
 from dasmos.cpu import FlowControl, Opcode, OperandKind, create_cpu
-from dasmos.ext.cpus.nmos6502 import (
+from dasmos.ext.cpus.cpu6502 import (
     OPCODES,
     AddressingMode,
     Nmos6502Cpu,
@@ -20,9 +20,9 @@ from dasmos.ext.cpus.nmos6502 import (
 class TestPluginRegistration:
 
     def test_loadable_via_stevedore(self):
-        cpu = create_cpu("nmos6502")
+        cpu = create_cpu("6502")
         assert isinstance(cpu, Nmos6502Cpu)
-        assert cpu.name == "nmos6502"
+        assert cpu.name == "6502"
 
     def test_address_space_is_64k(self):
         cpu = Nmos6502Cpu()
@@ -285,7 +285,7 @@ class TestState6502:
     """
 
     def _new(self):
-        from dasmos.ext.cpus.nmos6502 import Nmos6502Cpu
+        from dasmos.ext.cpus.cpu6502 import Nmos6502Cpu
         return Nmos6502Cpu(), Nmos6502Cpu().initial_state()
 
     def test_initial_state_is_unknown(self):

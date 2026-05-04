@@ -122,8 +122,14 @@ def create_extension(kind, namespace, name, exception_type=None, **kwargs) -> Ex
     Returns:
         An extension.
     """
-    ext = extension(kind, namespace, name, exception_type)
-    obj = ext(name=normalize_name(name), **kwargs)
+    exception_type = exception_type or ExtensionError
+    canonical = _resolve_canonical_name(namespace, name, kind, exception_type)
+    ext = extension(kind, namespace, canonical, exception_type)
+    # Always pass the canonical name to the constructor so the
+    # instance's ``name`` attribute matches what's shown by
+    # ``list-cpus`` / ``list-renderers`` / etc., regardless of the
+    # case the caller used.
+    obj = ext(name=canonical, **kwargs)
     return obj
 
 
@@ -135,6 +141,11 @@ def extension(
 ) -> Type[Extension]:
     """Get the extension class without instantiating it.
 
+    Lookup is case-insensitive: ``--cpu 65c02`` resolves to the
+    registered ``65C02`` plug-in. Hyphens in the requested name are
+    also normalised to underscores. The exact registered name is
+    what's used to instantiate the extension.
+
     Args:
         kind: The kind of extension.
         namespace: The namespace for the extension.
@@ -145,11 +156,11 @@ def extension(
         The type (i.e. class) of an extension.
     """
     exception_type = exception_type or ExtensionError
-    normal_name = normalize_name(name)
+    canonical_name = _resolve_canonical_name(namespace, name, kind, exception_type)
     try:
         manager = stevedore.driver.DriverManager(
             namespace=namespace,
-            name=normal_name,
+            name=canonical_name,
             invoke_on_load=False,
             on_load_failure_callback=load_failure_callback,
         )
@@ -161,6 +172,42 @@ def extension(
         ) from no_matches
     driver = manager.driver
     return driver
+
+
+def _resolve_canonical_name(
+        namespace: str,
+        requested: str,
+        kind: str,
+        exception_type: BaseException,
+) -> str:
+    """Resolve ``requested`` to the canonical registered name in
+    ``namespace``, matching case-insensitively after the standard
+    ``normalize_name`` (hyphen → underscore) pass.
+
+    If exactly one registered name matches, return it. If none
+    match, return the normalised request unchanged so the caller's
+    DriverManager call raises ``NoMatches`` with the usual error
+    surface. If two or more registered names case-fold to the same
+    string, refuse the lookup — that's an authoring mistake on the
+    extension publisher's part rather than something to silently
+    pick from.
+    """
+    requested_normal = normalize_name(requested)
+    available = list_extensions(namespace)
+    if requested_normal in available:
+        return requested_normal
+    requested_lower = requested_normal.lower()
+    matches = [n for n in available if n.lower() == requested_lower]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        joined = ", ".join(repr(n) for n in matches)
+        raise exception_type(
+            f"Ambiguous {kind} name {requested !r}: case-insensitive "
+            f"match resolves to multiple registered plug-ins ({joined}). "
+            f"Use the exact name to disambiguate."
+        )
+    return requested_normal
 
 
 def describe_extension(kind, namespace, name, exception_type=None, *, single_line: bool = False) -> str:

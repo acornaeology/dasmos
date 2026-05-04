@@ -69,7 +69,7 @@ class TestPluginRegistration:
 
     def test_supports_nmos6502(self):
         r = BeebasmRenderer()
-        assert "nmos6502" in r.cpus_supported()
+        assert "6502" in r.cpus_supported()
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +147,7 @@ class TestLexicalSyntax:
         from dasmos.disassembler import Disassembler
         bin_path = tmp_path / "p.bin"
         bin_path.write_bytes(b"\x60")
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.load(bin_path, 0x8000)
         d.entry(0x8000)
         ir = d.disassemble()
@@ -165,7 +165,7 @@ class TestLexicalSyntax:
 def _make_disassembler_with_program(tmp_path, binary_bytes, load_addr=0x8000):
     binpath = tmp_path / "p.bin"
     binpath.write_bytes(binary_bytes)
-    d = Disassembler.create(cpu="nmos6502")
+    d = Disassembler.create(cpu="6502")
     d.load(binpath, load_addr)
     return d
 
@@ -177,7 +177,7 @@ class TestRenderTinyProgram:
         # save directive to (no load range, no marker labels), so it
         # emits the minimal empty disassembly. Better than emitting a
         # save directive that references undefined labels.
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         ir = d.disassemble()
         text = str(ir.render("beebasm"))
         assert "org" not in text   # nothing loaded
@@ -373,7 +373,7 @@ class TestByteColumnAnnotation:
         """)
         bin_in = tmp_path / "in.bin"
         bin_in.write_bytes(binary)
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.load(bin_in, 0x8000)
         d.entry(0x8000, name="start")
         move_id = d.add_move(
@@ -433,7 +433,7 @@ class TestPerAddressingModeFormatting:
 
     def setup_method(self):
         # A common Disassembler is fine; we only render the operand text.
-        self.d = Disassembler.create(cpu="nmos6502")
+        self.d = Disassembler.create(cpu="6502")
 
     def _render(self, tmp_path, bytes_, opcode_addr=0x8000, load_addr=0x8000):
         binpath = tmp_path / "p.bin"
@@ -442,7 +442,7 @@ class TestPerAddressingModeFormatting:
         # parens, `#`); the auto-label feature would replace the
         # literal hex with a synthesised symbol, which would still be
         # the same shape but obscures what's under test. Disable it.
-        d = Disassembler.create(cpu="nmos6502", auto_labels_enabled=False)
+        d = Disassembler.create(cpu="6502", auto_labels_enabled=False)
         d.load(binpath, load_addr)
         d.entry(opcode_addr)
         ir = d.disassemble()
@@ -521,7 +521,7 @@ class TestBeebasmRoundTrip:
         binpath = tmp_path / "in.bin"
         binpath.write_bytes(original_bytes)
 
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.load(binpath, load_addr)
         for addr in (entries or [load_addr]):
             d.entry(addr)
@@ -595,7 +595,7 @@ class TestBeebasmRoundTrip:
         original = b"\xa9\x42\x60"
         binpath.write_bytes(original)
 
-        d = Disassembler.create(cpu="nmos6502")
+        d = Disassembler.create(cpu="6502")
         d.load(binpath, 0x8000)
         d.entry(0x8000)
         ir = d.disassemble()
