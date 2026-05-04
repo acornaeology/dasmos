@@ -14,14 +14,13 @@ is a strict superset of :mod:`dasmos.ext.cpus.cpu6502`:
 Everything else — addressing modes, mnemonics, flow-control behaviour,
 the trace loop — is reused unchanged from the NMOS plug-in. We do
 not implement the WDC-specific ``RMB`` / ``SMB`` / ``BBR`` / ``BBS``
-instructions: py8dis's ``cpu65C02.py`` doesn't include them and the
-Acorn 65C02-target ROMs (Tube Client, ANFS) don't use them.
+instructions: the Acorn 65C02-target ROMs (Tube Client, ANFS) don't
+use them.
 
 Undefined opcodes are deliberately left out. On real 65C02 silicon
 they are NOPs of varying lengths, but treating arbitrary bytes as
 NOPs blurs the trace-vs-data boundary; better to terminate the trace
-path cleanly. (py8dis takes the same stance — see the comment in
-``py8dis/cpu65C02.py``.)
+path cleanly.
 """
 
 from enum import Enum, unique
@@ -102,7 +101,7 @@ def _add(byte: int, op: Enum, mode: Enum, flow: FlowControl, *, cycles: int = 0)
 
 
 # 27 new opcode bytes wiring the new mnemonics + new modes into the
-# table. Order chosen to match py8dis/cpu65C02.py for diff-friendliness.
+# table, ordered by opcode value.
 _add(0x04, Operation.TSB,    NmosAddressingMode.ZERO_PAGE,        FlowControl.SEQUENTIAL,         cycles=5)
 _add(0x0c, Operation.TSB,    NmosAddressingMode.ABSOLUTE,         FlowControl.SEQUENTIAL,         cycles=6)
 _add(0x12, NmosOperation.ORA, AddressingMode.ZP_INDIRECT,         FlowControl.SEQUENTIAL,         cycles=5)
@@ -140,8 +139,7 @@ class Cmos65C02Cpu(Cpu):
     addressing modes and 27 new opcode bytes.
 
     Doesn't model the WDC-specific RMB / SMB / BBR / BBS bit-test
-    instructions; they're not used by Acorn's 65C02-target ROMs and
-    py8dis omits them too.
+    instructions; they're not used by Acorn's 65C02-target ROMs.
     """
 
     def __init__(self, name: str = CPU_NAME, **kwargs):
