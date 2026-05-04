@@ -101,6 +101,18 @@ _FDC = [
     (0xfe87, "fdc_1770_data"),
 ]
 
+# Fred-bus 1MHz peripheral page (&FC00-&FCFF). Most of Fred is
+# expansion / aftermarket — only a few addresses have stable
+# meanings across BBC machines. The Acorn SCSI / Winchester hard
+# drive interface (used by ADFS-1.30 and similar disk-controller
+# ROMs) lives at &FC40-&FC43.
+_FRED = [
+    (0xfc40, "fred_hard_drive_0"),
+    (0xfc41, "fred_hard_drive_1"),
+    (0xfc42, "fred_hard_drive_2"),
+    (0xfc43, "fred_hard_drive_3"),
+]
+
 # 6854 ADLC Econet controller
 _ECONET = [
     (0xfea0, "econet_control1_or_status1"),
@@ -138,7 +150,7 @@ _CUBE = [
 
 _ALL_LABELS: list[tuple[int, str]] = (
     _CRTC + _ACIA + _SERIAL_ULA + _STATION_ID + _VIDEO_ULA + _ROMSEL
-    + _SYSTEM_VIA + _USER_VIA + _FDC + _ECONET + _ADC + _TUBE + _CUBE
+    + _SYSTEM_VIA + _USER_VIA + _FDC + _FRED + _ECONET + _ADC + _TUBE + _CUBE
 )
 
 

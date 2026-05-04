@@ -174,8 +174,16 @@ class TestInitAndLoad:
             from py8dis.commands import *
             load(0xE000, "rom.bin", "6502")
         """)
-        # Constructor with the mapped CPU name.
-        assert "d = dasmos.Disassembler.create(cpu='6502')" in out
+        # Constructor with the mapped CPU name and py8dis-compatible
+        # auto-label prefixes (so ported drivers produce textually
+        # similar output to the py8dis-fork original during
+        # migration validation).
+        assert "d = dasmos.Disassembler.create(" in out
+        assert "cpu='6502'" in out
+        assert "auto_label_data_prefix='l'" in out
+        assert "auto_label_code_prefix='c'" in out
+        assert "auto_label_subroutine_prefix='sub_c'" in out
+        assert "auto_label_loop_prefix='loop_c'" in out
         # Load with file/addr swapped (py8dis order: addr, file).
         assert "d.load('rom.bin', 57344)" in out  # 0xE000 → 57344 via unparse
 

@@ -141,13 +141,11 @@ class TestAnfs421PorterEndToEnd:
 # py8dis annotation-content parity
 # ---------------------------------------------------------------------------
 
-# Initial ratchet measured when the ANFS-4.21 fixture was first
-# vendored. Surprisingly low at 8 (the dominant residuals are
-# ``return_N`` auto-generated mid-instruction labels py8dis emits
-# but dasmos handles differently, plus a handful of free-text words
-# from comment annotations dasmos doesn't yet emit — ``eeprom``,
-# ``sync``, ``vertical``).
-MAX_COMMENT_TOKENS_DROPPED = 8
+# Initial measurement was 8. Closing the return-N rule in
+# 2026-05-04 work brought it to 3 — only ``eeprom``, ``sync``,
+# ``vertical`` remain as free-text words from py8dis comment
+# annotations dasmos doesn't emit.
+MAX_COMMENT_TOKENS_DROPPED = 3
 
 _COMMENT_TOKEN_RE = re.compile(r"[a-z_][a-z_0-9]{3,}")
 

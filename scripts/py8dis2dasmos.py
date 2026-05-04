@@ -489,7 +489,19 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
         else:
             dasmos_cpu = cpu_arg
 
-        # d = dasmos.Disassembler.create(cpu=...)
+        # d = dasmos.Disassembler.create(
+        #     cpu=...,
+        #     auto_label_data_prefix="l",      # py8dis defaults
+        #     auto_label_code_prefix="c",
+        #     auto_label_subroutine_prefix="sub_c",
+        #     auto_label_loop_prefix="loop_c",
+        # )
+        # The auto-label prefixes match py8dis's defaults so ported
+        # drivers produce textually-similar output to the original
+        # (label names are the most-visible part of the diff between
+        # py8dis-fork and dasmos output during the migration).
+        # ``return_`` is dasmos's default and matches py8dis too —
+        # no override needed.
         ctor = ast.Assign(
             targets=[ast.Name(id="d", ctx=ast.Store())],
             value=ast.Call(
@@ -503,7 +515,25 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
                     ctx=ast.Load(),
                 ),
                 args=[],
-                keywords=[ast.keyword(arg="cpu", value=dasmos_cpu)],
+                keywords=[
+                    ast.keyword(arg="cpu", value=dasmos_cpu),
+                    ast.keyword(
+                        arg="auto_label_data_prefix",
+                        value=ast.Constant(value="l"),
+                    ),
+                    ast.keyword(
+                        arg="auto_label_code_prefix",
+                        value=ast.Constant(value="c"),
+                    ),
+                    ast.keyword(
+                        arg="auto_label_subroutine_prefix",
+                        value=ast.Constant(value="sub_c"),
+                    ),
+                    ast.keyword(
+                        arg="auto_label_loop_prefix",
+                        value=ast.Constant(value="loop_c"),
+                    ),
+                ],
             ),
         )
 
