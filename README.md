@@ -6,7 +6,12 @@ A pluggable tracing disassembler for retro CPUs, version `0.1.2`.
   <a href="https://pypi.org/project/dasmos/"><img src="https://img.shields.io/pypi/v/dasmos.svg" alt="PyPI"></a>
   <a href="https://github.com/acornaeology/dasmos/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/acornaeology/dasmos/release.yml?label=release" alt="Release"></a>
   <a href="https://github.com/acornaeology/dasmos/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/acornaeology/dasmos/ci.yml?branch=master&label=CI" alt="CI"></a>
+  <a href="https://acornaeology.github.io/dasmos/"><img src="https://img.shields.io/badge/docs-online-blue" alt="Documentation"></a>
   <a href="https://pypi.org/project/dasmos/"><img src="https://img.shields.io/pypi/pyversions/dasmos.svg" alt="Python versions"></a>
+</p>
+
+<p align="center">
+  <strong><a href="https://acornaeology.github.io/dasmos/">Read the documentation »</a></strong>
 </p>
 
 > *From Ancient Greek* δασμός *(dasmós, "division"), from* δαίω
