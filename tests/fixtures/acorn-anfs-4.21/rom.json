@@ -1,0 +1,132 @@
+{
+    "title": "Acorn ANFS 4.21 (variant 1)",
+    "memory_map_groups": {
+        "zero_page": "Zero page",
+        "ram_workspace": "RAM workspace",
+        "hazel": "Filing system workspace (HAZEL)",
+        "mmio": "Memory-mapped I/O",
+        "ext_vectors": "MOS extended-vector trampolines",
+        "idx_base": "Indexing-base addresses (wrap into ZP)"
+    },
+    "size": 16384,
+    "md5": "03371d224a8f048c129335682434d025",
+    "sha256": "a51c9b2ce63d16519880a33b0561048c7172ee53cebe06e8d21da479198398cd",
+    "cpu": "65c02",
+    "machine": "BBC Master 128",
+    "links": [
+        {
+            "label": "Acorn ANFS 4.21 (variant 1) in The BBC Micro ROM Library",
+            "url": "https://tobylobster.github.io/rom_library/?md5=03371d224a8f048c129335682434d025",
+            "icon": "chip"
+        },
+        {
+            "label": "Discuss this disassembly on the Stardot Forums thread: Acorn ANFS - A new annotated disassembly",
+            "url": "https://www.stardot.org.uk/forums/viewtopic.php?t=32592",
+            "icon": "chat"
+        }
+    ],
+    "docs": [
+        {
+            "type": "changes",
+            "label": "Changes from ANFS 4.18",
+            "path": "CHANGES-FROM-4.18.md",
+            "glossary_links": [
+                {
+                    "pattern": "ANFS",
+                    "occurrence": 0,
+                    "term": "NFS"
+                },
+                {
+                    "pattern": "NFS",
+                    "occurrence": 0,
+                    "term": "NFS"
+                },
+                {
+                    "pattern": "ROM",
+                    "occurrence": 0,
+                    "term": "ROM"
+                },
+                {
+                    "pattern": "OSBYTE",
+                    "occurrence": 0,
+                    "term": "OSBYTE"
+                },
+                {
+                    "pattern": "OSWORD",
+                    "occurrence": 0,
+                    "term": "OSWORD"
+                },
+                {
+                    "pattern": "MOS",
+                    "occurrence": 0,
+                    "term": "MOS"
+                },
+                {
+                    "pattern": "Econet",
+                    "occurrence": 0,
+                    "term": "Econet"
+                },
+                {
+                    "pattern": "service call",
+                    "occurrence": 0,
+                    "term": "service call"
+                },
+                {
+                    "pattern": "relocated",
+                    "occurrence": 0,
+                    "term": "relocated code"
+                },
+                {
+                    "pattern": "IRQ",
+                    "occurrence": 0,
+                    "term": "IRQ"
+                },
+                {
+                    "pattern": "NMI",
+                    "occurrence": 0,
+                    "term": "NMI"
+                },
+                {
+                    "pattern": "sideways ROM",
+                    "occurrence": 0,
+                    "term": "sideways ROM"
+                },
+                {
+                    "pattern": "HAZEL",
+                    "occurrence": 0,
+                    "term": "HAZEL"
+                },
+                {
+                    "pattern": "ACCCON",
+                    "occurrence": 0,
+                    "term": "ACCCON"
+                },
+                {
+                    "pattern": "Master 128",
+                    "occurrence": 0,
+                    "term": "Master 128"
+                },
+                {
+                    "pattern": "65C02",
+                    "occurrence": 0,
+                    "term": "65C02"
+                },
+                {
+                    "pattern": "VIA",
+                    "occurrence": 0,
+                    "term": "VIA"
+                },
+                {
+                    "pattern": "CMOS",
+                    "occurrence": 0,
+                    "term": "CMOS"
+                },
+                {
+                    "pattern": "shadow RAM",
+                    "occurrence": 0,
+                    "term": "shadow RAM"
+                }
+            ]
+        }
+    ]
+}

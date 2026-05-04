@@ -109,6 +109,7 @@ UNSUPPORTED_PY8DIS_FUNCTIONS: frozenset[str] = frozenset({
 PY8DIS_COMMAND_RELOCATIONS: dict[str, str] = {
     # Subroutine hooks ported to ``dasmos.hooks``.
     "stringhi_hook": "dasmos.hooks",
+    "stringz_hook": "dasmos.hooks",
 }
 
 
@@ -285,14 +286,26 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
                 continue
 
             # Detect ``subroutine(..., is_entry_point=False, ...)``
-            # BEFORE visit_Call rewrites — needs to expand to two
-            # statements (label + banner) so it can't be handled as
-            # a single Call rewrite.
+            # and ``data_banner(...)`` BEFORE visit_Call rewrites.
+            # Both expand to the same two-statement form (label +
+            # banner) so they can't be handled as a single Call
+            # rewrite. ``data_banner`` is py8dis's syntactic sugar
+            # for ``subroutine(..., is_entry_point=False)``: a
+            # subroutine-style banner header on a data region that
+            # MUST NOT register a code entry point (else the trace
+            # would treat the data bytes as code).
             if (
                 isinstance(stmt, ast.Expr)
                 and isinstance(stmt.value, ast.Call)
-                and self._call_name(stmt.value) == "subroutine"
-                and self._is_kw_constant(stmt.value, "is_entry_point", False)
+                and (
+                    (
+                        self._call_name(stmt.value) == "subroutine"
+                        and self._is_kw_constant(
+                            stmt.value, "is_entry_point", False,
+                        )
+                    )
+                    or self._call_name(stmt.value) == "data_banner"
+                )
             ):
                 expanded = self._convert_subroutine_to_label_banner(stmt.value)
                 # Visit each new statement so its Call children are

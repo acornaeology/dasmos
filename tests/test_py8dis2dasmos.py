@@ -299,6 +299,30 @@ class TestCommentRewriting:
         assert "from dasmos import Align" not in out
 
 
+class TestDataBanner:
+
+    def test_data_banner_expands_to_label_plus_banner(self):
+        # py8dis's ``data_banner(addr, name, title=, description=)``
+        # is sugar for ``subroutine(..., is_entry_point=False)`` —
+        # it emits the title/description block but doesn't register
+        # the address as a code entry point. The porter expands it
+        # the same way as the subroutine variant: a label() at addr
+        # + a banner() with the title and description.
+        out = port("""
+            from py8dis.commands import *
+            load(0xE000, "rom.bin", "6502")
+            data_banner(0xE100, "table_x", title="Lookup table X",
+                        description="32-entry sine table.")
+        """)
+        # No spurious entry point — never use the subroutine form.
+        assert "d.subroutine" not in out
+        # label() at the address, banner() carrying the title/desc.
+        assert "d.label(57600, 'table_x'" in out
+        assert "d.banner(57600" in out
+        assert "title='Lookup table X'" in out
+        assert "32-entry sine table." in out
+
+
 class TestEncodingInjection:
 
     def test_write_text_gets_explicit_utf8_encoding(self):

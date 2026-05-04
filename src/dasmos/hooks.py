@@ -73,3 +73,22 @@ def stringhi_hook(d: "Disassembler", jsr_binary_addr: int) -> int:
     # Trace continues at the terminator address — it'll be classified
     # as an opcode by the normal trace loop.
     return addr
+
+
+def stringz_hook(d: "Disassembler", jsr_binary_addr: int) -> int:
+    """Classify the bytes after a JSR as a NUL-terminated string;
+    trace continues at the byte right after the NUL.
+
+    Mirror of :func:`stringhi_hook` for the inline-NUL-terminated
+    convention used by Acorn ANFS's error-message routines (e.g.
+    ``JSR error_inline`` followed by ``"<text>", 0``). The NUL
+    terminator IS included in the classified string region.
+    """
+    from dasmos.core.memory import BinaryAddr
+    string_start = jsr_binary_addr + 3
+    runtime_start = int(d.moves.b2r(BinaryAddr(string_start)))
+    # ``d.stringz`` walks to the NUL inclusively and returns the
+    # runtime address right after it. Convert back to a binary
+    # address for the trace return value.
+    next_runtime = d.stringz(runtime_start)
+    return int(d.moves.r2b_checked(next_runtime).binary_addr)
