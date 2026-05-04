@@ -17,22 +17,10 @@ A pluggable tracing disassembler for retro CPUs, version `{{ version }}`.
 > *From Ancient Greek* δασμός *(dasmós, "division"), from* δαίω
 > *(daíō, "to divide, share").*
 
-*Dasmos* is a ground-up rewrite and reimagining of a heavily modified
-[fork][py8dis-fork] of [py8dis][py8dis-original] — Steven Flintham's
-original programmable tracing disassembler for the 6502 family.
-*Dasmos* owes the whole core idea to Steven and to the py8dis project;
-this project organises a tracing disassembler as a core algorithm
-customised through plug-in extensions which provide knowledge of CPUs,
-different assembly syntaxes, and target environments. The core of the
-essential design vocabulary — driver scripts, traced classification,
-label/comment/banner annotations — is all inspired by py8dis.
-
-Driver scripts written for py8dis can be ported automatically to
-*Dasmos* with the bundled `scripts/py8dis2dasmos.py`.
-
 [py8dis-original]: https://github.com/ZornsLemma/py8dis
 [py8dis-fork]: https://github.com/acornaeology/py8dis
 [acornaeology]: https://github.com/acornaeology
+[beebdis]: https://github.com/prime6809/BeebDis
 
 ## Install
 
@@ -209,6 +197,28 @@ tests/fixtures/             Vendored ROM + driver + reference output
   assembler used as the round-trip oracle.
 - [asyoulikeit](https://github.com/sixty-north/asyoulikeit) — the
   CLI-output framework *Dasmos*'s reports are built on.
+
+## Lineage, Credit and Acknowledgements
+
+*Dasmos* is a ground-up rewrite and reimagining of a heavily modified
+[fork][py8dis-fork] of [py8dis][py8dis-original] — Steven Flintham's
+original programmable tracing disassembler for the 6502 family.
+*Dasmos* owes the whole core idea to Steven and to the py8dis project;
+this project organises a tracing disassembler as a core algorithm
+customised through plug-in extensions which provide knowledge of CPUs,
+different assembly syntaxes, and target environments. The core of the
+essential design vocabulary — driver scripts, traced classification,
+label/comment/banner annotations — is all inspired by py8dis.
+
+py8dis was itself heavily influenced by Phill Harvey-Smith's
+[BeebDis][beebdis], an earlier 6502 disassembler for the BBC Micro
+ecosystem; py8dis modelled its command surface on BeebDis where it
+could. *Dasmos* therefore stands at the end of a chain of work —
+BeebDis → py8dis → the acornaeology fork → *Dasmos* — and gratefully
+acknowledges the contribution each step made to the next.
+
+Driver scripts written for py8dis can be ported automatically to
+*Dasmos* with the bundled `scripts/py8dis2dasmos.py`.
 
 ---
 
