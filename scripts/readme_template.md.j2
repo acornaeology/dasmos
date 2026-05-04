@@ -23,8 +23,8 @@ Starting from one or more entry points, the *tracing* core follows
 reachable code paths to classify which bytes are instructions and
 which are data, then renders the result via a chosen assembler-syntax
 back-end (or as structured JSON for downstream tooling). The
-round-trip property — binary → driver → assembly → binary′ where
-`binary′ == binary` — is checked in CI against real ROMs, so the
+round-trip property — binary → driver → assembly → binary where
+`binary == binary` — is checked in CI against real ROMs, so the
 disassembly is byte-faithful, not just plausible.
 
 You drive *Dasmos* either as a one-shot CLI command or via a Python
@@ -33,8 +33,8 @@ subroutine banners, and cross-references as you grow your
 understanding of the code; re-running the script regenerates the
 listing. CPUs, assembler-syntax back-ends, and target environments
 all ship as composable plug-ins, so adding support for a new chip
-family or a new assembler dialect is a self-contained extension
-rather than a fork.
+family or a new assembler dialect is a self-contained extension,
+without needing to modify the original code.
 
 ## Install
 
