@@ -336,6 +336,39 @@ class TestEncodingInjection:
         assert "encoding='utf-8'" not in out
 
 
+class TestMoveContextManager:
+
+    def test_with_move_id_var_wrapped_in_using_move(self):
+        # py8dis's ``move()`` returns a context-manager-shaped object;
+        # dasmos's ``add_move`` returns a bare int. The porter must
+        # wrap the move-id in ``d.using_move(...)`` so the ``with``
+        # block still pushes / pops the active move correctly.
+        out = port("""
+            from py8dis.commands import *
+            load(0xE000, "rom.bin", "6502")
+            foo_move_id = move(0x0D00, 0xBC79, 0x49)
+            with foo_move_id:
+                label(0x0D00, "foo")
+        """)
+        # The assignment side becomes d.add_move(...).
+        assert "foo_move_id = d.add_move" in out
+        # The with side wraps the var.
+        assert "with d.using_move(foo_move_id):" in out
+
+    def test_with_unrelated_var_left_alone(self):
+        # ``with`` over a name that wasn't assigned from move() is
+        # not a move-context — leave it. (Drivers rarely do this but
+        # we shouldn't actively break unrelated patterns.)
+        out = port("""
+            from py8dis.commands import *
+            load(0xE000, "rom.bin", "6502")
+            with open("x.txt") as f:
+                pass
+        """)
+        # Only assignments from add_move trigger the rewrite.
+        assert "d.using_move" not in out
+
+
 class TestGoConversion:
 
     def test_go_becomes_disassemble_render_print(self):

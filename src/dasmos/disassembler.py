@@ -519,18 +519,56 @@ class Disassembler:
             addr = d.stringz(0x9000)
             addr = d.stringz(addr)  # next string follows
         """
-        self._raise_if_disassembled("stringz")
+        return self._string_terminated(
+            runtime_addr, 0x00, "stringz", "a NUL", move_id=move_id,
+        )
+
+    def stringcr(
+        self,
+        runtime_addr,
+        *,
+        move_id: int | None = None,
+    ) -> int:
+        """Classify a CR-terminated string starting at ``runtime_addr``;
+        returns the runtime address of the byte right after the
+        terminator. The CR convention (``0x0D``) is the BBC OS's
+        standard line-terminator for OSWRCH and command-line input.
+
+        Behaves like :meth:`stringz` but with ``0x0D`` as the
+        terminator; the terminator byte is included in the classified
+        span (use ``d.byte`` if you need to classify them
+        differently).
+        """
+        return self._string_terminated(
+            runtime_addr, 0x0D, "stringcr", "a CR (&0d)", move_id=move_id,
+        )
+
+    def _string_terminated(
+        self,
+        runtime_addr,
+        terminator: int,
+        op_name: str,
+        terminator_desc: str,
+        *,
+        move_id: int | None = None,
+    ) -> int:
+        """Shared scan-and-classify loop for terminator-based string
+        primitives. Scans loaded memory forward until ``terminator``
+        is found; classifies the whole span (including the terminator
+        byte) as a String. Returns the address right after the span.
+        """
+        self._raise_if_disassembled(op_name)
         binary_addr = self._resolve_to_binary_addr(runtime_addr, move_id)
         scan = int(binary_addr)
         limit = self._cpu.address_space_size
         while scan < limit:
             if not self._memory.is_loaded(scan):
                 raise DisassemblerError(
-                    f"stringz at {int(runtime_addr):04x} ran into "
+                    f"{op_name} at {int(runtime_addr):04x} ran into "
                     f"unloaded memory at binary {scan:04x} without "
-                    f"finding a NUL terminator"
+                    f"finding {terminator_desc}"
                 )
-            if self._memory.get_u8(scan) == 0:
+            if self._memory.get_u8(scan) == terminator:
                 break
             scan += 1
         length = scan - int(binary_addr) + 1

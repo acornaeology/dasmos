@@ -1,0 +1,43 @@
+{
+    "title": "Acorn ADFS 1.30",
+    "size": 16384,
+    "md5": "831ee90ac5d49ba5507252faf0c12536",
+    "sha256": "4f785bb4572bde31a93f12687dec501c9005b6a0decc6ac943c657447095a563",
+    "links": [
+        {
+            "label": "Disassembly source on GitHub",
+            "url": "https://github.com/acornaeology/acorn-adfs/blob/master/versions/adfs-1.30/output/adfs-1.30.asm",
+            "icon": "github"
+        },
+        {
+            "label": "Acorn ADFS 1.30 in The BBC Micro ROM Library",
+            "url": "https://tobylobster.github.io/rom_library/?md5=831ee90ac5d49ba5507252faf0c12536",
+            "icon": "chip"
+        },
+        {
+            "label": "Discuss this disassembly on the Stardot Forums thread: A new annotated disassembly of Acorn ADFS",
+            "url": "https://www.stardot.org.uk/forums/viewtopic.php?t=32796",
+            "icon": "chat"
+        },
+        {
+            "label": "A Stardot request for a disassembly of ADFS 1.30",
+            "url": "https://stardot.org.uk/forums/viewtopic.php?t=13082",
+            "icon": "chat"
+        },
+        {
+            "label": "Hoglet's ADFS 1.30 disassembly (BeebAsm, byte-identical reassembly)",
+            "url": "https://github.com/hoglet67/ADFS130",
+            "icon": "ref"
+        },
+        {
+            "label": "Dominic Beesley's ADFS multi-target reassembly (ca65, multiple ADFS versions)",
+            "url": "https://github.com/dominicbeesley/ADFS-multi-target",
+            "icon": "ref"
+        },
+        {
+            "label": "J.G. Harston's ADFS disassembly (BBC BASIC, annotated)",
+            "url": "https://mdfs.net/Info/Comp/BBC/ADFS/",
+            "icon": "ref"
+        }
+    ]
+}

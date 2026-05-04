@@ -1120,6 +1120,33 @@ class TestStringz:
             d.stringz(0x8000)
 
 
+class TestStringcr:
+    """Driver feature: ``d.stringcr(addr)`` — classify a CR-terminated
+    string (terminator &0D, BBC OS line convention). Mirrors
+    :class:`TestStringz` with the terminator byte changed.
+    """
+
+    def test_returns_address_after_terminator(self, tmp_path):
+        from dasmos.disassembler import Disassembler
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(b"abc\x0ddef\x0d\x60")
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        next_addr = d.stringcr(0x8000)
+        assert next_addr == 0x8004  # "abc\r" = 4 bytes
+        next_addr = d.stringcr(next_addr)
+        assert next_addr == 0x8008  # "def\r" = 4 bytes
+
+    def test_raises_on_unterminated_string(self, tmp_path):
+        from dasmos.disassembler import Disassembler, DisassemblerError
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(b"abcdef")  # no CR
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        with pytest.raises(DisassemblerError, match="without finding a CR"):
+            d.stringcr(0x8000)
+
+
 @pytest.mark.beebasm
 class TestMultiLineCommentRendering:
     """A ``d.comment(addr, text)`` whose text contains paragraph

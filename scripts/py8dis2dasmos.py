@@ -56,6 +56,7 @@ DASMOS_METHODS: frozenset[str] = frozenset({
     "code_ptr",
     "rts_code_ptr",
     "stringz",
+    "stringcr",
     "constant",
 })
 
@@ -92,6 +93,11 @@ UNSUPPORTED_PY8DIS_FUNCTIONS: frozenset[str] = frozenset({
     # the call cascades through the dropped-name tracker so the
     # surrounding JSON dump statements drop too.
     "get_structured",
+    # py8dis's auto-comment suppression hook. py8dis generates
+    # automatic per-instruction comments and ``no_automatic_comment``
+    # inhibits that at a given address. dasmos doesn't generate
+    # auto-comments, so suppressing them is a no-op — drop the call.
+    "no_automatic_comment",
 })
 
 
@@ -177,6 +183,19 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
 
     def __init__(self):
         self.assembler_name = "beebasm"
+        # Names assigned from ``move()`` calls (or their ported form,
+        # ``d.add_move(...)``). py8dis drivers commonly write::
+        #
+        #     foo_move_id = move(dest, src, length)
+        #     with foo_move_id:
+        #         label(...)
+        #
+        # The ``with`` form needs the move_id wrapped in
+        # ``d.using_move(...)`` since dasmos treats move_ids as bare
+        # ints rather than as context managers. We track the LHS
+        # names of move-producing assignments here so visit_With can
+        # rewrite the right context expressions.
+        self._move_id_names: set[str] = set()
 
     def visit_Module(self, node: ast.Module) -> ast.Module:
         new_body: list[ast.stmt] = []
@@ -419,6 +438,48 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
             # the U+2192 (→) and similar arrows the renderer emits.
             if node.func.attr in ("read_text", "write_text"):
                 _inject_encoding_kwarg(node)
+        return node
+
+    def visit_Assign(self, node: ast.Assign) -> ast.Assign:
+        """Track names assigned from ``move(...)`` (which visit_Call
+        will already have rewritten to ``d.add_move(...)``). Used by
+        :meth:`visit_With` to wrap context expressions.
+        """
+        self.generic_visit(node)  # rewrite move() → d.add_move(...) first
+        if (
+            isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Attribute)
+            and isinstance(node.value.func.value, ast.Name)
+            and node.value.func.value.id == "d"
+            and node.value.func.attr == "add_move"
+        ):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    self._move_id_names.add(target.id)
+        return node
+
+    def visit_With(self, node: ast.With) -> ast.With:
+        """Rewrite ``with <move_id_name>:`` to
+        ``with d.using_move(<move_id_name>):``. py8dis's ``move()``
+        returns a context-manager-shaped object; dasmos's ``add_move``
+        returns a bare int that needs ``d.using_move(...)`` to push
+        onto the active-move stack for the duration of the block.
+        """
+        self.generic_visit(node)  # rewrite body first
+        for item in node.items:
+            if (
+                isinstance(item.context_expr, ast.Name)
+                and item.context_expr.id in self._move_id_names
+            ):
+                item.context_expr = ast.Call(
+                    func=ast.Attribute(
+                        value=ast.Name(id="d", ctx=ast.Load()),
+                        attr="using_move",
+                        ctx=ast.Load(),
+                    ),
+                    args=[item.context_expr],
+                    keywords=[],
+                )
         return node
 
     # -- specials --------------------------------------------------------
