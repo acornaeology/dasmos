@@ -36,6 +36,11 @@ all ship as composable plug-ins, so adding support for a new chip
 family or a new assembler dialect is a self-contained extension
 rather than a fork.
 
+[py8dis-original]: https://github.com/ZornsLemma/py8dis
+[py8dis-fork]: https://github.com/acornaeology/py8dis
+[acornaeology]: https://github.com/acornaeology
+[beebdis]: https://github.com/prime6809/BeebDis
+
 ## Install
 
 > The `uv` and `uvx` commands shown below come from
@@ -303,6 +308,11 @@ acknowledges the contribution each step made to the next.
 
 Driver scripts written for py8dis can be ported automatically to
 *Dasmos* with the bundled `scripts/py8dis2dasmos.py`.
+
+[py8dis-original]: https://github.com/ZornsLemma/py8dis
+[py8dis-fork]: https://github.com/acornaeology/py8dis
+[acornaeology]: https://github.com/acornaeology
+[beebdis]: https://github.com/prime6809/BeebDis
 
 ---
 
