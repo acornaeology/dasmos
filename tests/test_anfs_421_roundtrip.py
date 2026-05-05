@@ -1,11 +1,12 @@
 """Round-trip tests against the real Acorn ANFS 4.21 (variant 1) ROM.
 
-ANFS (Advanced Network Filing System) is the BBC Master-era
-successor to NFS. 16 KB sideways ROM, mapped at &8000-&BFFF, with
-substantially larger and more deeply annotated code than the 8 KB
-NFS 3.x family — Master features, richer command vector dispatch,
-and the largest py8dis driver in the four sibling projects (~17,500
-lines of source).
+ANFS (Advanced Network Filing System) is the Acorn Econet
+filesystem ROM family that succeeds NFS. 4.21 is **Master-only**
+(unlike 4.18 / 4.08.53 which are Model B), 16 KB sideways ROM,
+mapped at &8000-&BFFF, with substantially larger and more deeply
+annotated code than the 8 KB NFS 3.x family — Master-specific OS
+features, richer command-vector dispatch, and the largest py8dis
+driver in the sibling projects (~17,500 lines of source).
 
 Mirrors :mod:`tests.test_adfs_roundtrip` in shape:
 
@@ -22,8 +23,9 @@ Distinctive vs. the existing fixtures:
 
 - Largest driver in the sibling set; surfaces porter / renderer
   scaling issues that smaller fixtures don't.
-- Master-era OS-call patterns (some calls absent from BBC Micro
-  MOS) exercise environment-extension corners not hit by NFS-3.65.
+- Master-only OS-call patterns (calls absent from the BBC Model B
+  / B+ MOS that the other ANFS variants target) exercise
+  environment-extension corners not hit by the Model-B fixtures.
 - Heavy use of ``data_banner(...)`` for table / hardware-vector
   block headers; the porter expands these into label + banner
   pairs the same way it handles ``subroutine(..., is_entry_point=

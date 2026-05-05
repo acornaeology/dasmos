@@ -1,10 +1,11 @@
 """Round-trip tests against the real Acorn ANFS 4.18 ROM.
 
-ANFS 4.18 is a BBC Model B Acorn Network Filing System variant
-(predecessor to ANFS 4.21). 16 KB sideways ROM mapped at &8000-
-&BFFF. Roughly the same shape as ANFS 4.21: 13,990-line py8dis
-driver, similar OS-call patterns and command-vector dispatch,
-slightly older feature set.
+ANFS 4.18 is a **BBC Model B** Acorn Network Filing System
+variant (the 4.21 successor is Master-only — different machine
+class, not just a later version). 16 KB sideways ROM mapped at
+&8000-&BFFF, 13,990-line py8dis driver. Same Model-B feature
+set as the older 4.08.53; together they exercise dasmos against
+the Model-B ANFS code paths distinct from the Master-only 4.21.
 
 Mirrors :mod:`tests.test_anfs_421_roundtrip` (the lighter test
 variant — no JSON parity ratcheting; NFS-3.65 covers that oracle
