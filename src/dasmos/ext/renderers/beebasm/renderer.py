@@ -119,7 +119,7 @@ class BeebasmRenderer(TextRenderer):
         default_word_cols: int = 4,
         show_auto_label_footer: bool = True,
         comment_wrap_column: int = 87,
-        show_char_literals: bool = True,
+        char_literal_style: str = "asc",
         lower_case: bool = True,
         **kwargs,
     ):
@@ -175,15 +175,36 @@ class BeebasmRenderer(TextRenderer):
         # ``textwrap.fill`` operates on the raw text and the ``; ``
         # is added per-line at emit time.
         self.comment_wrap_column = comment_wrap_column
-        # When True, append a ``; '<c>'`` hint to immediate-mode
-        # instructions whose operand byte is a printable ASCII
-        # character. Mirrors py8dis-fork's ``show_char_literals``
-        # config. Suppressed when:
+        # How printable-ASCII immediate operands should be rendered:
+        #
+        # - ``"asc"`` (default): operand becomes ``ASC("c")`` —
+        #   beebasm's first-character-of-string function. Reads as
+        #   "this byte IS a character", not "this byte happens to
+        #   coincide with one". The hex value is dropped from the
+        #   line entirely; the byte-column inline annotation still
+        #   shows the hex+ASCII pair if ``byte_column=True``.
+        # - ``"quote"``: operand becomes ``'c'`` — the universal
+        #   single-quoted-char form. Shorter than ASC; same semantics.
+        # - ``"comment"``: hex operand stays, with a trailing
+        #   ``; 'c'`` hint (py8dis-fork's ``show_char_literals``
+        #   form).
+        # - ``"off"``: hex operand, no char annotation.
+        #
+        # In every case the operand is suppressed (renderer falls
+        # back to plain hex) when:
         # - the user has registered a custom expression at the
-        #   operand byte (the user's symbol takes precedence);
-        # - the byte is the ASCII apostrophe (``'``) or double-quote
-        #   (``"``), which would form ambiguous comment syntax.
-        self.show_char_literals = show_char_literals
+        #   operand byte: the user's symbol takes precedence;
+        # - the byte is non-printable (outside ``0x20..0x7E``);
+        # - the byte is one whose char form would create awkward
+        #   quoting in the chosen style — see
+        #   :meth:`_format_char_literal_operand` for specifics.
+        valid_styles = {"asc", "quote", "comment", "off"}
+        if char_literal_style not in valid_styles:
+            raise ValueError(
+                f"char_literal_style must be one of "
+                f"{sorted(valid_styles)!r}, got {char_literal_style!r}"
+            )
+        self.char_literal_style = char_literal_style
         # When True (default), mnemonics and the indexed-mode register
         # suffixes (``,X`` / ``,Y``) and the explicit-accumulator
         # marker (``A``) all render in lowercase: ``sta &20,x``,
@@ -1452,14 +1473,53 @@ class BeebasmRenderer(TextRenderer):
             return str(value)
         return self.hex2(value)
 
+    def _format_char_literal_operand(self, value: int) -> str | None:
+        """Render an immediate operand byte as a beebasm character
+        literal — the ``"asc"`` and ``"quote"`` style produce the
+        operand text; ``"comment"`` and ``"off"`` return ``None``
+        (caller falls back to hex via
+        :meth:`_format_immediate_byte`).
+
+        Style-specific quoting:
+
+        - ``"asc"`` uses ``ASC("c")`` — beebasm's first-character-of-
+          string function. Apostrophe (``0x27``) renders as
+          ``ASC("'")`` (single quote inside double-quoted string is
+          fine). Double-quote (``0x22``) falls back to hex —
+          beebasm's doubled-up form (``ASC`` of a four-quote string
+          to encode one ``"``) is unreadable.
+        - ``"quote"`` uses ``'c'`` — the universal single-quoted-char
+          form. Apostrophe (``0x27``) falls back to hex (a bare
+          ``'''`` is ambiguous). Double-quote (``0x22``) renders as
+          ``'"'`` (double quote inside single quotes is fine).
+
+        Non-printable bytes (outside ``0x20..0x7E``) always return
+        ``None``: there's no clean beebasm literal for those.
+        """
+        if self.char_literal_style not in ("asc", "quote"):
+            return None
+        if not (0x20 <= value <= 0x7E):
+            return None
+        c = chr(value)
+        if self.char_literal_style == "asc":
+            if value == 0x22:  # double-quote
+                return None
+            return f'ASC("{c}")'
+        # "quote" style.
+        if value == 0x27:  # apostrophe
+            return None
+        return f"'{c}'"
+
     def _immediate_char_hint(self, ir, binary_addr, opcode: Opcode) -> str:
         """Return a `` ; '<c>'`` trailing hint for printable-ASCII
-        immediates, or the empty string if the hint should be
-        suppressed.
+        immediates in ``"comment"`` style, or the empty string in
+        every other style / suppression case.
 
         Suppression conditions (any one is enough):
 
-        - ``show_char_literals`` is False on this renderer.
+        - ``char_literal_style`` is not ``"comment"`` (the operand
+          itself becomes the char in ``"asc"`` / ``"quote"`` modes,
+          and ``"off"`` disables annotation entirely).
         - The opcode's addressing mode isn't IMMEDIATE.
         - A user-supplied expression is registered at the operand
           byte: the user has chosen a more meaningful symbol and the
@@ -1468,7 +1528,7 @@ class BeebasmRenderer(TextRenderer):
         - The byte is ``'`` or ``"``: a single-quoted hint would form
           ambiguous comment syntax (``; '''`` / ``; '"'``).
         """
-        if not self.show_char_literals:
+        if self.char_literal_style != "comment":
             return ""
         if opcode.addressing_mode.name != "IMMEDIATE":
             return ""
@@ -1572,9 +1632,11 @@ class BeebasmRenderer(TextRenderer):
 
         if kind is OperandKind.IMMEDIATE:
             # Immediate values aren't addresses; no label lookup.
-            return self._format_immediate_byte(
-                ir.memory.get_u8(operand_addr),
-            )
+            value = ir.memory.get_u8(operand_addr)
+            char_form = self._format_char_literal_operand(value)
+            if char_form is not None:
+                return char_form
+            return self._format_immediate_byte(value)
 
         if kind is OperandKind.ADDRESS_8:
             v = ir.memory.get_u8(operand_addr)

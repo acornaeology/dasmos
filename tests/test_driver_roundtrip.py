@@ -37,10 +37,13 @@ class TestEntryAndLabel:
     """Driver features: ``entry()`` + ``label()`` — basic naming."""
 
     def test_entry_with_name_appears_inline(self, roundtrip_via_beebasm):
+        # Use a non-printable immediate (``&12`` = DC2) so the test
+        # is about labels, not the char-literal rendering paths
+        # exercised elsewhere.
         source = """
             org &8000
         .start
-            lda #&42
+            lda #&12
             rts
         save "step1.bin", start, P%
         """
@@ -51,8 +54,9 @@ class TestEntryAndLabel:
         )
         # The label name reaches the rendered text.
         assert ".start" in text
-        # And the literal hex address didn't leak as a label use.
-        assert "lda #&42" in text
+        # And the literal hex form survives (no char-literal mangling
+        # because &12 is non-printable).
+        assert "lda #&12" in text
 
     def test_separate_label_call_creates_label_at_address(
         self, roundtrip_via_beebasm,
@@ -252,9 +256,13 @@ class TestAddressingModesViaSource:
             source, 0x8000,
             lambda d: d.entry(0x8000, name="start"),
         )
+        # &12 (DC2) is non-printable — stays as hex.
         assert "lda #&12" in text
-        assert "ldx #&34" in text
-        assert "ldy #&56" in text
+        # &34 ('4') and &56 ('V') are printable — default char_literal_style
+        # is "asc" so they render as ``ASC("c")``. Beebasm assembles
+        # both forms identically.
+        assert 'ldx #ASC("4")' in text
+        assert 'ldy #ASC("V")' in text
 
     def test_immediate_small_int_renders_as_decimal(self, roundtrip_via_beebasm):
         # py8dis-fork's ``uint_formatter`` rule: values 0..9 render as
@@ -304,10 +312,12 @@ class TestAddressingModesViaSource:
         assert "lda #&7f" in text
         assert "lda #&ff" in text
 
-    def test_immediate_printable_ascii_char_annotation(self, roundtrip_via_beebasm):
-        # py8dis-style trailing char-literal hint for printable
-        # immediates: `ldy #&67  ; 'g'`. Helps the reader spot
-        # ASCII strings being constructed byte-by-byte.
+    def test_immediate_printable_ascii_renders_as_asc(self, roundtrip_via_beebasm):
+        # Default ``char_literal_style="asc"``: printable-ASCII
+        # immediates render as ``ASC("c")`` — the operand replaces
+        # the hex literal entirely. The byte assembles to the same
+        # value (``ASC`` is a beebasm built-in), so round-trip is
+        # preserved.
         source = """
             org &8000
         .start
@@ -320,23 +330,26 @@ class TestAddressingModesViaSource:
             source, 0x8000,
             lambda d: d.entry(0x8000, name="start"),
         )
-        # Hex value AND char hint, on the same line.
-        ldy_line = next(
-            line for line in text.splitlines()
-            if "ldy #&67" in line
-        )
-        assert "; 'g'" in ldy_line
-        ldx_line = next(
-            line for line in text.splitlines()
-            if "ldx #&41" in line
-        )
-        assert "; 'A'" in ldx_line
+        assert 'ldy #ASC("g")' in text
+        assert 'ldx #ASC("A")' in text
+        # The hex form is gone — char form replaced it, not appended.
+        assert "ldy #&67" not in text
+        assert "ldx #&41" not in text
+        # Trailing ``; 'c'`` comment hint is the *comment* style;
+        # default ``asc`` style does not emit it.
+        import re
+        for line in text.splitlines():
+            if "ldy" in line or "ldx" in line:
+                assert not re.search(r"; '[^']'", line), (
+                    f"unexpected comment-style hint in: {line!r}"
+                )
 
-    def test_immediate_non_printable_no_char_annotation(
+    def test_immediate_non_printable_falls_back_to_hex(
         self, roundtrip_via_beebasm,
     ):
-        # Non-printable bytes (control chars, DEL, high-bit set) must
-        # NOT get a char annotation.
+        # Non-printable bytes (control chars, DEL, high-bit set) have
+        # no clean beebasm character literal. The renderer falls back
+        # to plain hex (or the small-int decimal rule for 0..9).
         source = """
             org &8000
         .start
@@ -352,31 +365,52 @@ class TestAddressingModesViaSource:
             source, 0x8000,
             lambda d: d.entry(0x8000, name="start"),
         )
-        # No ``; '...'`` form should appear on these instruction
-        # lines — pull each line and check.
+        assert "lda #0" in text  # decimal-small-int rule
+        assert "lda #7" in text
+        assert "lda #&7f" in text
+        assert "lda #&80" in text
+        assert "lda #&ff" in text
+        # No ASC(...) and no comment-style hint anywhere on these
+        # instruction lines.
         for marker in ("lda #0", "lda #7", "lda #&7f", "lda #&80", "lda #&ff"):
             line = next(
                 line for line in text.splitlines() if marker in line
             )
-            # The byte-column inline annotation may show ASCII rendering
-            # of unprintable bytes as ``.`` — that's a different column.
-            # We only care that no ``; 'X'`` (single-quoted char hint)
-            # is appended here.
+            assert "ASC(" not in line
             import re
             assert not re.search(r"; '[^']'", line), (
                 f"unexpected char annotation in: {line!r}"
             )
 
-    def test_immediate_quote_chars_no_annotation(
+    def test_immediate_apostrophe_uses_asc_form(
         self, roundtrip_via_beebasm,
     ):
-        # Apostrophe (&27) and double-quote (&22) would create
-        # ambiguous comment syntax (``; '''`` / ``; '"'``). Suppress
-        # the annotation for these specific bytes.
+        # Default ``"asc"`` style: apostrophe (``0x27``) renders as
+        # ``ASC("'")`` — the apostrophe is fine inside the double-
+        # quoted string argument. Beebasm parses this to the byte
+        # ``&27`` so round-trip is preserved.
         source = """
             org &8000
         .start
             lda #&27
+            rts
+        save "step1.bin", start, P%
+        """
+        text = roundtrip_via_beebasm(
+            source, 0x8000,
+            lambda d: d.entry(0x8000, name="start"),
+        )
+        assert 'lda #ASC("\'")' in text
+
+    def test_immediate_double_quote_falls_back_to_hex(
+        self, roundtrip_via_beebasm,
+    ):
+        # Default ``"asc"`` style: double-quote (``0x22``) inside a
+        # double-quoted ASC argument would need beebasm's doubled-up
+        # form (``ASC("""")``) which is unreadable. Fall back to hex.
+        source = """
+            org &8000
+        .start
             lda #&22
             rts
         save "step1.bin", start, P%
@@ -385,22 +419,16 @@ class TestAddressingModesViaSource:
             source, 0x8000,
             lambda d: d.entry(0x8000, name="start"),
         )
-        for marker in ("lda #&27", "lda #&22"):
-            line = next(
-                line for line in text.splitlines() if marker in line
-            )
-            import re
-            assert not re.search(r"; '[^']'", line), (
-                f"unexpected quote-char annotation in: {line!r}"
-            )
+        assert "lda #&22" in text
+        assert 'ASC(""' not in text
 
-    def test_immediate_user_expression_suppresses_annotation(
+    def test_immediate_user_expression_suppresses_char_form(
         self, roundtrip_via_beebasm,
     ):
         # When the driver registers a custom expression at the
-        # operand byte (e.g. ``d.expr(...)``) the operand text is the
-        # user's symbol — the auto char-literal hint is suppressed
-        # because the user has chosen a more meaningful name.
+        # operand byte, the user's symbol takes precedence — auto
+        # char-literal rendering is suppressed because the user has
+        # chosen a more meaningful name.
         source = """
             org &8000
         .start
@@ -415,15 +443,93 @@ class TestAddressingModesViaSource:
             d.expr(0x8001, "ascii_g")
 
         text = roundtrip_via_beebasm(source, 0x8000, configure)
+        assert "ldy #ascii_g" in text
+        # No ASC form leaked through — the user's choice wins.
+        assert 'ASC("g")' not in text
+
+    def test_immediate_char_literal_style_quote(self):
+        # Alternative ``"quote"`` style — produces the universal
+        # single-quoted-char form. Apostrophe (``'``) falls back to
+        # hex; double-quote works (single-quoted double-quote is
+        # unambiguous). Use direct renderer construction since the
+        # roundtrip fixture builds its own renderer.
+        from pathlib import Path
+        import tempfile
+        from dasmos.disassembler import Disassembler
+        from dasmos.ext.renderers.beebasm.renderer import BeebasmRenderer
+        # ldy #&67 ; ldx #&27 ; lda #&22 ; rts
+        rom_bytes = bytes([0xa0, 0x67, 0xa2, 0x27, 0xa9, 0x22, 0x60])
+        with tempfile.TemporaryDirectory() as td:
+            rom_path = Path(td) / "p.bin"
+            rom_path.write_bytes(rom_bytes)
+            d = Disassembler.create(cpu="6502")
+            d.load(rom_path, 0x8000)
+            d.entry(0x8000, name="start")
+            ir = d.disassemble()
+            renderer = BeebasmRenderer(char_literal_style="quote")
+            output = str(renderer.render(ir))
+        assert "ldy #'g'" in output
+        # Apostrophe falls back to hex (no `'''` form).
+        assert "ldx #&27" in output
+        assert "ldx #'" not in output.split("ldx ")[1].split("\n")[0]
+        # Double-quote works inside single quotes.
+        assert "lda #'\"'" in output
+
+    def test_immediate_char_literal_style_comment(self):
+        # ``"comment"`` style preserves the py8dis-fork form: hex
+        # operand with a trailing ``; 'c'`` hint. Quote chars and
+        # non-printable bytes get no annotation (matching py8dis).
+        from pathlib import Path
+        import tempfile
+        from dasmos.disassembler import Disassembler
+        from dasmos.ext.renderers.beebasm.renderer import BeebasmRenderer
+        rom_bytes = bytes([0xa0, 0x67, 0xa9, 0x22, 0x60])  # ldy #&67 ; lda #&22 ; rts
+        with tempfile.TemporaryDirectory() as td:
+            rom_path = Path(td) / "p.bin"
+            rom_path.write_bytes(rom_bytes)
+            d = Disassembler.create(cpu="6502")
+            d.load(rom_path, 0x8000)
+            d.entry(0x8000, name="start")
+            ir = d.disassemble()
+            renderer = BeebasmRenderer(char_literal_style="comment")
+            output = str(renderer.render(ir))
         ldy_line = next(
-            line for line in text.splitlines() if "ldy #ascii_g" in line
+            line for line in output.splitlines() if "ldy #&67" in line
         )
-        # Char annotation MUST NOT appear; the user has named the
-        # constant and the auto-hint would be redundant noise.
+        assert "; 'g'" in ldy_line
+        # Double-quote: no annotation in comment style.
+        lda_line = next(
+            line for line in output.splitlines() if "lda #&22" in line
+        )
         import re
-        assert not re.search(r"; 'g'", ldy_line), (
-            f"char annotation leaked through expression: {ldy_line!r}"
-        )
+        assert not re.search(r"; '[^']'", lda_line)
+
+    def test_immediate_char_literal_style_off(self):
+        # ``"off"`` disables char annotation entirely — the operand
+        # is plain hex, no ASC, no comment hint.
+        from pathlib import Path
+        import tempfile
+        from dasmos.disassembler import Disassembler
+        from dasmos.ext.renderers.beebasm.renderer import BeebasmRenderer
+        rom_bytes = bytes([0xa0, 0x67, 0x60])  # ldy #&67 ; rts
+        with tempfile.TemporaryDirectory() as td:
+            rom_path = Path(td) / "p.bin"
+            rom_path.write_bytes(rom_bytes)
+            d = Disassembler.create(cpu="6502")
+            d.load(rom_path, 0x8000)
+            d.entry(0x8000, name="start")
+            ir = d.disassemble()
+            renderer = BeebasmRenderer(char_literal_style="off")
+            output = str(renderer.render(ir))
+        assert "ldy #&67" in output
+        assert "ASC(" not in output
+        assert "; 'g'" not in output
+
+    def test_immediate_char_literal_style_invalid_rejected(self):
+        # Out-of-range style values fail loudly at construction.
+        from dasmos.ext.renderers.beebasm.renderer import BeebasmRenderer
+        with pytest.raises(ValueError, match="char_literal_style"):
+            BeebasmRenderer(char_literal_style="hex")
 
     def test_register_suffix_case_lowercase_by_default(
         self, roundtrip_via_beebasm,
@@ -571,7 +677,7 @@ class TestComments:
         source = """
             org &8000
         .start
-            lda #&42
+            lda #&12
             rts
         save "step1.bin", start, P%
         """
@@ -594,7 +700,7 @@ class TestComments:
         source = """
             org &8000
         .start
-            lda #&42
+            lda #&12
             rts
         save "step1.bin", start, P%
         """
@@ -607,7 +713,7 @@ class TestComments:
         text = roundtrip_via_beebasm(source, 0x8000, configure)
         # The inline comment lives on the same line as the LDA.
         for line in text.splitlines():
-            if "lda #&42" in line:
+            if "lda #&12" in line:
                 assert "; magic number" in line
                 break
         else:
@@ -625,7 +731,7 @@ class TestComments:
         source = """
             org &8000
         .start
-            lda #&42
+            lda #&12
             rts
         save "step1.bin", start, P%
         """
@@ -652,7 +758,7 @@ class TestComments:
         source = """
             org &8000
         .start
-            lda #&42
+            lda #&12
             rts
         save "step1.bin", start, P%
         """
@@ -666,14 +772,14 @@ class TestComments:
         # The comment is between .start and lda.
         label_idx = text.index(".start")
         comment_idx = text.index("; between")
-        lda_idx = text.index("lda #&42")
+        lda_idx = text.index("lda #&12")
         assert label_idx < comment_idx < lda_idx
 
     def test_after_line_comment_below_code(self, roundtrip_via_beebasm):
         source = """
             org &8000
         .start
-            lda #&42
+            lda #&12
             rts
         save "step1.bin", start, P%
         """
@@ -684,7 +790,7 @@ class TestComments:
             d.comment(0x8000, "trailing block", align=Align.AFTER_LINE)
 
         text = roundtrip_via_beebasm(source, 0x8000, configure)
-        lda_idx = text.index("lda #&42")
+        lda_idx = text.index("lda #&12")
         comment_idx = text.index("; trailing block")
         rts_idx = text.index("rts")
         assert lda_idx < comment_idx < rts_idx
@@ -695,7 +801,7 @@ class TestComments:
         source = """
             org &8000
         .start
-            lda #&42
+            lda #&12
             jsr helper
             rts
         .helper
@@ -1740,7 +1846,7 @@ class TestCrossReferences:
         source = """
             org &8000
         .start
-            lda #&42
+            lda #&12
             rts
         .data
             equb &01, &02
