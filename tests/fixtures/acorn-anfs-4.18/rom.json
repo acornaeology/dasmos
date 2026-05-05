@@ -1,0 +1,281 @@
+{
+    "title": "Acorn ANFS 4.18",
+    "size": 16384,
+    "md5": "0926bcb6f47458f8c4aed5364ff1122d",
+    "sha256": "963c9bdd114c3987e03031c67a13d1182370df45689d3ba05a2d41b42ee6f6e3",
+    "links": [
+        {
+            "label": "Acorn ANFS 4.18 in The BBC Micro ROM Library",
+            "url": "https://tobylobster.github.io/rom_library/?md5=0926bcb6f47458f8c4aed5364ff1122d",
+            "icon": "chip"
+        },
+        {
+            "label": "Discuss this disassembly on the Stardot Forums thread: Acorn ANFS - A new annotated disassembly",
+            "url": "https://www.stardot.org.uk/forums/viewtopic.php?t=32592",
+            "icon": "chat"
+        }
+    ],
+    "docs": [
+        {
+            "type": "changes",
+            "label": "Changes from ANFS 4.08.53",
+            "path": "CHANGES-FROM-4.08.53.md",
+            "address_links": [
+                {
+                    "pattern": "&8A0B",
+                    "occurrence": 0,
+                    "version": "4.08.53",
+                    "address": "0x8A0B"
+                },
+                {
+                    "pattern": "&8A15",
+                    "occurrence": 0,
+                    "version": "4.18",
+                    "address": "0x8A15"
+                },
+                {
+                    "pattern": "&04A2",
+                    "occurrence": 0,
+                    "version": "4.08.53",
+                    "address": "0x04A2"
+                },
+                {
+                    "pattern": "&049D",
+                    "occurrence": 0,
+                    "version": "4.18",
+                    "address": "0x049D"
+                },
+                {
+                    "pattern": "&048C",
+                    "occurrence": 0,
+                    "version": "4.08.53",
+                    "address": "0x048C"
+                },
+                {
+                    "pattern": "&048C",
+                    "occurrence": 1,
+                    "version": "4.18",
+                    "address": "0x048C"
+                },
+                {
+                    "pattern": "&804D",
+                    "occurrence": 0,
+                    "version": "4.08.53",
+                    "address": "0x804D"
+                },
+                {
+                    "pattern": "&8052",
+                    "occurrence": 0,
+                    "version": "4.18",
+                    "address": "0x8052"
+                },
+                {
+                    "pattern": "&805A",
+                    "occurrence": 0,
+                    "version": "4.18",
+                    "address": "0x805A"
+                },
+                {
+                    "pattern": "&A4EE",
+                    "occurrence": 0,
+                    "version": "4.18",
+                    "address": "0xA4EE"
+                },
+                {
+                    "pattern": "&B98A",
+                    "occurrence": 0,
+                    "version": "4.18",
+                    "address": "0xB98A"
+                },
+                {
+                    "pattern": "&B98F",
+                    "occurrence": 0,
+                    "version": "4.18",
+                    "address": "0xB98F"
+                },
+                {
+                    "pattern": "&9F67",
+                    "occurrence": 0,
+                    "version": "4.18",
+                    "address": "0x9F67"
+                },
+                {
+                    "pattern": "&B8E4",
+                    "occurrence": 0,
+                    "version": "4.18",
+                    "address": "0xB8E4"
+                },
+                {
+                    "pattern": "&B8DA",
+                    "occurrence": 0,
+                    "version": "4.18",
+                    "address": "0xB8DA"
+                },
+                {
+                    "pattern": "&B42F",
+                    "occurrence": 0,
+                    "version": "4.08.53",
+                    "address": "0xB42F"
+                },
+                {
+                    "pattern": "&B431",
+                    "occurrence": 0,
+                    "version": "4.18",
+                    "address": "0xB431"
+                },
+                {
+                    "pattern": "&BB03",
+                    "occurrence": 0,
+                    "version": "4.18",
+                    "address": "0xBB03"
+                },
+                {
+                    "pattern": "&8E43",
+                    "occurrence": 0,
+                    "version": "4.18",
+                    "address": "0x8E43"
+                },
+                {
+                    "pattern": "&A7FE",
+                    "occurrence": 0,
+                    "version": "4.18",
+                    "address": "0xA7FE"
+                },
+                {
+                    "pattern": "&BEBF",
+                    "occurrence": 0,
+                    "version": "4.08.53",
+                    "address": "0xBEBF"
+                },
+                {
+                    "pattern": "&BEC3",
+                    "occurrence": 0,
+                    "version": "4.18",
+                    "address": "0xBEC3"
+                },
+                {
+                    "pattern": "&0016",
+                    "occurrence": 0,
+                    "version": "4.18",
+                    "address": "0x0016"
+                },
+                {
+                    "pattern": "&BF00",
+                    "occurrence": 0,
+                    "version": "4.08.53",
+                    "address": "0xBF00"
+                },
+                {
+                    "pattern": "&BF04",
+                    "occurrence": 0,
+                    "version": "4.18",
+                    "address": "0xBF04"
+                },
+                {
+                    "pattern": "&0400",
+                    "occurrence": 0,
+                    "version": "4.18",
+                    "address": "0x0400"
+                },
+                {
+                    "pattern": "&BC90",
+                    "occurrence": 0,
+                    "version": "4.08.53",
+                    "address": "0xBC90"
+                },
+                {
+                    "pattern": "&BC94",
+                    "occurrence": 0,
+                    "version": "4.18",
+                    "address": "0xBC94"
+                },
+                {
+                    "pattern": "&0500",
+                    "occurrence": 0,
+                    "version": "4.18",
+                    "address": "0x0500"
+                },
+                {
+                    "pattern": "&BD90",
+                    "occurrence": 0,
+                    "version": "4.08.53",
+                    "address": "0xBD90"
+                },
+                {
+                    "pattern": "&BD94",
+                    "occurrence": 0,
+                    "version": "4.18",
+                    "address": "0xBD94"
+                },
+                {
+                    "pattern": "&0600",
+                    "occurrence": 0,
+                    "version": "4.18",
+                    "address": "0x0600"
+                }
+            ],
+            "glossary_links": [
+                {
+                    "pattern": "NFS",
+                    "occurrence": 0,
+                    "term": "NFS"
+                },
+                {
+                    "pattern": "ROM",
+                    "occurrence": 0,
+                    "term": "ROM"
+                },
+                {
+                    "pattern": "Tube",
+                    "occurrence": 0,
+                    "term": "Tube"
+                },
+                {
+                    "pattern": "OSBYTE",
+                    "occurrence": 0,
+                    "term": "OSBYTE"
+                },
+                {
+                    "pattern": "EVNTV",
+                    "occurrence": 0,
+                    "term": "EVNTV"
+                },
+                {
+                    "pattern": "Econet",
+                    "occurrence": 0,
+                    "term": "Econet"
+                },
+                {
+                    "pattern": "OSWORD",
+                    "occurrence": 0,
+                    "term": "OSWORD"
+                },
+                {
+                    "pattern": "MOS",
+                    "occurrence": 0,
+                    "term": "MOS"
+                },
+                {
+                    "pattern": "RXCB",
+                    "occurrence": 0,
+                    "term": "RXCB"
+                },
+                {
+                    "pattern": "FSCV",
+                    "occurrence": 0,
+                    "term": "FSCV"
+                },
+                {
+                    "pattern": "CSD",
+                    "occurrence": 0,
+                    "term": "CSD"
+                },
+                {
+                    "pattern": "relocated",
+                    "occurrence": 0,
+                    "term": "relocated code"
+                }
+            ]
+        }
+    ]
+}
