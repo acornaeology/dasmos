@@ -279,12 +279,13 @@ class TestRoundTripVia65C02:
         text = str(ir.render("beebasm"))
 
         assert "cpu 1" in text
-        # JMP (addr,X) renders with the indirect-X parens.
-        # Look for a jmp line containing both parens and ,X.
+        # JMP (addr,X) renders with the indirect-X parens. The
+        # renderer's default ``lower_case=True`` lowercases the
+        # suffix letter.
         jmp_lines = [
             line for line in text.splitlines()
-            if line.strip().startswith("jmp ") and "(" in line and ",X)" in line
+            if line.strip().startswith("jmp ") and "(" in line and ",x)" in line
         ]
         assert jmp_lines, (
-            f"expected `jmp (...,X)` in output:\n{text}"
+            f"expected `jmp (...,x)` in output:\n{text}"
         )

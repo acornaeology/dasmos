@@ -458,7 +458,9 @@ class TestPerAddressingModeFormatting:
 
     def test_zero_page_x(self, tmp_path):
         text = self._render(tmp_path, b"\xb5\x42\x60")  # LDA &42,X; RTS
-        assert "lda &42,X" in text
+        # Renderer default lower_case=True → register suffixes
+        # render lowercase. Beebasm parses both cases identically.
+        assert "lda &42,x" in text
 
     def test_absolute(self, tmp_path):
         text = self._render(tmp_path, b"\xad\x34\x12\x60")  # LDA &1234; RTS
@@ -466,11 +468,11 @@ class TestPerAddressingModeFormatting:
 
     def test_absolute_x(self, tmp_path):
         text = self._render(tmp_path, b"\xbd\x34\x12\x60")
-        assert "lda &1234,X" in text
+        assert "lda &1234,x" in text
 
     def test_absolute_y(self, tmp_path):
         text = self._render(tmp_path, b"\xb9\x34\x12\x60")
-        assert "lda &1234,Y" in text
+        assert "lda &1234,y" in text
 
     def test_indirect_jmp(self, tmp_path):
         # JMP (&1234); ... — the trace reads a pointer it can't
@@ -482,21 +484,23 @@ class TestPerAddressingModeFormatting:
     def test_indexed_indirect(self, tmp_path):
         # LDA (&42,X); RTS
         text = self._render(tmp_path, b"\xa1\x42\x60")
-        assert "lda (&42,X)" in text
+        assert "lda (&42,x)" in text
 
     def test_indirect_indexed(self, tmp_path):
         # LDA (&42),Y; RTS
         text = self._render(tmp_path, b"\xb1\x42\x60")
-        assert "lda (&42),Y" in text
+        assert "lda (&42),y" in text
 
     def test_implied(self, tmp_path):
         text = self._render(tmp_path, b"\x60")  # RTS
         assert "    rts" in text
 
     def test_accumulator_with_explicit_a(self, tmp_path):
-        # Beebasm wants ``rol A``; explicit_a=True on BeebasmRenderer.
+        # Beebasm wants the explicit accumulator marker ``rol a``;
+        # ``explicit_a=True`` on BeebasmRenderer. Default lower_case
+        # makes the marker lowercase to match the mnemonic.
         text = self._render(tmp_path, b"\x2a\x60")  # ROL A; RTS
-        assert "rol A" in text
+        assert "rol a" in text
 
 
 # ---------------------------------------------------------------------------

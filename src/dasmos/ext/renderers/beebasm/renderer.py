@@ -120,6 +120,7 @@ class BeebasmRenderer(TextRenderer):
         show_auto_label_footer: bool = True,
         comment_wrap_column: int = 87,
         show_char_literals: bool = True,
+        lower_case: bool = True,
         **kwargs,
     ):
         super().__init__(name=name, **kwargs)
@@ -183,6 +184,16 @@ class BeebasmRenderer(TextRenderer):
         # - the byte is the ASCII apostrophe (``'``) or double-quote
         #   (``"``), which would form ambiguous comment syntax.
         self.show_char_literals = show_char_literals
+        # When True (default), mnemonics and the indexed-mode register
+        # suffixes (``,X`` / ``,Y``) and the explicit-accumulator
+        # marker (``A``) all render in lowercase: ``sta &20,x``,
+        # ``rol a``. Matches py8dis-fork's lowercase house style and
+        # the dasmos ``Config.lower_case=True`` default. Set False
+        # for the all-uppercase form shown in the official beebasm
+        # documentation: ``STA &20,X``, ``ROL A``. Beebasm itself is
+        # case-insensitive in the assembly grammar, so both forms
+        # round-trip to identical bytes.
+        self.lower_case = lower_case
 
     @property
     def emit_boundary_labels(self) -> bool:
@@ -1410,7 +1421,7 @@ class BeebasmRenderer(TextRenderer):
         self, ir, binary_addr, opcode: Opcode, *, active_move=None,
     ) -> str:
         """Format a single instruction line."""
-        mnemonic = opcode.default_mnemonic()
+        mnemonic = self._apply_case(opcode.default_mnemonic())
         operand = self._render_operand(
             ir, binary_addr, opcode, active_move=active_move,
         )
@@ -1418,6 +1429,16 @@ class BeebasmRenderer(TextRenderer):
         if operand:
             return f"    {mnemonic} {operand}{char_hint}"
         return f"    {mnemonic}"
+
+    def _apply_case(self, text: str) -> str:
+        """Apply the renderer's ``lower_case`` setting to ``text``.
+
+        Used for tokens the renderer owns the casing of: mnemonics,
+        register-suffix letters (``X`` / ``Y``), the explicit-
+        accumulator marker (``A``). Labels, expressions, and
+        user-supplied data keep their author-supplied case.
+        """
+        return text.lower() if self.lower_case else text.upper()
 
     def _format_immediate_byte(self, value: int) -> str:
         """Render an 8-bit immediate operand byte.
@@ -1487,7 +1508,7 @@ class BeebasmRenderer(TextRenderer):
         if mode_name == "IMPLIED":
             return ""
         if mode_name == "ACCUMULATOR":
-            return "A" if self.explicit_a else ""
+            return self._apply_case("A") if self.explicit_a else ""
 
         # Resolve the unwrapped symbol (without mode-specific
         # punctuation like # or parens).
@@ -1496,26 +1517,32 @@ class BeebasmRenderer(TextRenderer):
             active_move=active_move,
         )
 
+        # Register-suffix letters owned by the renderer (X / Y) follow
+        # the ``lower_case`` setting. The user-resolved ``symbol``
+        # (label / expression / hex literal) keeps its own case.
+        x = self._apply_case("X")
+        y = self._apply_case("Y")
+
         # Wrap with mode-specific syntax.
         if mode_name == "IMMEDIATE":
             return f"#{symbol}"
         if mode_name in ("ZERO_PAGE", "ABSOLUTE", "RELATIVE"):
             return symbol
         if mode_name in ("ZERO_PAGE_X", "ABSOLUTE_X"):
-            return f"{symbol},X"
+            return f"{symbol},{x}"
         if mode_name in ("ZERO_PAGE_Y", "ABSOLUTE_Y"):
-            return f"{symbol},Y"
+            return f"{symbol},{y}"
         if mode_name == "INDIRECT":
             return f"({symbol})"
         if mode_name == "INDEXED_INDIRECT":  # (zp,X)
-            return f"({symbol},X)"
+            return f"({symbol},{x})"
         if mode_name == "INDIRECT_INDEXED":  # (zp),Y
-            return f"({symbol}),Y"
+            return f"({symbol}),{y}"
         # 65C02 additions:
         if mode_name == "ZP_INDIRECT":  # (zp)
             return f"({symbol})"
         if mode_name == "ABSOLUTE_INDIRECT_X":  # JMP (addr,X)
-            return f"({symbol},X)"
+            return f"({symbol},{x})"
 
         raise ValueError(
             f"BeebasmRenderer does not know how to render addressing mode "

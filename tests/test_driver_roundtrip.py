@@ -425,6 +425,68 @@ class TestAddressingModesViaSource:
             f"char annotation leaked through expression: {ldy_line!r}"
         )
 
+    def test_register_suffix_case_lowercase_by_default(
+        self, roundtrip_via_beebasm,
+    ):
+        # Indexed-mode register suffixes match the mnemonic case. The
+        # renderer default is lowercase (mirroring py8dis-fork and
+        # ``Config.lower_case=True``), so ``,Y`` is rendered ``,y``
+        # and the indirect-indexed form ``(zp),Y`` becomes ``(zp),y``.
+        # Beebasm itself is case-insensitive in the assembly grammar,
+        # so both forms round-trip to identical bytes.
+        source = """
+            org &8000
+        .start
+            sta &20,X
+            sta (&40),Y
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            # Auto-labels would replace ``&20`` / ``&40`` with
+            # synthesised names like ``data_0020`` and obscure the
+            # suffix-letter check. Pin the literal hex form.
+            d.auto_labels_enabled = False
+            d.entry(0x8000, name="start")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        assert "sta &20,x" in text
+        assert "sta (&40),y" in text
+
+    def test_uppercase_mode_via_renderer_override(
+        self, roundtrip_via_beebasm,
+    ):
+        # Constructor override flips both mnemonics AND register
+        # suffixes to uppercase, matching beebasm's documentation
+        # style. Same byte output (beebasm is case-insensitive).
+        from dasmos.disassembler import Disassembler
+        from dasmos.ext.renderers.beebasm.renderer import BeebasmRenderer
+        # Build the rom inline; no need for the
+        # roundtrip_via_beebasm helper since we're overriding the
+        # default renderer instance.
+        rom_bytes = bytes([0x9d, 0x20, 0x00, 0x91, 0x40, 0x60])  # sta &0020,X / sta (&40),Y / rts
+        from pathlib import Path
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            rom_path = Path(td) / "p.bin"
+            rom_path.write_bytes(rom_bytes)
+            d = Disassembler.create(cpu="6502")
+            # Disable auto-labels so the literal hex shape stays
+            # visible in the output and we can pin the suffix-case.
+            d.auto_labels_enabled = False
+            d.load(rom_path, 0x8000)
+            d.entry(0x8000, name="start")
+            ir = d.disassemble()
+            renderer = BeebasmRenderer(lower_case=False)
+            output = str(renderer.render(ir))
+        assert "STA &0020,X" in output
+        assert "STA (&40),Y" in output
+        # The user-supplied label name keeps its case (``start``,
+        # not ``START``); the renderer only owns instruction-token
+        # casing.
+        assert ".start" in output
+
     def test_zero_page_modes_round_trip(self, roundtrip_via_beebasm):
         # Pin operand SHAPE (`,X` / `,Y`); auto-label generation would
         # replace the literal hex with a synthesised symbol, so disable
@@ -445,8 +507,10 @@ class TestAddressingModesViaSource:
 
         text = roundtrip_via_beebasm(source, 0x8000, configure)
         assert "lda &10" in text
-        assert "sta &20,X" in text
-        assert "stx &30,Y" in text
+        # Renderer default is lower_case=True so register suffixes
+        # render lowercase. Beebasm parses both cases the same.
+        assert "sta &20,x" in text
+        assert "stx &30,y" in text
 
     def test_indirect_modes_round_trip(self, roundtrip_via_beebasm):
         source = """
@@ -463,8 +527,8 @@ class TestAddressingModesViaSource:
             d.entry(0x8000, name="start")
 
         text = roundtrip_via_beebasm(source, 0x8000, configure)
-        assert "lda (&30,X)" in text
-        assert "sta (&40),Y" in text
+        assert "lda (&30,x)" in text
+        assert "sta (&40),y" in text
 
     def test_accumulator_mode_round_trips(self, roundtrip_via_beebasm):
         # All four shift/rotate ops in accumulator mode. Beebasm
@@ -483,7 +547,7 @@ class TestAddressingModesViaSource:
             source, 0x8000,
             lambda d: d.entry(0x8000, name="start"),
         )
-        for shift in ("asl A", "lsr A", "rol A", "ror A"):
+        for shift in ("asl a", "lsr a", "rol a", "ror a"):
             assert shift in text
 
 
@@ -768,7 +832,7 @@ class TestExpressionOverrides:
             d.expr(0x8001, "&1230 + 4")
 
         text = roundtrip_via_beebasm(source, 0x8000, configure)
-        assert "lda &1230 + 4,X" in text
+        assert "lda &1230 + 4,x" in text
 
 
 @pytest.mark.beebasm
