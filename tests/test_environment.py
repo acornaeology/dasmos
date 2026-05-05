@@ -658,3 +658,41 @@ class TestAcornMosInlineAutoComments:
         )
         ir = d.disassemble()
         assert self._inline_comment_at(ir, 0x1002) is None
+
+    def test_osbyte_attaches_prefixed_inline_comment(self, tmp_path):
+        # LDA #&7c ; JSR osbyte ; RTS — &7c is osbyte_clear_escape.
+        # Prefixed form anchors the description: a bare "clear escape
+        # condition" floats free of context, "osbyte: clear escape
+        # condition" reads as "OS call: clear escape condition".
+        d = self._make(
+            tmp_path,
+            bytes([0xa9, 0x7c, 0x20, 0xf4, 0xff, 0x60]),
+        )
+        ir = d.disassemble()
+        assert self._inline_comment_at(ir, 0x1002) == (
+            "osbyte: clear escape"
+        )
+
+    def test_osword_attaches_prefixed_inline_comment(self, tmp_path):
+        # LDA #&05 ; JSR osword ; RTS — &05 is osword_read_io_memory.
+        # Override table maps it to "read I/O memory" (with the
+        # acronym capitalised and slash) — overrides preserve the
+        # body's casing but the prefix is still added.
+        d = self._make(
+            tmp_path,
+            bytes([0xa9, 0x05, 0x20, 0xf1, 0xff, 0x60]),
+        )
+        ir = d.disassemble()
+        assert self._inline_comment_at(ir, 0x1002) == (
+            "osword: read I/O memory"
+        )
+
+    def test_osbyte_unknown_value_attaches_no_inline_comment(self, tmp_path):
+        # LDA #&20 (not in OSBYTE_ENUM) ; JSR osbyte ; RTS — same
+        # silent-on-unknown rule as the smaller analyzers.
+        d = self._make(
+            tmp_path,
+            bytes([0xa9, 0x20, 0x20, 0xf4, 0xff, 0x60]),
+        )
+        ir = d.disassemble()
+        assert self._inline_comment_at(ir, 0x1002) is None

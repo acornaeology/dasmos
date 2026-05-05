@@ -99,6 +99,88 @@ EVENT_NAMES_TERSE: dict[int, str] = {
 }
 
 
+# OSBYTE / OSWORD inline-comment overrides. The default strategy is
+# to derive the inline-comment text mechanically from the enum name
+# by stripping the ``osbyte_`` / ``osword_`` prefix and replacing
+# underscores with spaces — most enum names produce a sensible
+# reading-fragment that way (``osbyte_read_os_version`` →
+# ``read os version``, ``osbyte_select_input_stream`` →
+# ``select input stream``). The override table catches the few
+# entries where the mechanical strip produces something awkward or
+# misleading (e.g. ``osbyte_vsync`` mechanically becomes ``vsync``,
+# but the action *waits for* vsync — the imperative reading is
+# important).
+OSBYTE_INLINE_OVERRIDES: dict[int, str] = {
+    0x13: "wait for vsync",
+}
+
+OSWORD_INLINE_OVERRIDES: dict[int, str] = {
+    0x05: "read I/O memory",
+    0x06: "write I/O memory",
+    0x0e: "read CMOS clock",
+    0x0f: "write CMOS clock",
+}
+
+
+def _derive_inline_body_from_enum_name(
+    enum_name: str,
+    prefix: str,
+) -> str:
+    """Build the action-description body of an inline comment from
+    an enum entry's name by stripping ``<prefix>_`` and replacing
+    underscores with spaces. Returns just the body — the call-name
+    prefix (``osbyte:`` / ``osword:``) is added separately by
+    :func:`_build_inline_table`.
+    """
+    head = f"{prefix}_"
+    body = enum_name[len(head):] if enum_name.startswith(head) else enum_name
+    return body.replace("_", " ")
+
+
+def _build_inline_table(
+    enum: dict[int, str],
+    prefix: str,
+    overrides: dict[int, str],
+) -> dict[int, str]:
+    """Build a value→inline-comment table from an OS-call enum.
+
+    The default body is mechanically derived from the enum entry's
+    name (strip ``<prefix>_``, underscores → spaces). Each entry is
+    then prepended with ``<prefix>: `` so the rendered comment
+    reads e.g. ``osbyte: select input stream`` — the call-name
+    prefix anchors the action description in context (without it,
+    a comment like "select input stream" floats free of the OS-
+    call call-site and can be misread as part of surrounding code).
+
+    The OSBYTE / OSWORD action vocabularies are large and varied
+    enough that the prefix carries real information. Smaller
+    enums whose action names are already self-anchored
+    (``open file for input``, ``read filenames in current
+    directory``) don't need this prefix and use a hand-crafted
+    table instead.
+
+    ``overrides`` takes precedence over the mechanical body, but
+    the ``<prefix>: `` prepend still happens — write override
+    bodies WITHOUT the prefix.
+    """
+    out: dict[int, str] = {}
+    for value, name in enum.items():
+        if value in overrides:
+            body = overrides[value]
+        else:
+            body = _derive_inline_body_from_enum_name(name, prefix)
+        out[value] = f"{prefix}: {body}"
+    return out
+
+
+OSBYTE_INLINE = _build_inline_table(
+    OSBYTE_ENUM, "osbyte", OSBYTE_INLINE_OVERRIDES,
+)
+OSWORD_INLINE = _build_inline_table(
+    OSWORD_ENUM, "osword", OSWORD_INLINE_OVERRIDES,
+)
+
+
 def _attach_inline_jsr_comment(
     disassembler: "Disassembler",
     jsr_binary_addr: int,
@@ -221,6 +303,12 @@ def osword_analyzer(
             a_operand = a.previous_load_imm_addr + 1
             if disassembler.expressions.get_or_none(a_operand) is None:
                 disassembler.expr(a_operand, a_name)
+            # Inline auto-comment at the JSR site.
+            inline_text = OSWORD_INLINE.get(a.value)
+            if inline_text is not None:
+                _attach_inline_jsr_comment(
+                    disassembler, jsr_binary_addr, inline_text,
+                )
 
     # Secondary: (X, Y) → labelled address.
     _maybe_register_xy_address(disassembler, state_before_jsr)
@@ -294,6 +382,12 @@ def osbyte_analyzer(
             a_operand = a.previous_load_imm_addr + 1
             if disassembler.expressions.get_or_none(a_operand) is None:
                 disassembler.expr(a_operand, a_name)
+            # Inline auto-comment at the JSR site.
+            inline_text = OSBYTE_INLINE.get(a_value)
+            if inline_text is not None:
+                _attach_inline_jsr_comment(
+                    disassembler, jsr_binary_addr, inline_text,
+                )
             # Secondary: for OSBYTE actions with an X-register
             # enumerated argument, substitute that too.
             x_enum = OSBYTE_X_SECONDARY_ENUMS.get(a_value)
