@@ -118,6 +118,7 @@ class BeebasmRenderer(TextRenderer):
         default_byte_cols: int = 8,
         default_word_cols: int = 4,
         show_auto_label_footer: bool = True,
+        comment_wrap_column: int = 87,
         **kwargs,
     ):
         super().__init__(name=name, **kwargs)
@@ -164,6 +165,14 @@ class BeebasmRenderer(TextRenderer):
         # only controls whether THIS renderer surfaces them in the
         # footer.
         self.show_auto_label_footer = show_auto_label_footer
+        # Column at which Markdown-rendered paragraphs in standalone
+        # narrative text (banner descriptions, future word-wrapped
+        # comments) reflow. Match py8dis-fork's default of 87 so
+        # ported drivers produce visually-similar wrapping. The
+        # ``;`` prefix and one space are NOT counted in this column —
+        # ``textwrap.fill`` operates on the raw text and the ``; ``
+        # is added per-line at emit time.
+        self.comment_wrap_column = comment_wrap_column
 
     @property
     def emit_boundary_labels(self) -> bool:
@@ -1305,9 +1314,15 @@ class BeebasmRenderer(TextRenderer):
 
         Layout: a separator line of :data:`BANNER_SEPARATOR_WIDTH`
         asterisks, the title, a blank comment line, then the
-        description. Description text is emitted with explicit line
-        breaks preserved (no word-wrap in this first cut — that lands
-        with the markdown_asm port).
+        description.
+
+        Both ``title`` and ``description`` go through the Markdown-to-
+        asm-text converter (``dasmos.core.markdown_asm``), so backticks,
+        emphasis, address-link URIs, HTML entities (``&rarr;`` /
+        ``&amp;`` / numeric forms), and structured blocks (lists,
+        tables) flatten to plaintext for the asm output. The structured
+        JSON renderer keeps the source markdown verbatim so downstream
+        HTML processors can resolve anchors.
 
         ``on_entry`` / ``on_exit`` register-usage dicts (when present)
         each render as a ``; On Entry:`` / ``; On Exit:`` sub-block,
@@ -1315,15 +1330,23 @@ class BeebasmRenderer(TextRenderer):
         The dict round-trips through the IR as structured data so a
         future JSON renderer can emit it as a real dict.
         """
+        from dasmos.core.markdown_asm import markdown_to_asm_text
+
         prefix = self.comment_prefix()
         sep = f"{prefix} " + ("*" * BANNER_SEPARATOR_WIDTH)
         out: list[str] = [sep]
         if banner.title:
-            out.append(f"{prefix} {banner.title}")
+            # Titles are conceptually a single inline phrase; collapse
+            # any incidental wrap-style whitespace and strip Markdown.
+            title_text = markdown_to_asm_text(banner.title, inline=True)
+            out.append(f"{prefix} {title_text}")
         if banner.description:
             if banner.title:
                 out.append(prefix)
-            for line in banner.description.split("\n"):
+            description_text = markdown_to_asm_text(
+                banner.description, wrap_width=self.comment_wrap_column,
+            )
+            for line in description_text.split("\n"):
                 if line:
                     out.append(f"{prefix} {line}")
                 else:

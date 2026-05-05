@@ -2488,16 +2488,141 @@ class TestSubroutineAndBanner:
             d.subroutine(
                 0x8000, name="ram_test",
                 title="Scan pages from &1800 upward; record top of RAM",
+                # Two paragraphs separated by a blank line. Within each
+                # paragraph, source line breaks are Markdown soft breaks
+                # and reflow at the renderer's comment_wrap_column.
                 description=(
                     "Probes pages upward from &1800 by writing &AA and &55\n"
-                    "patterns through mem_ptr_lo/mem_ptr_hi (&80/&81)."
+                    "patterns through mem_ptr_lo/mem_ptr_hi (&80/&81).\n"
+                    "\n"
+                    "Highest verifying page lands in top_ram_page (&82)."
                 ),
             )
 
         text = roundtrip_via_beebasm(source, 0x8000, configure)
         assert "; Scan pages from &1800 upward" in text
-        assert "; Probes pages upward from &1800" in text
-        assert "; patterns through mem_ptr_lo/mem_ptr_hi" in text
+        # First paragraph survives intact — content checks, not exact
+        # line-break positions (those depend on wrap column).
+        assert "Probes pages upward from &1800" in text
+        assert "patterns through" in text
+        assert "mem_ptr_lo/mem_ptr_hi" in text
+        assert "(&80/&81)." in text
+        # Second paragraph appears after a separator (blank ``;`` line).
+        assert "Highest verifying page lands in top_ram_page (&82)." in text
+
+    def test_banner_title_strips_markdown(
+        self, roundtrip_via_beebasm,
+    ):
+        # Banner titles support inline Markdown (backticks, bold,
+        # address links). The asm renderer must flatten them — beebasm
+        # has no concept of markup, and humans want clean prose.
+        source = """
+            org &8000
+        .reset
+            cli
+            rts
+        save "step1.bin", reset, P%
+        """
+
+        def configure(d):
+            d.subroutine(
+                0x8000, name="reset",
+                title="**reset** — `LDA #&00` entry [point](address:8000)",
+            )
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        assert "; reset — LDA #&00 entry point" in text
+        # No raw Markdown markers should reach the asm output. Look
+        # only at the title line — the banner separator is itself a
+        # row of ``*`` characters and would falsely match ``**``.
+        title_line = next(
+            line for line in text.splitlines()
+            if "reset — LDA" in line
+        )
+        assert "`" not in title_line
+        assert "**" not in title_line
+        assert "](address:" not in title_line
+
+    def test_banner_description_strips_markdown(
+        self, roundtrip_via_beebasm,
+    ):
+        # Banner descriptions support full block Markdown (paragraphs,
+        # lists, tables, address links). The asm renderer must strip
+        # all formatting markers and render structured blocks (lists,
+        # tables) in their plaintext-equivalent layout.
+        source = """
+            org &8000
+        .data
+            equb &11, &22
+        save "step1.bin", data, P%
+        """
+
+        def configure(d):
+            d.label(0x8000, "data")
+            d.byte(0x8000, 2)
+            d.banner(
+                0x8000,
+                title="Lookup table",
+                description=(
+                    "Probes pages from `&1800` upward, writing "
+                    "`&AA` and `&55` patterns through "
+                    "`mem_ptr_lo`/`mem_ptr_hi` (`&80`/`&81`).\n\n"
+                    "The **anti-bus-residue defence** uses an "
+                    "[INC](address:8000?hex) on `&00`."
+                ),
+            )
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        before_data = text.split(".data")[0]
+        assert "&1800" in before_data
+        assert "&AA" in before_data and "&55" in before_data
+        assert "anti-bus-residue defence" in before_data
+        assert "INC (&8000)" in before_data
+        # Markdown markers must NOT survive into the asm output —
+        # restrict the check to the description content lines so the
+        # banner separator (a row of ``*``) doesn't trigger a false
+        # ``**`` match.
+        description_lines = [
+            line for line in before_data.splitlines()
+            if line.startswith(";") and (
+                "Probes" in line
+                or "anti-bus-residue" in line
+                or "INC" in line
+            )
+        ]
+        for line in description_lines:
+            assert "`" not in line, f"backtick leaked: {line!r}"
+            assert "**" not in line, f"bold marker leaked: {line!r}"
+            assert "](address:" not in line, f"link URI leaked: {line!r}"
+
+    def test_banner_html_entities_unescaped(
+        self, roundtrip_via_beebasm,
+    ):
+        # HTML entities embedded in Markdown source (a common artefact
+        # of authors who copy from HTML-rendering tools) get expanded
+        # to their Unicode equivalents in the asm output.
+        source = """
+            org &8000
+        .data
+            equb &11
+        save "step1.bin", data, P%
+        """
+
+        def configure(d):
+            d.label(0x8000, "data")
+            d.byte(0x8000, 1)
+            d.banner(
+                0x8000,
+                title="Direction: A &rarr; B",
+                description="Frame travels from A &amp; B side to A side.",
+            )
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        before_data = text.split(".data")[0]
+        assert "A → B" in before_data
+        assert "A & B" in before_data
+        assert "&rarr;" not in before_data
+        assert "&amp;" not in before_data
 
     def test_banner_visual_only_no_entry_point(
         self, roundtrip_via_beebasm,

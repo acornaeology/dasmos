@@ -178,3 +178,46 @@ class TestMarkdownToAsmTextBlock:
         assert "| Use" in out
         assert "| A" in out
         assert "| X" in out
+
+
+class TestHtmlEntityUnescape:
+    """HTML named / numeric entities in Markdown source — expanded to
+    their Unicode equivalents in the asm output. Authors mix raw
+    arrows (``→``) and entity refs (``&rarr;``) interchangeably; the
+    asm output should normalise to the raw character.
+    """
+
+    def test_named_entity_arrow_becomes_unicode(self):
+        assert markdown_to_asm_text("A &rarr; B", inline=True) == "A → B"
+
+    def test_named_entity_amp_becomes_ampersand(self):
+        # Ampersand is the canonical case — `&amp;` → `&`. Important
+        # because Markdown source authored alongside HTML often
+        # double-escapes when the original asm semantics use ``&``
+        # (the BBC hex sigil) literally.
+        assert markdown_to_asm_text("A &amp; B", inline=True) == "A & B"
+
+    def test_decimal_numeric_entity_arrow(self):
+        # &#8594; is the decimal numeric form of →.
+        assert markdown_to_asm_text("A &#8594; B", inline=True) == "A → B"
+
+    def test_hex_numeric_entity_arrow(self):
+        # &#x2192; is the hex numeric form of →.
+        assert markdown_to_asm_text("A &#x2192; B", inline=True) == "A → B"
+
+    def test_entity_inside_table_cell(self):
+        # The originally-reported case: a Markdown table whose cells
+        # contain ``&rarr;`` should render with ``→`` in the pipe
+        # layout.
+        text = (
+            "| stage | direction |\n"
+            "|-------|-----------|\n"
+            "| SCOUT | A &rarr; B |\n"
+        )
+        out = markdown_to_asm_text(text)
+        assert "A → B" in out
+        assert "&rarr;" not in out
+
+    def test_unicode_arrow_passes_through_untouched(self):
+        # Already-Unicode arrows must NOT be double-processed.
+        assert markdown_to_asm_text("A → B", inline=True) == "A → B"
