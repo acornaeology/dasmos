@@ -113,6 +113,120 @@ class TestItemEmission:
         assert jsr["target_label"] == "osbyte"
         assert jsr["operand"] == "osbyte"
 
+    def test_format_hint_char_renders_quoted_and_surfaces_metadata(
+        self, tmp_path,
+    ):
+        # ``FormatHint.CHAR`` declares "this byte is intended as an
+        # ASCII character". The JSON renderer translates this into:
+        # - operand text using a universal char-literal form (``'g'``
+        #   — beebasm-style, also valid in most 6502 dialects);
+        # - a ``format_hint: "char"`` field on the item, so consumers
+        #   that want to render a different visual representation
+        #   (e.g. an HTML page showing both the hex and the char) have
+        #   the abstract semantic available.
+        from dasmos.core.format_hint import FormatHint
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0xa0, 0x67, 0x60]))  # ldy #&67 ; rts
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.entry(0x8000)
+        d.char_literal(0x8001)
+        items = d.disassemble().render(JsonRenderer()).data["items"]
+        ldy = items[0]
+        assert ldy["operand"] == "#'g'"
+        assert ldy["format_hint"] == "char"
+
+    def test_format_hint_decimal_forces_base_10_in_operand(self, tmp_path):
+        from dasmos.core.format_hint import FormatHint
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0xa9, 0xff, 0x60]))  # lda #&ff ; rts
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.entry(0x8000)
+        d.format_hint(0x8001, FormatHint.DECIMAL)
+        items = d.disassemble().render(JsonRenderer()).data["items"]
+        assert items[0]["operand"] == "#255"
+        assert items[0]["format_hint"] == "decimal"
+
+    def test_format_hint_hex_overrides_small_int_decimal(self, tmp_path):
+        from dasmos.core.format_hint import FormatHint
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0xa9, 0x07, 0x60]))  # lda #&07 ; rts
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.entry(0x8000)
+        d.format_hint(0x8001, FormatHint.HEX)
+        items = d.disassemble().render(JsonRenderer()).data["items"]
+        assert items[0]["operand"] == "#&07"
+        assert items[0]["format_hint"] == "hex"
+
+    def test_format_hint_binary_produces_percent_form(self, tmp_path):
+        from dasmos.core.format_hint import FormatHint
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0xa9, 0xaa, 0x60]))  # lda #&aa ; rts
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.entry(0x8000)
+        d.format_hint(0x8001, FormatHint.BINARY)
+        items = d.disassemble().render(JsonRenderer()).data["items"]
+        assert items[0]["operand"] == "#%10101010"
+        assert items[0]["format_hint"] == "binary"
+
+    def test_format_hint_octal_warns_and_falls_back_in_json(self, tmp_path):
+        # Like the beebasm renderer, JSON's operand syntax (modeled
+        # on beebasm) has no octal sigil. Best-effort: emit decimal
+        # and warn; the consumer still sees ``format_hint: "octal"``
+        # in the metadata, so a sophisticated reader can render its
+        # own octal form from the byte value.
+        import warnings as _warnings
+        from dasmos.core.format_hint import FormatHint
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0xa9, 0xff, 0x60]))
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.entry(0x8000)
+        d.format_hint(0x8001, FormatHint.OCTAL)
+        ir = d.disassemble()
+        with _warnings.catch_warnings(record=True) as caught:
+            _warnings.simplefilter("always")
+            items = ir.render(JsonRenderer()).data["items"]
+        assert items[0]["operand"] == "#255"
+        assert items[0]["format_hint"] == "octal"
+        warning_messages = [str(w.message) for w in caught]
+        assert any("octal" in m.lower() for m in warning_messages)
+
+    def test_no_format_hint_field_when_unset(self, tiny_disassembler):
+        # Items without an explicit hint must NOT emit the field at
+        # all (vs. emitting it with a null / placeholder value),
+        # matching the schema-thrift convention used elsewhere in
+        # the JSON output.
+        items = tiny_disassembler.render(JsonRenderer()).data["items"]
+        for item in items:
+            assert "format_hint" not in item
+
+    def test_format_hint_char_non_printable_falls_back_with_warning(
+        self, tmp_path,
+    ):
+        import warnings as _warnings
+        from dasmos.core.format_hint import FormatHint
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0xa9, 0x07, 0x60]))  # non-printable
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.entry(0x8000)
+        d.char_literal(0x8001)
+        ir = d.disassemble()
+        with _warnings.catch_warnings(record=True) as caught:
+            _warnings.simplefilter("always")
+            items = ir.render(JsonRenderer()).data["items"]
+        # Operand fell back to plain decimal (small-int rule kicks in).
+        assert items[0]["operand"] == "#7"
+        # Hint metadata IS still surfaced — the consumer learns "the
+        # user wanted a char here" even though no clean literal exists.
+        assert items[0]["format_hint"] == "char"
+        warning_messages = [str(w.message) for w in caught]
+        assert any("char" in m.lower() and "&07" in m for m in warning_messages)
+
     def test_immediate_uses_decimal_below_10_hex_above(self, tmp_path):
         # py8dis-fork ``mainformatter.uint_formatter`` rule: decimal
         # for n < 10, hex for n >= 10. The JsonRenderer mirrors this

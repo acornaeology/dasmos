@@ -35,10 +35,12 @@ mnemonic/comment-prefix concerns), so it derives directly from
 
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING, Any
 
 from dasmos.core.annotations import Align, Annotation, Banner, Comment
 from dasmos.core.classification import Byte, Fill, String, Word
+from dasmos.core.format_hint import FormatHint
 from dasmos.core.memory import BinaryAddr, RuntimeAddr
 from dasmos.cpu import Opcode, OperandKind
 from dasmos.output import StructuredOutput
@@ -339,6 +341,15 @@ class JsonRenderer(Renderer[StructuredOutput]):
         operand = self._operand_text(ir, binary_addr, opcode)
         if operand is not None:
             entry["operand"] = operand
+        # Surface any FormatHint registered at the operand byte as
+        # structured metadata. Consumers (e.g. the acornaeology site
+        # generator) get the abstract semantic alongside the rendered
+        # text, so they can present their own visual representation
+        # if desired (HTML char glyph, hex+decimal both, etc.).
+        operand_addr = binary_addr + 1
+        hint = ir.format_hints.get_or_none(operand_addr)
+        if hint is not None:
+            entry["format_hint"] = hint.value
         target = self._target_runtime(ir, binary_addr, opcode)
         if target is not None:
             entry["target"] = target
@@ -391,7 +402,14 @@ class JsonRenderer(Renderer[StructuredOutput]):
         if expr is not None:
             symbol = ("#" + expr) if kind is OperandKind.IMMEDIATE else expr
         elif kind is OperandKind.IMMEDIATE:
-            symbol = "#" + self._small_int(ir.memory.get_u8(operand_addr))
+            value = ir.memory.get_u8(operand_addr)
+            hint = ir.format_hints.get_or_none(operand_addr)
+            if hint is not None:
+                symbol = "#" + self._format_immediate_with_hint(
+                    hint, value, operand_addr,
+                )
+            else:
+                symbol = "#" + self._small_int(value)
         elif kind is OperandKind.ADDRESS_8:
             v = ir.memory.get_u8(operand_addr)
             symbol = self._addr_label_or_hex(ir, v, width=8)
@@ -435,6 +453,71 @@ class JsonRenderer(Renderer[StructuredOutput]):
         if n < 10:
             return str(n)
         return f"&{n:02x}"
+
+    def _format_immediate_with_hint(
+        self, hint: FormatHint, value: int, operand_addr: int,
+    ) -> str:
+        """Translate a :class:`FormatHint` to JSON-renderer operand
+        text (without the ``#`` prefix — the caller adds that).
+
+        The JSON renderer's syntax is beebasm-flavoured (``&`` for
+        hex, ``%`` for binary) so the rendered text reads naturally
+        for the typical BBC/6502 audience and matches the asm output
+        from the beebasm renderer at the same byte. Hints are
+        best-effort: this dispatcher emits a ``UserWarning`` and
+        falls back to a numeric form when the hint can't be
+        expressed.
+        """
+        if hint is FormatHint.CHAR:
+            text = self._render_char_for_explicit_hint(value)
+            if text is not None:
+                return text
+            warnings.warn(
+                f"FormatHint.CHAR at &{operand_addr:04x} can't be "
+                f"expressed as a character literal for byte "
+                f"&{value:02x} (non-printable); falling back to "
+                f"a numeric literal.",
+                stacklevel=2,
+            )
+            return self._small_int(value)
+        if hint is FormatHint.DECIMAL:
+            return str(value)
+        if hint is FormatHint.HEX:
+            return f"&{value:02x}"
+        if hint is FormatHint.BINARY:
+            return f"%{value:08b}"
+        if hint is FormatHint.OCTAL:
+            warnings.warn(
+                f"FormatHint.OCTAL at &{operand_addr:04x} — JSON "
+                f"renderer has no octal sigil; falling back to "
+                f"decimal {value} (octal {value:o}). Consumers can "
+                f"read the ``format_hint: \"octal\"`` field on the "
+                f"item to render their own representation.",
+                stacklevel=2,
+            )
+            return str(value)
+        raise NotImplementedError(
+            f"JsonRenderer doesn't yet handle FormatHint.{hint.name}"
+        )
+
+    @staticmethod
+    def _render_char_for_explicit_hint(value: int) -> str | None:
+        """Best-effort character-literal text for the JSON renderer.
+
+        Uses the universal ``'c'`` form (works for nearly every
+        printable byte). The double-quote (``0x22``) renders as
+        ``'"'`` (single-quoted double-quote, unambiguous). The
+        apostrophe (``0x27``) has no clean ``'c'`` form, so this
+        method returns ``None`` for it (caller falls back to a
+        numeric literal with a warning).
+
+        Non-printable bytes also return ``None``.
+        """
+        if not (0x20 <= value <= 0x7E):
+            return None
+        if value == 0x27:
+            return None
+        return f"'{chr(value)}'"
 
     def _addr_label_or_hex(self, ir, addr: int, *, width: int) -> str:
         label = ir.labels.get_label(addr)
