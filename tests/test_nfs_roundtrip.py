@@ -134,8 +134,9 @@ class TestNfsPorterEndToEnd:
 
 # History (lower as fidelity gaps close):
 #   29 — first measured value, after moves-first emission landed.
-#   12 — after ``acorn_bbc_hardware`` Environment landed (closed the
-#        BBC hardware label vocabulary).
+#   12 — after ``acorn_model_b_hardware`` Environment landed (closed
+#        the BBC hardware label vocabulary; was named
+#        ``acorn_bbc_hardware`` before the Master/Model B split).
 #   32 — Phase 4.1 OSBYTE-hook port (backward-peek heuristic).
 #   11 — Phase 4.2 full CPU-state tracker (held through 4.3-4.5).
 #        Residual is generic comment-text words from py8dis
@@ -150,8 +151,8 @@ MAX_COMMENT_TOKENS_DROPPED = 11
 #   .subroutine, OS-call entries registered as is_entry_point=False
 #   subs in acorn_mos):
 #     constants 13 (the per-OSBYTE/OSWORD value constants live in
-#     py8dis's ``acorn`` module — pending acorn_bbc_hardware and the
-#     OS-call enum port).
+#     py8dis's ``acorn`` module — pending acorn_model_b_hardware and
+#     the OS-call enum port).
 #     subroutines 0 (every py8dis-emitted sub address is now also
 #     emitted by dasmos).
 #     external_labels 19 (BBC hardware gap unchanged).

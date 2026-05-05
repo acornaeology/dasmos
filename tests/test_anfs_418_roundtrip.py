@@ -76,6 +76,10 @@ class TestAnfs418PorterEndToEnd:
         assert hashlib.md5(rom).hexdigest() == ROM_MD5
         assert len(rom) == ROM_SIZE
 
+        # ANFS is a pure network filing system — it doesn't touch
+        # the floppy disc controller, so no FDC env is opted in.
+        # (DFS / ADFS / DNFS ROMs would, depending on which chip
+        # they target.)
         ported_src = _porter.port(ORIGINAL_DRIVER_PATH.read_text(encoding="utf-8"))
         ported_filepath = tmp_path / "ported_driver.py"
         ported_filepath.write_text(ported_src, encoding="utf-8")
@@ -128,8 +132,15 @@ class TestAnfs418PorterEndToEnd:
 # annotations dasmos doesn't emit (``american``, ``master``,
 # ``internal``, ``terminal``, …) plus a couple of URL fragments
 # py8dis embeds in narrative comments (``beebwiki``, ``https``)
-# and one specific hex address.
-MAX_COMMENT_TOKENS_DROPPED = 13
+# and one specific hex address. ``fdc_1770_data`` is a deliberate
+# divergence: py8dis's ``bbc()`` registered the 1770 FDC names
+# defensively even for ROMs that don't touch the FDC, so the
+# label appeared in the reference equate header. ANFS is a pure
+# network filing system — it does NOT touch the FDC — so dasmos
+# correctly omits the name. The token thus appears in the py8dis
+# reference but not in dasmos output, contributing one more to
+# this ratchet.
+MAX_COMMENT_TOKENS_DROPPED = 14
 
 _COMMENT_TOKEN_RE = re.compile(r"[a-z_][a-z_0-9]{3,}")
 
@@ -153,6 +164,7 @@ def _run_dasmos_driver(tmp_path) -> Path:
     """Port the ANFS 4.18 driver via py8dis2dasmos, run it, return
     the output dir.
     """
+    # ANFS is a pure network filing system — no FDC env needed.
     ported_src = _porter.port(ORIGINAL_DRIVER_PATH.read_text(encoding="utf-8"))
     ported_filepath = tmp_path / "ported_driver.py"
     ported_filepath.write_text(ported_src, encoding="utf-8")

@@ -19,8 +19,11 @@ from dasmos.environment import (
     environment_names,
     environment_type,
 )
-from dasmos.ext.environments.acorn_bbc_hardware import (
-    AcornBbcHardwareEnvironment,
+from dasmos.ext.environments.acorn_master_hardware import (
+    AcornMasterHardwareEnvironment,
+)
+from dasmos.ext.environments.acorn_model_b_hardware import (
+    AcornModelBHardwareEnvironment,
 )
 from dasmos.ext.environments.acorn_mos import AcornMosEnvironment
 
@@ -353,27 +356,29 @@ class TestAcornSidewaysRom:
         assert "rom_header" in d.labels.get_label(0x8000).explicit_name_texts()
 
 
-class TestAcornBbcHardwareEnvironment:
-    """BBC Micro hardware-register Environment: registers the
-    memory-mapped I/O label set py8dis-fork's
-    ``hardware(MACHINE_BBC)`` installs (CRTC, ACIA, station ID,
-    video ULA, ROMSEL, the two VIAs, FDC, Econet ADLC, ADC, Tube
-    control, CUBE Tube). Closes the per-operand resolution gap for
-    any disassembled BBC ROM that touches hardware (NFS-3.65, Tube
-    Client, Econet Bridge, …).
+class TestAcornModelBHardwareEnvironment:
+    """BBC Model B / B+ hardware-register Environment: registers the
+    memory-mapped I/O label set for the Model B family — the shared
+    BBC-line block (CRTC, ACIA, station ID, video ULA, ROMSEL, the
+    two VIAs, Econet ADLC, ADC, Tube control, CUBE Tube, Fred-bus
+    SCSI). FDC registers live in the orthogonal :mod:`acorn_fdc_8271`
+    / :mod:`acorn_fdc_1770` envs and are NOT included here — a Model B
+    can be fitted with either chip. Closes the per-operand resolution
+    gap for any disassembled Model B ROM that touches hardware
+    (NFS-3.65, Tube Client, Econet Bridge, …).
     """
 
     def setup_method(self):
         self.d = Disassembler.create(
-            cpu="6502", environments=["acorn_bbc_hardware"],
+            cpu="6502", environments=["acorn_model_b_hardware"],
         )
 
     def test_loadable_via_stevedore(self):
-        env = create_environment("acorn_bbc_hardware")
-        assert isinstance(env, AcornBbcHardwareEnvironment)
+        env = create_environment("acorn_model_b_hardware")
+        assert isinstance(env, AcornModelBHardwareEnvironment)
 
     def test_listed_among_environment_names(self):
-        assert "acorn_bbc_hardware" in environment_names()
+        assert "acorn_model_b_hardware" in environment_names()
 
     def test_tube_register_labels(self):
         for addr, name in [
@@ -417,13 +422,205 @@ class TestAcornBbcHardwareEnvironment:
             self.d.labels.get_label(0xfe18).explicit_name_texts()
         )
 
+    def test_no_fdc_registers_present(self):
+        # FDC choice is orthogonal — neither &FE80-&FE87 names nor
+        # the 8271 reset at &FE82 should be registered by the bare
+        # machine env. Activating ``acorn_fdc_8271`` /
+        # ``acorn_fdc_1770`` is what supplies them. ``get_label``
+        # returns ``None`` if no label has been registered, which is
+        # equivalent to "no FDC name here" for our purposes.
+        for addr in (0xfe80, 0xfe81, 0xfe82, 0xfe84, 0xfe85, 0xfe86, 0xfe87):
+            label = self.d.labels.get_label(addr)
+            if label is None:
+                continue
+            names = label.explicit_name_texts()
+            assert not any(n.startswith("fdc_") for n in names), (
+                f"Model B env unexpectedly registered an FDC label at "
+                f"&{addr:04x}: {names}"
+            )
+
     def test_composes_with_acorn_mos(self):
         d = Disassembler.create(
             cpu="6502",
-            environments=["acorn_mos", "acorn_bbc_hardware"],
+            environments=["acorn_mos", "acorn_model_b_hardware"],
         )
         assert "oswrch" in d.labels.get_label(0xffee).explicit_name_texts()
         assert "tube_data_register_1" in d.labels.get_label(0xfee1).explicit_name_texts()
+
+
+class TestAcornMasterHardwareEnvironment:
+    """BBC Master hardware-register Environment: the shared BBC-line
+    register block plus the Master-only access-control register
+    (ACCCON at &FE34: shadow RAM, ROM banking, IRQ steering). FDC
+    registers live in the orthogonal :mod:`acorn_fdc_1770` env and
+    are NOT included here. The 146818 RTC has no direct memory-mapped
+    registers either; ROM code drives it through the System VIA
+    (already labelled by the shared block).
+    """
+
+    def setup_method(self):
+        self.d = Disassembler.create(
+            cpu="6502", environments=["acorn_master_hardware"],
+        )
+
+    def test_loadable_via_stevedore(self):
+        env = create_environment("acorn_master_hardware")
+        assert isinstance(env, AcornMasterHardwareEnvironment)
+
+    def test_listed_among_environment_names(self):
+        assert "acorn_master_hardware" in environment_names()
+
+    def test_acccon_label(self):
+        assert "acccon" in self.d.labels.get_label(0xfe34).explicit_name_texts()
+
+    def test_shared_register_labels_present(self):
+        # The Master env should still register the shared BBC-line
+        # block (CRTC, video ULA, system VIA, Tube, …).
+        assert "crtc_address_register" in (
+            self.d.labels.get_label(0xfe00).explicit_name_texts()
+        )
+        assert "video_ula_control" in (
+            self.d.labels.get_label(0xfe20).explicit_name_texts()
+        )
+        assert "system_via_orb_irb" in (
+            self.d.labels.get_label(0xfe40).explicit_name_texts()
+        )
+        assert "tube_data_register_1" in (
+            self.d.labels.get_label(0xfee1).explicit_name_texts()
+        )
+
+    def test_no_fdc_registers_present(self):
+        # The Master ships with the 1770, but the FDC is its own
+        # composable env. The bare ``acorn_master_hardware`` env
+        # does NOT label any &FE80-&FE87 address (``get_label``
+        # returns ``None`` when no label is registered).
+        for addr in (0xfe80, 0xfe81, 0xfe82, 0xfe84, 0xfe85, 0xfe86, 0xfe87):
+            label = self.d.labels.get_label(addr)
+            if label is None:
+                continue
+            names = label.explicit_name_texts()
+            assert not any(n.startswith("fdc_") for n in names), (
+                f"Master env unexpectedly registered an FDC label at "
+                f"&{addr:04x}: {names}"
+            )
+
+    def test_composes_with_acorn_mos(self):
+        d = Disassembler.create(
+            cpu="6502",
+            environments=["acorn_mos", "acorn_master_hardware"],
+        )
+        assert "oswrch" in d.labels.get_label(0xffee).explicit_name_texts()
+        assert "acccon" in d.labels.get_label(0xfe34).explicit_name_texts()
+
+
+class TestAcornFdc8271Environment:
+    """Intel 8271 floppy-disc-controller Environment: registers
+    ``fdc_8271_command_or_status`` (&FE80), ``fdc_8271_parameter_or_result``
+    (&FE81), ``fdc_8271_reset`` (&FE82) and ``fdc_8271_data`` (&FE84).
+    Composable with any machine env — typically paired with
+    :mod:`acorn_model_b_hardware` for original-fit Model B ROMs.
+    """
+
+    def setup_method(self):
+        self.d = Disassembler.create(
+            cpu="6502", environments=["acorn_fdc_8271"],
+        )
+
+    def test_listed_among_environment_names(self):
+        assert "acorn_fdc_8271" in environment_names()
+
+    def test_loadable_via_stevedore(self):
+        env = create_environment("acorn_fdc_8271")
+        # Imported lazily to avoid cluttering the module top with envs
+        # that aren't asserted on elsewhere.
+        from dasmos.ext.environments.acorn_fdc_8271 import (
+            AcornFdc8271Environment,
+        )
+        assert isinstance(env, AcornFdc8271Environment)
+
+    def test_8271_register_labels(self):
+        for addr, name in [
+            (0xfe80, "fdc_8271_command_or_status"),
+            (0xfe81, "fdc_8271_parameter_or_result"),
+            (0xfe82, "fdc_8271_reset"),
+            (0xfe84, "fdc_8271_data"),
+        ]:
+            assert name in self.d.labels.get_label(addr).explicit_name_texts(), (
+                f"missing 8271 label {name} at &{addr:04x}"
+            )
+
+    def test_does_not_register_1770_labels(self):
+        # &FE85-&FE87 are 1770-only; the 8271 env must not label them.
+        for addr in (0xfe85, 0xfe86, 0xfe87):
+            label = self.d.labels.get_label(addr)
+            if label is None:
+                continue
+            names = label.explicit_name_texts()
+            assert not any("1770" in n for n in names)
+
+    def test_composes_with_model_b_hardware(self):
+        d = Disassembler.create(
+            cpu="6502",
+            environments=["acorn_model_b_hardware", "acorn_fdc_8271"],
+        )
+        assert "fdc_8271_reset" in d.labels.get_label(0xfe82).explicit_name_texts()
+        assert "tube_data_register_1" in d.labels.get_label(0xfee1).explicit_name_texts()
+
+
+class TestAcornFdc1770Environment:
+    """WD1770 floppy-disc-controller Environment: registers
+    ``fdc_1770_drive_control`` (&FE80) and the four 1770 chip
+    registers — command/status, track, sector, data — at
+    &FE84-&FE87. Composable with any machine env: pair with
+    :mod:`acorn_master_hardware` for Master / B+ ROMs, or
+    :mod:`acorn_model_b_hardware` for retrofitted Model B images.
+    """
+
+    def setup_method(self):
+        self.d = Disassembler.create(
+            cpu="6502", environments=["acorn_fdc_1770"],
+        )
+
+    def test_listed_among_environment_names(self):
+        assert "acorn_fdc_1770" in environment_names()
+
+    def test_loadable_via_stevedore(self):
+        env = create_environment("acorn_fdc_1770")
+        from dasmos.ext.environments.acorn_fdc_1770 import (
+            AcornFdc1770Environment,
+        )
+        assert isinstance(env, AcornFdc1770Environment)
+
+    def test_1770_register_labels(self):
+        for addr, name in [
+            (0xfe80, "fdc_1770_drive_control"),
+            (0xfe84, "fdc_1770_command_or_status"),
+            (0xfe85, "fdc_1770_track"),
+            (0xfe86, "fdc_1770_sector"),
+            (0xfe87, "fdc_1770_data"),
+        ]:
+            assert name in self.d.labels.get_label(addr).explicit_name_texts(), (
+                f"missing 1770 label {name} at &{addr:04x}"
+            )
+
+    def test_does_not_register_8271_labels(self):
+        # &FE81 / &FE82 are 8271-only; the 1770 env must not label them.
+        for addr in (0xfe81, 0xfe82):
+            label = self.d.labels.get_label(addr)
+            if label is None:
+                continue
+            names = label.explicit_name_texts()
+            assert not any("8271" in n for n in names)
+
+    def test_composes_with_master_hardware(self):
+        d = Disassembler.create(
+            cpu="6502",
+            environments=["acorn_master_hardware", "acorn_fdc_1770"],
+        )
+        assert "acccon" in d.labels.get_label(0xfe34).explicit_name_texts()
+        assert "fdc_1770_command_or_status" in (
+            d.labels.get_label(0xfe84).explicit_name_texts()
+        )
 
 
 class TestAcornMosOsCallHooks:

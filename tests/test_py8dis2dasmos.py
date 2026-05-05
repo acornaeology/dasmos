@@ -42,9 +42,9 @@ _porter = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_porter)
 
 
-def port(source: str) -> str:
+def port(source: str, extra_envs: tuple[str, ...] = ()) -> str:
     """Convenience wrapper that dedents the input first."""
-    return _porter.port(textwrap.dedent(source))
+    return _porter.port(textwrap.dedent(source), extra_envs=extra_envs)
 
 
 # ---------------------------------------------------------------------------
@@ -122,10 +122,11 @@ class TestImports:
         assert "d.disassemble().render(" in out
 
     def test_acorn_func_call_becomes_use_environment(self):
-        # ``acorn.bbc()`` expands to BOTH ``acorn_mos`` (workspace +
-        # vectors + OS calls) AND ``acorn_bbc_hardware`` (memory-
-        # mapped I/O registers) — the two halves py8dis's bbc()
-        # combines. ``acorn.is_sideways_rom()`` is a single env.
+        # ``acorn.bbc()`` registers the MOS env (workspace + vectors
+        # + OS calls) and the Model B I/O register block. The FDC
+        # is NOT auto-activated: a BBC Micro shipped without disc
+        # support, and the FDC was always an upgrade. Drivers that
+        # need an FDC env opt in via the porter's ``--env`` flag.
         out = port("""
             from py8dis.commands import *
             import py8dis.acorn as acorn
@@ -134,10 +135,73 @@ class TestImports:
             acorn.is_sideways_rom()
         """)
         assert "d.use_environment('acorn_mos')" in out
-        assert "d.use_environment('acorn_bbc_hardware')" in out
+        assert "d.use_environment('acorn_model_b_hardware')" in out
+        assert "d.use_environment('acorn_fdc_8271')" not in out
+        assert "d.use_environment('acorn_fdc_1770')" not in out
         assert "d.use_environment('acorn_sideways_rom')" in out
         assert "acorn.bbc" not in out
         assert "acorn.is_sideways_rom" not in out
+
+    def test_acorn_master_call_becomes_use_environment(self):
+        # ``acorn.master()`` is the Master fit-out: MOS labels and
+        # the Master hardware register block (ACCCON etc). FDC is
+        # opt-in via ``extra_envs``.
+        out = port("""
+            from py8dis.commands import *
+            import py8dis.acorn as acorn
+            load(0x8000, "rom.bin", "6502")
+            acorn.master()
+        """)
+        assert "d.use_environment('acorn_mos')" in out
+        assert "d.use_environment('acorn_master_hardware')" in out
+        assert "d.use_environment('acorn_fdc_1770')" not in out
+        assert "d.use_environment('acorn_fdc_8271')" not in out
+        assert "acorn.master" not in out
+
+    def test_acorn_b_plus_call_becomes_use_environment(self):
+        # ``acorn.b_plus()`` shares the Model B I/O register block.
+        # Same opt-in FDC stance.
+        out = port("""
+            from py8dis.commands import *
+            import py8dis.acorn as acorn
+            load(0x8000, "rom.bin", "6502")
+            acorn.b_plus()
+        """)
+        assert "d.use_environment('acorn_mos')" in out
+        assert "d.use_environment('acorn_model_b_hardware')" in out
+        assert "d.use_environment('acorn_fdc_1770')" not in out
+        assert "d.use_environment('acorn_fdc_8271')" not in out
+        assert "acorn.b_plus" not in out
+
+    def test_extra_envs_kwarg_appends_use_environment_calls(self):
+        # The ``extra_envs`` parameter on ``port()`` lets callers
+        # opt in to envs that the original py8dis driver took for
+        # granted (e.g. an FDC chip the source script never named).
+        out = port(
+            """
+            from py8dis.commands import *
+            import py8dis.acorn as acorn
+            load(0x8000, "rom.bin", "6502")
+            acorn.bbc()
+            """,
+            extra_envs=("acorn_fdc_1770",),
+        )
+        assert "d.use_environment('acorn_mos')" in out
+        assert "d.use_environment('acorn_model_b_hardware')" in out
+        assert "d.use_environment('acorn_fdc_1770')" in out
+
+    def test_extra_envs_without_acorn_func_calls(self):
+        # If the source driver doesn't call any ``acorn.<func>()``,
+        # extra envs still get spliced in — right after the
+        # ``d.load(...)`` call.
+        out = port(
+            """
+            from py8dis.commands import *
+            load(0x8000, "rom.bin", "6502")
+            """,
+            extra_envs=("acorn_fdc_8271",),
+        )
+        assert "d.use_environment('acorn_fdc_8271')" in out
 
     def test_constant_passes_through(self):
         # py8dis ``constant(value, name)`` now maps to dasmos's

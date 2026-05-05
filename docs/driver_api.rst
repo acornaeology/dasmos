@@ -55,14 +55,25 @@ analysers, and subroutine hooks for a specific target system.
 
    d = dasmos.Disassembler.create(
        cpu="6502",
-       environments=["acorn_mos", "acorn_bbc_hardware"],
+       environments=["acorn_mos", "acorn_model_b_hardware", "acorn_fdc_8271"],
    )
 
 With ``acorn_mos`` active, ``jsr &FFF4`` resolves to ``jsr osbyte``
 without you having to declare the label yourself; with
-``acorn_bbc_hardware`` active, reads of ``&FE40`` resolve to the
-System VIA's ``via_system_orb`` instead of a bare hex literal. Run
+``acorn_model_b_hardware`` active, reads of ``&FE40`` resolve to the
+System VIA's ``via_system_orb`` instead of a bare hex literal; and
+with ``acorn_fdc_8271`` active, accesses to ``&FE80-&FE84`` resolve
+to the 8271 floppy-controller register names. Run
 ``dasmos list-environments`` to see what's installed.
+
+Environment plug-ins are deliberately split along orthogonal axes:
+the machine class (``acorn_model_b_hardware`` / ``acorn_master_hardware``),
+the floppy-disc-controller variant (``acorn_fdc_8271`` /
+``acorn_fdc_1770``), and so on. A retrofitted Model B with a 1770
+upgrade is the combination ``acorn_model_b_hardware`` +
+``acorn_fdc_1770``; a Master is ``acorn_master_hardware`` +
+``acorn_fdc_1770``. Pick the combination that matches the system
+the ROM you're disassembling targets.
 
 Loading the binary:
 
@@ -306,7 +317,7 @@ A more complete picture of how the pieces compose:
 
    d = dasmos.Disassembler.create(
        cpu="6502",
-       environments=["acorn_mos", "acorn_bbc_hardware"],
+       environments=["acorn_mos", "acorn_model_b_hardware"],
    )
    d.load(ROM_PATH, LOAD_ADDR, md5sum=ROM_MD5)
 

@@ -132,7 +132,7 @@ class TestDisassemble:
         assert "jsr osbyte" in result.output
 
     def test_multiple_environments_compose(self, tiny_rom):
-        # acorn_mos + acorn_bbc_hardware — both should activate.
+        # acorn_mos + acorn_model_b_hardware — both should activate.
         # Tested via the listing emitting the osbyte name (mos) AND
         # being free of crashes (hardware compose-cleanly check).
         runner = CliRunner()
@@ -140,7 +140,7 @@ class TestDisassemble:
             "disassemble", str(tiny_rom),
             "--load-addr", "&1000",
             "--env", "acorn_mos",
-            "--env", "acorn_bbc_hardware",
+            "--env", "acorn_model_b_hardware",
         ])
         assert result.exit_code == 0, result.output
         assert "jsr osbyte" in result.output
@@ -239,12 +239,12 @@ class TestInit:
             "--rom", str(tiny_rom),
             "--load-addr", "&1000",
             "--env", "acorn_mos",
-            "--env", "acorn_bbc_hardware",
+            "--env", "acorn_model_b_hardware",
         ])
         assert result.exit_code == 0, result.output
         text = driver.read_text(encoding="utf-8")
         assert "acorn_mos" in text
-        assert "acorn_bbc_hardware" in text
+        assert "acorn_model_b_hardware" in text
 
     def test_includes_entry_points(self, tiny_rom, tmp_path):
         driver = tmp_path / "driver.py"

@@ -153,14 +153,18 @@ $ dasmos list-renderers
 
 ```console
 $ dasmos list-environments
-          Environments registered under 'dasmos.environment'           
-┏━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ Name               ┃ Description                                    ┃
-┡━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
-│ acorn_bbc_hardware │ Acorn BBC Micro hardware-register Environment. │
-│ acorn_mos          │ Acorn MOS environment.                         │
-│ acorn_sideways_rom │ Acorn sideways ROM environment.                │
-└────────────────────┴────────────────────────────────────────────────┘
+               Environments registered under 'dasmos.environment'               
+┏━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Name                   ┃ Description                                         ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ acorn_fdc_1770         │ Acorn WD1770 floppy-disc-controller Environment.    │
+│ acorn_fdc_8271         │ Acorn 8271 floppy-disc-controller Environment.      │
+│ acorn_master_hardware  │ Acorn BBC Master hardware-register Environment.     │
+│ acorn_model_b_hardware │ Acorn BBC Model B / B+ hardware-register            │
+│                        │ Environment.                                        │
+│ acorn_mos              │ Acorn MOS environment.                              │
+│ acorn_sideways_rom     │ Acorn sideways ROM environment.                     │
+└────────────────────────┴─────────────────────────────────────────────────────┘
 ```
 
 Environments layer onto a disassembler additively — a driver can

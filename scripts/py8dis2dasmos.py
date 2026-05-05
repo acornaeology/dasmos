@@ -123,17 +123,37 @@ PY8DIS_COMMAND_RELOCATIONS: dict[str, str] = {
 # closes when more environments land.
 PY8DIS_ACORN_FUNC_TO_ENVIRONMENTS: dict[str, list[str]] = {
     # ``acorn.bbc()`` registers MOS workspace + vectors + OS calls
-    # (via mos_labels()) AND BBC Micro hardware addresses
-    # (hardware_bbc()). Dasmos splits these into two composable
-    # Environment plug-ins; activate both.
-    "bbc": ["acorn_mos", "acorn_bbc_hardware"],
+    # (the ``acorn_mos`` env) and the Model B I/O register block
+    # (``acorn_model_b_hardware``). The floppy-disc-controller envs
+    # (``acorn_fdc_8271`` / ``acorn_fdc_1770``) are NOT auto-
+    # activated: a BBC Micro shipped without a disc interface, and
+    # the FDC was always an upgrade (8271 board, 1770 board, or a
+    # third-party fit). Drivers for ROMs that touch the FDC opt in
+    # explicitly via the porter's ``--env`` flag (or by adding a
+    # ``d.use_environment(...)`` line in the ported script).
+    "bbc": ["acorn_mos", "acorn_model_b_hardware"],
+    # ``acorn.b_plus()`` is structurally the same — same I/O block,
+    # same opt-in FDC stance. The B+ shipped with a 1770 from the
+    # factory, but per the modular design the user pairs
+    # ``acorn_fdc_1770`` with this env when the ROM warrants it.
+    "b_plus": ["acorn_mos", "acorn_model_b_hardware"],
+    # ``acorn.master()`` is the Master fit-out: MOS labels and the
+    # Master hardware register block (ACCCON etc). The Master's
+    # 1770 is, again, opt-in.
+    "master": ["acorn_mos", "acorn_master_hardware"],
     # ``acorn.is_sideways_rom()`` recognises the &8000 header layout
     # — direct one-to-one map.
     "is_sideways_rom": ["acorn_sideways_rom"],
-    # ``acorn.mos_labels()`` is the MOS-only subset of bbc().
+    # ``acorn.mos_labels()`` is the MOS-only subset of bbc()/master().
     "mos_labels": ["acorn_mos"],
-    # ``acorn.hardware_bbc()`` is the hardware-only subset of bbc().
-    "hardware_bbc": ["acorn_bbc_hardware"],
+    # ``acorn.hardware_bbc()`` and ``acorn.hardware_b_plus()`` are
+    # the hardware-only subsets of bbc()/b_plus(): Model B I/O block,
+    # FDC opt-in.
+    "hardware_bbc": ["acorn_model_b_hardware"],
+    "hardware_b_plus": ["acorn_model_b_hardware"],
+    # ``acorn.hardware_master()`` is the hardware-only subset of
+    # master() — Master I/O block, FDC opt-in.
+    "hardware_master": ["acorn_master_hardware"],
 }
 
 
@@ -182,8 +202,15 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
     :meth:`visit_Module`.
     """
 
-    def __init__(self):
+    def __init__(self, extra_envs: tuple[str, ...] = ()):
         self.assembler_name = "beebasm"
+        # Opt-in environments the caller wants activated alongside
+        # whatever the py8dis driver explicitly requests. Used for
+        # axes the original driver took for granted but dasmos models
+        # as separate composable envs — most commonly the FDC chip
+        # (8271 vs 1770), which py8dis bundled into ``bbc()`` but
+        # dasmos treats as an opt-in upgrade.
+        self.extra_envs: tuple[str, ...] = tuple(extra_envs)
 
     def visit_Module(self, node: ast.Module) -> ast.Module:
         new_body: list[ast.stmt] = []
@@ -352,6 +379,27 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
 
             new_body.append(stmt)
 
+        # Inject any caller-requested opt-in envs as additional
+        # ``d.use_environment(...)`` calls. Place them next to the
+        # other use_environment calls (which came from py8dis acorn
+        # function translations) so the activations group visibly in
+        # the output. If the driver had no acorn function calls,
+        # fall back to inserting right after the constructor / load
+        # block so they execute before any labels or classifications.
+        if self.extra_envs:
+            insertion_index = self._extra_env_insertion_index(new_body)
+            for env_name in self.extra_envs:
+                new_body.insert(insertion_index, ast.Expr(value=ast.Call(
+                    func=ast.Attribute(
+                        value=ast.Name(id="d", ctx=ast.Load()),
+                        attr="use_environment",
+                        ctx=ast.Load(),
+                    ),
+                    args=[ast.Constant(value=env_name)],
+                    keywords=[],
+                )))
+                insertion_index += 1
+
         # Build the import block to prepend.
         imports: list[ast.stmt] = [
             ast.Import(names=[ast.alias(name="dasmos", asname=None)]),
@@ -380,6 +428,52 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
             )
 
         return ast.Module(body=imports + new_body, type_ignores=[])
+
+    @staticmethod
+    def _extra_env_insertion_index(body: list[ast.stmt]) -> int:
+        """Return the index in ``body`` where caller-requested
+        opt-in env activations should be spliced. Right after the
+        last existing ``d.use_environment(...)`` call (so all the
+        env activations group together), or right after the
+        ``d = dasmos.Disassembler.create(...)`` / ``d.load(...)``
+        pair if no use_environment calls exist yet.
+        """
+        last_use_env = -1
+        last_load = -1
+        last_create = -1
+        for i, stmt in enumerate(body):
+            if (
+                isinstance(stmt, ast.Expr)
+                and isinstance(stmt.value, ast.Call)
+                and isinstance(stmt.value.func, ast.Attribute)
+                and isinstance(stmt.value.func.value, ast.Name)
+                and stmt.value.func.value.id == "d"
+                and stmt.value.func.attr == "use_environment"
+            ):
+                last_use_env = i
+            elif (
+                isinstance(stmt, ast.Expr)
+                and isinstance(stmt.value, ast.Call)
+                and isinstance(stmt.value.func, ast.Attribute)
+                and isinstance(stmt.value.func.value, ast.Name)
+                and stmt.value.func.value.id == "d"
+                and stmt.value.func.attr == "load"
+            ):
+                last_load = i
+            elif (
+                isinstance(stmt, ast.Assign)
+                and len(stmt.targets) == 1
+                and isinstance(stmt.targets[0], ast.Name)
+                and stmt.targets[0].id == "d"
+            ):
+                last_create = i
+        if last_use_env >= 0:
+            return last_use_env + 1
+        if last_load >= 0:
+            return last_load + 1
+        if last_create >= 0:
+            return last_create + 1
+        return 0
 
     @staticmethod
     def _find_relocations_needed(
@@ -896,10 +990,19 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
         return False
 
 
-def port(source: str) -> str:
-    """Translate ``source`` (a py8dis driver script) to dasmos form."""
+def port(source: str, extra_envs: tuple[str, ...] = ()) -> str:
+    """Translate ``source`` (a py8dis driver script) to dasmos form.
+
+    ``extra_envs`` is an optional list of dasmos environment names
+    to activate alongside whatever the original driver requested via
+    ``acorn.bbc()`` etc. Use this for axes the original driver took
+    for granted but dasmos models as a separate composable env —
+    most commonly the floppy-disc-controller chip
+    (``acorn_fdc_8271`` / ``acorn_fdc_1770``), which py8dis bundled
+    into ``bbc()`` but dasmos treats as an opt-in upgrade.
+    """
     tree = ast.parse(source)
-    transformer = Py8disToDasmosTransformer()
+    transformer = Py8disToDasmosTransformer(extra_envs=extra_envs)
     new_tree = transformer.visit(tree)
     ast.fix_missing_locations(new_tree)
     return ast.unparse(new_tree) + "\n"
@@ -929,10 +1032,31 @@ def main(argv: list[str] | None = None) -> int:
             "different encoding."
         ),
     )
+    parser.add_argument(
+        "-e", "--env",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help=(
+            "activate an additional dasmos environment in the ported "
+            "script. Repeatable. Use for axes the original py8dis "
+            "driver took for granted but dasmos models as separate "
+            "composable envs — typically the floppy-disc-controller "
+            "chip (``acorn_fdc_8271`` / ``acorn_fdc_1770``), which "
+            "was always an upgrade rather than standard hardware. "
+            "Run ``dasmos list-environments`` to see the catalogue."
+        ),
+    )
     args = parser.parse_args(argv)
 
+    extra_envs: list[str] = []
+    for entry in args.env:
+        # Accept comma-separated values per flag, matching the
+        # ``dasmos disassemble --env`` shape.
+        extra_envs.extend(part for part in entry.split(",") if part)
+
     source = Path(args.input).read_text(encoding=args.encoding)
-    ported = port(source)
+    ported = port(source, extra_envs=tuple(extra_envs))
 
     if args.check:
         if source == ported:

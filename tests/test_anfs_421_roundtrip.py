@@ -96,6 +96,10 @@ class TestAnfs421PorterEndToEnd:
         assert hashlib.md5(rom).hexdigest() == ROM_MD5
         assert len(rom) == ROM_SIZE
 
+        # ANFS is a pure network filing system — it doesn't touch
+        # the floppy disc controller, so no FDC env is opted in.
+        # (4.21 happens to be Master-only, but the Master's 1770
+        # is irrelevant to ANFS itself.)
         ported_src = _porter.port(ORIGINAL_DRIVER_PATH.read_text(encoding="utf-8"))
         ported_filepath = tmp_path / "ported_driver.py"
         ported_filepath.write_text(ported_src, encoding="utf-8")
@@ -171,6 +175,7 @@ def _run_dasmos_driver(tmp_path) -> Path:
     """Port the ANFS 4.21 driver via py8dis2dasmos, run it, return
     the output dir.
     """
+    # ANFS is a pure network filing system — no FDC env needed.
     ported_src = _porter.port(ORIGINAL_DRIVER_PATH.read_text(encoding="utf-8"))
     ported_filepath = tmp_path / "ported_driver.py"
     ported_filepath.write_text(ported_src, encoding="utf-8")

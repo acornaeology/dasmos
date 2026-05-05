@@ -114,8 +114,8 @@ Options
    Activate an environment plug-in — a bundle of register names,
    subroutine hooks, OS-call analysers, and hardware-port labels for a
    target system. Repeatable, and comma-separated values are accepted
-   per flag, so ``--env acorn_mos --env acorn_bbc_hardware`` and
-   ``--env acorn_mos,acorn_bbc_hardware`` are equivalent. Run
+   per flag, so ``--env acorn_mos --env acorn_model_b_hardware`` and
+   ``--env acorn_mos,acorn_model_b_hardware`` are equivalent. Run
    ``dasmos list-environments`` for the catalogue.
 
 ``--entry`` *ADDR*
@@ -135,7 +135,7 @@ Options
 Worked example
 ~~~~~~~~~~~~~~
 
-Disassemble a BBC Master Acorn NFS ROM with the MOS environment
+Disassemble a BBC Model B Acorn NFS ROM with the MOS environment
 active, seeding the trace from the standard service-ROM entry vectors:
 
 .. code-block:: console
@@ -143,7 +143,7 @@ active, seeding the trace from the standard service-ROM entry vectors:
    dasmos disassemble nfs365.rom \
        --load-addr '&8000' \
        --env acorn_mos \
-       --env acorn_bbc_hardware \
+       --env acorn_model_b_hardware \
        --entry '&8000' \
        --entry '&8003' \
        --out nfs365.asm
@@ -197,7 +197,7 @@ Bootstrap a driver for the same ROM the ``disassemble`` example used:
        --rom nfs365.rom \
        --load-addr '&8000' \
        --env acorn_mos \
-       --env acorn_bbc_hardware \
+       --env acorn_model_b_hardware \
        --entry '&8000' \
        --entry '&8003' \
        --md5 $(md5 -q nfs365.rom)
