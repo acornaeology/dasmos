@@ -122,6 +122,7 @@ class BeebasmRenderer(TextRenderer):
         show_auto_label_footer: bool = True,
         comment_wrap_column: int = 87,
         char_literal_style: str = "asc",
+        show_char_comment_hint: bool = True,
         lower_case: bool = True,
         **kwargs,
     ):
@@ -177,36 +178,42 @@ class BeebasmRenderer(TextRenderer):
         # ``textwrap.fill`` operates on the raw text and the ``; ``
         # is added per-line at emit time.
         self.comment_wrap_column = comment_wrap_column
-        # How printable-ASCII immediate operands should be rendered:
+        # Syntax for the OPERAND-REPLACING char form, used ONLY when
+        # the driver registers an explicit ``FormatHint.CHAR`` at an
+        # operand byte (e.g. via ``d.char_literal(addr)``):
         #
-        # - ``"asc"`` (default): operand becomes ``ASC("c")`` —
-        #   beebasm's first-character-of-string function. Reads as
-        #   "this byte IS a character", not "this byte happens to
-        #   coincide with one". The hex value is dropped from the
-        #   line entirely; the byte-column inline annotation still
-        #   shows the hex+ASCII pair if ``byte_column=True``.
-        # - ``"quote"``: operand becomes ``'c'`` — the universal
-        #   single-quoted-char form. Shorter than ASC; same semantics.
-        # - ``"comment"``: hex operand stays, with a trailing
-        #   ``; 'c'`` hint (py8dis-fork's ``show_char_literals``
-        #   form).
-        # - ``"off"``: hex operand, no char annotation.
+        # - ``"asc"`` (default): ``ASC("c")`` — beebasm's first-
+        #   character-of-string function.
+        # - ``"quote"``: ``'c'`` — the universal single-quoted-char
+        #   form, shorter and idiomatic.
         #
-        # In every case the operand is suppressed (renderer falls
-        # back to plain hex) when:
-        # - the user has registered a custom expression at the
-        #   operand byte: the user's symbol takes precedence;
-        # - the byte is non-printable (outside ``0x20..0x7E``);
-        # - the byte is one whose char form would create awkward
-        #   quoting in the chosen style — see
-        #   :meth:`_format_char_literal_operand` for specifics.
-        valid_styles = {"asc", "quote", "comment", "off"}
+        # The renderer DOES NOT auto-detect printable bytes and
+        # rewrite the operand: byte values whose ASCII rendering is
+        # printable are usually NOT intended as characters (they're
+        # bitmasks, indices, register patterns), so an automatic
+        # ``ASC(...)`` substitution actively misleads the reader.
+        # The driver author is expected to declare intent explicitly
+        # for genuine character bytes; the safe trailing
+        # ``; 'c'`` comment hint (controlled by
+        # ``show_char_comment_hint``) is what runs by default.
+        valid_styles = {"asc", "quote"}
         if char_literal_style not in valid_styles:
             raise ValueError(
                 f"char_literal_style must be one of "
                 f"{sorted(valid_styles)!r}, got {char_literal_style!r}"
             )
         self.char_literal_style = char_literal_style
+        # When True (default), append a ``; '<c>'`` informational
+        # comment to immediate-mode instructions whose operand byte
+        # happens to be a printable ASCII character. Helps the reader
+        # spot byte-by-byte string construction without committing to
+        # "this byte IS a character" the way operand-replacement
+        # would. Suppressed when:
+        # - a ``FormatHint`` is set at the operand byte (the hint's
+        #   own rendering decision wins);
+        # - the byte is the apostrophe (``'``) or double-quote
+        #   (``"``), which would form ambiguous comment syntax.
+        self.show_char_comment_hint = show_char_comment_hint
         # When True (default), mnemonics and the indexed-mode register
         # suffixes (``,X`` / ``,Y``) and the explicit-accumulator
         # marker (``A``) all render in lowercase: ``sta &20,x``,
@@ -1495,21 +1502,16 @@ class BeebasmRenderer(TextRenderer):
            beebasm can't natively express a hint (e.g. no octal
            syntax), the renderer warns and falls back to a sensible
            equivalent.
-        2. Auto-detect heuristic per ``char_literal_style`` (printable
-           ASCII → char form for ``"asc"``/``"quote"`` styles; left
-           to the comment-hint path for ``"comment"`` style; skipped
-           for ``"off"``).
-        3. Fallback: small-int decimal / hex via
-           :meth:`_format_immediate_byte`.
+        2. No hint → small-int decimal / hex via
+           :meth:`_format_immediate_byte` (the renderer's default).
+           The trailing ``; 'c'`` comment hint, when enabled, is
+           appended later in :meth:`_render_opcode` via
+           :meth:`_immediate_char_hint`; it never replaces the
+           operand text.
         """
         hint = ir.format_hints.get_or_none(operand_addr)
         if hint is not None:
             return self._render_hinted_immediate(hint, value, operand_addr)
-        # No explicit hint — apply the renderer's auto-detect for
-        # printable-as-char per the configured style.
-        char_form = self._auto_format_char_operand(value)
-        if char_form is not None:
-            return char_form
         return self._format_immediate_byte(value)
 
     def _render_hinted_immediate(
@@ -1586,54 +1588,34 @@ class BeebasmRenderer(TextRenderer):
             return f"'{c}'"
         return f'ASC("{c}")'
 
-    def _auto_format_char_operand(self, value: int) -> str | None:
-        """Auto-detect heuristic — the renderer's default behaviour
-        for printable-ASCII immediates when no explicit hint is set.
-        Returns ``None`` for non-printable bytes, when
-        ``char_literal_style`` is ``"comment"`` or ``"off"``, or when
-        the byte is one whose char form would create awkward quoting
-        in the chosen style.
-
-        This is the renderer's own aesthetic choice (not an IR
-        semantic). The user opts out via ``char_literal_style="off"``
-        or opts in for a specific byte via :meth:`Disassembler.char_literal`.
-        """
-        if self.char_literal_style not in ("asc", "quote"):
-            return None
-        if not (0x20 <= value <= 0x7E):
-            return None
-        c = chr(value)
-        if self.char_literal_style == "asc":
-            if value == 0x22:  # double-quote — awkward inside ASC string
-                return None
-            return f'ASC("{c}")'
-        # "quote" style.
-        if value == 0x27:  # apostrophe — bare ``'''`` is ambiguous
-            return None
-        return f"'{c}'"
-
     def _immediate_char_hint(self, ir, binary_addr, opcode: Opcode) -> str:
-        """Return a `` ; '<c>'`` trailing hint for printable-ASCII
-        immediates in ``"comment"`` style, or the empty string in
-        every other case.
+        """Return a `` ; '<c>'`` informational comment for IMMEDIATE
+        operands whose byte happens to be a printable ASCII character.
+        Returns the empty string in every suppression case.
 
-        The comment-hint form is a stylistic choice that augments the
-        plain-hex operand instead of replacing it; it is parallel to
-        the operand-replacement forms emitted by
-        :meth:`_auto_format_char_operand`. Suppression conditions:
+        This is the renderer's *only* auto-detection: a safe trailing
+        annotation that doesn't claim "this byte IS a character",
+        merely "this byte's ASCII rendering is X". Operand-replacing
+        char forms (``ASC("c")`` / ``'c'``) only ever fire from an
+        EXPLICIT :class:`FormatHint.CHAR` registration in the IR.
 
-        - ``char_literal_style`` is not ``"comment"``.
+        Suppression conditions:
+
+        - ``show_char_comment_hint`` is False on this renderer.
         - The opcode's addressing mode isn't IMMEDIATE.
         - A user-supplied expression is registered at the operand
           byte (the user's symbol takes precedence).
-        - A :class:`FormatHint` is registered at the operand byte
-          (the hint dispatcher in ``_render_immediate_with_hints``
-          already decided how to render the byte).
+        - A :class:`FormatHint` is registered at the operand byte —
+          the hint already decided how to render this operand, and
+          a parallel comment annotation would be redundant or
+          contradictory (e.g. a ``BINARY`` hint produces ``%01010101``
+          and the user already knows the byte's ASCII rendering
+          isn't relevant).
         - The byte isn't printable ASCII (``0x20..0x7E``).
         - The byte is ``'`` or ``"`` — would form ambiguous
-          comment syntax.
+          comment syntax (``; '''`` / ``; '"'``).
         """
-        if self.char_literal_style != "comment":
+        if not self.show_char_comment_hint:
             return ""
         if opcode.addressing_mode.name != "IMMEDIATE":
             return ""

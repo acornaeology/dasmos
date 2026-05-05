@@ -231,14 +231,16 @@ class TestRenderTinyProgram:
         assert "save &8000, &8001" in text
 
     def test_renders_simple_lda_rts(self, tmp_path):
-        # 0x8000: LDA #$2A   (a9 2a)  — ``*`` is printable ASCII so
-        # the renderer's default ``char_literal_style="asc"`` swaps
-        # the hex literal for a beebasm ASC() call. Same byte.
+        # 0x8000: LDA #$2A   (a9 2a)  — ``*`` is printable ASCII; the
+        # renderer's default appends a ``; '*'`` informational hint
+        # but does NOT replace the hex operand (operand replacement
+        # only fires for explicit ``d.char_literal()`` markers).
         # 0x8002: RTS        (60)
         d = _make_disassembler_with_program(tmp_path, b"\xa9\x2a\x60", 0x8000)
         d.entry(0x8000)
         text = str(d.disassemble().render("beebasm"))
-        assert 'lda #ASC("*")' in text
+        assert "lda #&2a" in text
+        assert "; '*'" in text
         assert "rts" in text
 
     def test_renders_label_at_inline_definition(self, tmp_path):
@@ -452,8 +454,11 @@ class TestPerAddressingModeFormatting:
 
     def test_immediate(self, tmp_path):
         text = self._render(tmp_path, b"\xa9\x2a\x60")  # LDA #$2A; RTS
-        # Default ``char_literal_style="asc"`` — ``*`` is printable.
-        assert 'lda #ASC("*")' in text
+        # Default behaviour: hex operand + auto trailing comment hint
+        # for the printable byte. Operand replacement only fires for
+        # an explicit ``d.char_literal()`` registration.
+        assert "lda #&2a" in text
+        assert "; '*'" in text
 
     def test_zero_page(self, tmp_path):
         text = self._render(tmp_path, b"\xa5\x42\x60")  # LDA &42; RTS

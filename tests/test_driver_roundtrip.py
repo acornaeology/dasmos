@@ -256,13 +256,17 @@ class TestAddressingModesViaSource:
             source, 0x8000,
             lambda d: d.entry(0x8000, name="start"),
         )
-        # &12 (DC2) is non-printable — stays as hex.
+        # &12 (DC2) is non-printable — stays as plain hex, no hint.
         assert "lda #&12" in text
-        # &34 ('4') and &56 ('V') are printable — default char_literal_style
-        # is "asc" so they render as ``ASC("c")``. Beebasm assembles
-        # both forms identically.
-        assert 'ldx #ASC("4")' in text
-        assert 'ldy #ASC("V")' in text
+        # &34 ('4') and &56 ('V') are printable — hex operand stays,
+        # with a trailing ``; '4'`` / ``; 'V'`` informational hint
+        # appended by the renderer's default behaviour. Operand
+        # replacement (``ASC("4")`` etc.) is reserved for explicit
+        # ``d.char_literal()`` markers.
+        ldx_line = next(line for line in text.splitlines() if "ldx #&34" in line)
+        assert "; '4'" in ldx_line
+        ldy_line = next(line for line in text.splitlines() if "ldy #&56" in line)
+        assert "; 'V'" in ldy_line
 
     def test_immediate_small_int_renders_as_decimal(self, roundtrip_via_beebasm):
         # py8dis-fork's ``uint_formatter`` rule: values 0..9 render as
@@ -312,12 +316,14 @@ class TestAddressingModesViaSource:
         assert "lda #&7f" in text
         assert "lda #&ff" in text
 
-    def test_immediate_printable_ascii_renders_as_asc(self, roundtrip_via_beebasm):
-        # Default ``char_literal_style="asc"``: printable-ASCII
-        # immediates render as ``ASC("c")`` — the operand replaces
-        # the hex literal entirely. The byte assembles to the same
-        # value (``ASC`` is a beebasm built-in), so round-trip is
-        # preserved.
+    def test_immediate_printable_ascii_default_emits_comment_hint(
+        self, roundtrip_via_beebasm,
+    ):
+        # Default behaviour: hex operand stays, with a trailing
+        # ``; 'c'`` informational comment for printable bytes.
+        # Operand replacement is reserved for explicit
+        # ``d.char_literal()`` markers (see the asc-form / quote-form
+        # tests below).
         source = """
             org &8000
         .start
@@ -330,19 +336,13 @@ class TestAddressingModesViaSource:
             source, 0x8000,
             lambda d: d.entry(0x8000, name="start"),
         )
-        assert 'ldy #ASC("g")' in text
-        assert 'ldx #ASC("A")' in text
-        # The hex form is gone — char form replaced it, not appended.
-        assert "ldy #&67" not in text
-        assert "ldx #&41" not in text
-        # Trailing ``; 'c'`` comment hint is the *comment* style;
-        # default ``asc`` style does not emit it.
-        import re
-        for line in text.splitlines():
-            if "ldy" in line or "ldx" in line:
-                assert not re.search(r"; '[^']'", line), (
-                    f"unexpected comment-style hint in: {line!r}"
-                )
+        ldy_line = next(line for line in text.splitlines() if "ldy #&67" in line)
+        assert "; 'g'" in ldy_line
+        ldx_line = next(line for line in text.splitlines() if "ldx #&41" in line)
+        assert "; 'A'" in ldx_line
+        # No ASC(...) — that's only for explicit hints.
+        assert 'ASC("g")' not in text
+        assert 'ASC("A")' not in text
 
     def test_immediate_non_printable_falls_back_to_hex(
         self, roundtrip_via_beebasm,
@@ -385,10 +385,9 @@ class TestAddressingModesViaSource:
     def test_immediate_apostrophe_uses_asc_form(
         self, roundtrip_via_beebasm,
     ):
-        # Default ``"asc"`` style: apostrophe (``0x27``) renders as
-        # ``ASC("'")`` — the apostrophe is fine inside the double-
-        # quoted string argument. Beebasm parses this to the byte
-        # ``&27`` so round-trip is preserved.
+        # Default behaviour for apostrophe (``0x27``) — no auto
+        # operand replacement, plain hex, and the comment hint is
+        # suppressed (``; '''`` would be ambiguous syntax).
         source = """
             org &8000
         .start
@@ -400,14 +399,21 @@ class TestAddressingModesViaSource:
             source, 0x8000,
             lambda d: d.entry(0x8000, name="start"),
         )
-        assert 'lda #ASC("\'")' in text
+        assert "lda #&27" in text
+        # The comment-hint suppression for apostrophe applies on the
+        # ``lda`` line itself.
+        lda_line = next(
+            line for line in text.splitlines() if "lda #&27" in line
+        )
+        import re
+        assert not re.search(r"; '[^']'", lda_line)
 
-    def test_immediate_double_quote_falls_back_to_hex(
+    def test_immediate_double_quote_no_auto_annotation(
         self, roundtrip_via_beebasm,
     ):
-        # Default ``"asc"`` style: double-quote (``0x22``) inside a
-        # double-quoted ASC argument would need beebasm's doubled-up
-        # form (``ASC("""")``) which is unreadable. Fall back to hex.
+        # Default behaviour for double-quote (``0x22``) — no auto
+        # operand replacement, plain hex, and the comment hint is
+        # suppressed (``; '"'`` would be ambiguous syntax).
         source = """
             org &8000
         .start
@@ -420,7 +426,11 @@ class TestAddressingModesViaSource:
             lambda d: d.entry(0x8000, name="start"),
         )
         assert "lda #&22" in text
-        assert 'ASC(""' not in text
+        lda_line = next(
+            line for line in text.splitlines() if "lda #&22" in line
+        )
+        import re
+        assert not re.search(r"; '[^']'", lda_line)
 
     def test_immediate_user_expression_suppresses_char_form(
         self, roundtrip_via_beebasm,
@@ -447,12 +457,13 @@ class TestAddressingModesViaSource:
         # No ASC form leaked through — the user's choice wins.
         assert 'ASC("g")' not in text
 
-    def test_immediate_char_literal_style_quote(self):
-        # Alternative ``"quote"`` style — produces the universal
-        # single-quoted-char form. Apostrophe (``'``) falls back to
-        # hex; double-quote works (single-quoted double-quote is
-        # unambiguous). Use direct renderer construction since the
-        # roundtrip fixture builds its own renderer.
+    def test_immediate_char_literal_style_quote_for_explicit_hint(self):
+        # ``char_literal_style`` only governs the syntax used when an
+        # EXPLICIT ``FormatHint.CHAR`` is registered at the operand
+        # byte. ``"quote"`` produces ``'c'``. Apostrophe (``'``) has
+        # no clean single-quoted form so it cross-falls-back to the
+        # ASC form; double-quote works (single-quoted double-quote
+        # is unambiguous).
         from pathlib import Path
         import tempfile
         from dasmos.disassembler import Disassembler
@@ -465,48 +476,24 @@ class TestAddressingModesViaSource:
             d = Disassembler.create(cpu="6502")
             d.load(rom_path, 0x8000)
             d.entry(0x8000, name="start")
+            d.char_literal(0x8001)
+            d.char_literal(0x8003)
+            d.char_literal(0x8005)
             ir = d.disassemble()
             renderer = BeebasmRenderer(char_literal_style="quote")
             output = str(renderer.render(ir))
         assert "ldy #'g'" in output
-        # Apostrophe falls back to hex (no `'''` form).
-        assert "ldx #&27" in output
-        assert "ldx #'" not in output.split("ldx ")[1].split("\n")[0]
+        # Apostrophe cross-falls-back to ASC form (the ``'c'`` form
+        # would be ``'''`` and is ambiguous).
+        assert 'ldx #ASC("\'")' in output
         # Double-quote works inside single quotes.
         assert "lda #'\"'" in output
 
-    def test_immediate_char_literal_style_comment(self):
-        # ``"comment"`` style preserves the py8dis-fork form: hex
-        # operand with a trailing ``; 'c'`` hint. Quote chars and
-        # non-printable bytes get no annotation (matching py8dis).
-        from pathlib import Path
-        import tempfile
-        from dasmos.disassembler import Disassembler
-        from dasmos.ext.renderers.beebasm.renderer import BeebasmRenderer
-        rom_bytes = bytes([0xa0, 0x67, 0xa9, 0x22, 0x60])  # ldy #&67 ; lda #&22 ; rts
-        with tempfile.TemporaryDirectory() as td:
-            rom_path = Path(td) / "p.bin"
-            rom_path.write_bytes(rom_bytes)
-            d = Disassembler.create(cpu="6502")
-            d.load(rom_path, 0x8000)
-            d.entry(0x8000, name="start")
-            ir = d.disassemble()
-            renderer = BeebasmRenderer(char_literal_style="comment")
-            output = str(renderer.render(ir))
-        ldy_line = next(
-            line for line in output.splitlines() if "ldy #&67" in line
-        )
-        assert "; 'g'" in ldy_line
-        # Double-quote: no annotation in comment style.
-        lda_line = next(
-            line for line in output.splitlines() if "lda #&22" in line
-        )
-        import re
-        assert not re.search(r"; '[^']'", lda_line)
-
-    def test_immediate_char_literal_style_off(self):
-        # ``"off"`` disables char annotation entirely — the operand
-        # is plain hex, no ASC, no comment hint.
+    def test_show_char_comment_hint_disables_default_annotation(self):
+        # ``show_char_comment_hint=False`` disables the default
+        # trailing ``; 'c'`` annotation entirely — operand is plain
+        # hex, no annotation. Operand replacement (via explicit
+        # ``d.char_literal``) still works regardless of this flag.
         from pathlib import Path
         import tempfile
         from dasmos.disassembler import Disassembler
@@ -519,7 +506,7 @@ class TestAddressingModesViaSource:
             d.load(rom_path, 0x8000)
             d.entry(0x8000, name="start")
             ir = d.disassemble()
-            renderer = BeebasmRenderer(char_literal_style="off")
+            renderer = BeebasmRenderer(show_char_comment_hint=False)
             output = str(renderer.render(ir))
         assert "ldy #&67" in output
         assert "ASC(" not in output
@@ -527,7 +514,15 @@ class TestAddressingModesViaSource:
 
     def test_immediate_char_literal_style_invalid_rejected(self):
         # Out-of-range style values fail loudly at construction.
+        # Valid values are now just "asc" / "quote" — the previous
+        # "comment" / "off" values were absorbed into the default
+        # behaviour (always-on safe trailing hint) plus the
+        # ``show_char_comment_hint`` kill-switch.
         from dasmos.ext.renderers.beebasm.renderer import BeebasmRenderer
+        with pytest.raises(ValueError, match="char_literal_style"):
+            BeebasmRenderer(char_literal_style="comment")
+        with pytest.raises(ValueError, match="char_literal_style"):
+            BeebasmRenderer(char_literal_style="off")
         with pytest.raises(ValueError, match="char_literal_style"):
             BeebasmRenderer(char_literal_style="hex")
 
@@ -556,11 +551,11 @@ class TestAddressingModesViaSource:
         text = roundtrip_via_beebasm(source, 0x8000, configure)
         assert 'ldx #ASC("A")' in text
 
-    def test_explicit_char_literal_overrides_auto_detect_disabled(self):
-        # When auto-detection is OFF (renderer ``char_literal_style=
-        # "off"``), the explicit ``d.char_literal(addr)`` marker
-        # still produces a char-form operand. The semantic hint
-        # always wins over the auto-detect kill-switch.
+    def test_explicit_char_literal_overrides_comment_hint_disabled(self):
+        # ``show_char_comment_hint=False`` disables the auto trailing
+        # comment, but an explicit ``d.char_literal()`` registration
+        # still produces operand replacement — the semantic hint
+        # always overrides the renderer-level annotation kill-switch.
         from pathlib import Path
         import tempfile
         from dasmos.disassembler import Disassembler
@@ -575,11 +570,8 @@ class TestAddressingModesViaSource:
             d.entry(0x8000, name="start")
             d.char_literal(0x8001)
             ir = d.disassemble()
-            renderer = BeebasmRenderer(char_literal_style="off")
+            renderer = BeebasmRenderer(show_char_comment_hint=False)
             output = str(renderer.render(ir))
-        # Auto-detection was off, but the explicit hint still
-        # produced char form (renderer falls back to ``ASC`` as the
-        # universal default when no operand-replacement style is set).
         assert 'ldx #ASC("A")' in output
 
     def test_explicit_char_literal_double_quote_uses_quote_form(
