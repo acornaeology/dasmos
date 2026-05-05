@@ -49,42 +49,48 @@ if TYPE_CHECKING:
 
 # -- Inline-comment tables (per docs/design/auto-comment-style.md) --
 
-# OSFIND: action codes → terse JSR-site comment fragment.
+# OSFIND / OSFILE / OSGBPB / OSEVEN inline-comment tables. Each
+# entry's text is prefixed with the call name (``osfind: ``,
+# ``osfile: ``, etc.) for the same reason OSBYTE / OSWORD comments
+# carry their prefix: the prefix anchors the action description in
+# the OS-call context. Without it, a fragment like "close one or
+# all files" reads ambiguously when scanning the right-hand
+# column; with it, the call name reads first and the action
+# description grounds in that.
 OSFIND_INLINE: dict[int, str] = {
-    0x00: "close one or all files",
-    0x40: "open file for input",
-    0x80: "open file for output",
-    0xc0: "open file for update",
+    0x00: "osfind: close one or all files",
+    0x40: "osfind: open file for input",
+    0x80: "osfind: open file for output",
+    0xc0: "osfind: open file for update",
 }
 
-# OSFILE: action codes → terse JSR-site comment fragment.
 OSFILE_INLINE: dict[int, str] = {
-    0x00: "save block of memory",
-    0x01: "write catalogue info",
-    0x02: "write load address",
-    0x03: "write execution address",
-    0x04: "write attributes",
-    0x05: "read catalogue info",
-    0x06: "delete file",
-    0x07: "create empty file",
-    0xff: "load file",
+    0x00: "osfile: save block of memory",
+    0x01: "osfile: write catalogue info",
+    0x02: "osfile: write load address",
+    0x03: "osfile: write execution address",
+    0x04: "osfile: write attributes",
+    0x05: "osfile: read catalogue info",
+    0x06: "osfile: delete file",
+    0x07: "osfile: create empty file",
+    0xff: "osfile: load file",
 }
 
-# OSGBPB: action codes → terse JSR-site comment fragment.
 OSGBPB_INLINE: dict[int, str] = {
-    0x01: "write bytes (at given pointer)",
-    0x02: "append bytes (at current pointer)",
-    0x03: "read bytes (at given pointer)",
-    0x04: "read bytes (at current pointer)",
-    0x05: "read title, boot option, drive",
-    0x06: "read current directory + drive",
-    0x07: "read current library + drive",
-    0x08: "read filenames in current directory",
+    0x01: "osgbpb: write bytes (at given pointer)",
+    0x02: "osgbpb: append bytes (at current pointer)",
+    0x03: "osgbpb: read bytes (at given pointer)",
+    0x04: "osgbpb: read bytes (at current pointer)",
+    0x05: "osgbpb: read title, boot option, drive",
+    0x06: "osgbpb: read current directory + drive",
+    0x07: "osgbpb: read current library + drive",
+    0x08: "osgbpb: read filenames in current directory",
 }
 
 # OSEVEN: terse human name for each event number, used to build
-# ``generate event: <name>`` at the JSR site. Mirrors the long
-# names in ``EVENT_ENUM`` but tighter for the inline column.
+# ``oseven: <event-name>`` at the JSR site. The ``oseven: `` prefix
+# already conveys "generate event"; the body just identifies which
+# event.
 EVENT_NAMES_TERSE: dict[int, str] = {
     0: "output buffer empty",
     1: "input buffer full",
@@ -407,12 +413,13 @@ def osbyte_analyzer(
 
 
 # OSEVEN takes an event number in Y. The JSR-site comment is
-# ``generate event: <terse-name>`` per the style guide.
+# ``oseven: <terse-name>`` — the prefix anchors the call name and
+# the body identifies which event.
 oseven_analyzer = _analyzer_for(
     EVENT_ENUM,
     reg="y",
     inline_for_value={
-        n: f"generate event: {terse}"
+        n: f"oseven: {terse}"
         for n, terse in EVENT_NAMES_TERSE.items()
     },
 )

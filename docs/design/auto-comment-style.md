@@ -186,28 +186,57 @@ runtime equality, not "this is what the value means").
 ### 3.4 Conditional based on a known immediate
 
 When the analyzer knows the immediate value, name the action
-directly. When it doesn't, the comment stays generic:
+directly. When it doesn't, the comment stays silent (per §5.4 —
+a generic placeholder reads worse than nothing):
 
 ```
-KNOWN A=&40:    jsr osfind                   ; open file for input
-KNOWN A=&80:    jsr osfind                   ; open file for output
-KNOWN A=&C0:    jsr osfind                   ; open file for update
-KNOWN A=&00:    jsr osfind                   ; close one or all files
-UNKNOWN:        jsr osfind                   ; open or close file
+KNOWN A=&40:    jsr osfind                   ; osfind: open file for input
+KNOWN A=&80:    jsr osfind                   ; osfind: open file for output
+KNOWN A=&C0:    jsr osfind                   ; osfind: open file for update
+KNOWN A=&00:    jsr osfind                   ; osfind: close one or all files
+UNKNOWN:        jsr osfind                   ; (no comment)
 ```
 
-The unknown case never needs the `(A=...)` literal because there's
-no known value to reference.
+When emitted, every comment carries the call-name prefix (see
+§3.5). The unknown case never needs an `(A=...)` literal because
+there's nothing useful to say.
 
-### 3.5 Enum-name lookup
+### 3.5 Call-name prefix anchors the action description
 
-When a register's value is a well-known enum (event numbers, OSBYTE
-action codes), embed the enum name in the comment via `:`:
+Every analyzer-generated inline comment starts with the call name
+followed by `:`. The prefix is structural — without it a fragment
+like `select input stream` or `read line` floats free of context
+and could be misread as describing surrounding code. With it the
+reader scans the column and immediately sees: this is an OS call,
+specifically OSBYTE / OSWORD / OSFIND / etc.:
 
 ```
-GOOD: generate event: vsync
-GOOD: generate event: paged-rom-changed
-GOOD: generate event (unknown)
+GOOD: jsr osbyte                             ; osbyte: select input stream
+GOOD: jsr osword                             ; osword: read I/O memory
+GOOD: jsr osfind                             ; osfind: open file for input
+GOOD: jsr osfile                             ; osfile: save block of memory
+GOOD: jsr osgbpb                             ; osgbpb: read filenames in current directory
+GOOD: jsr oseven                             ; oseven: vsync
+```
+
+The prefix is consistent across all OS-call analyzers — even ones
+where the body alone might already convey the call kind
+(`osfind: open file for input` is mildly redundant since "file"
+already implies filesystem). Consistency wins: the reader's eye
+learns to skip the prefix and focus on the body, which is more
+valuable than saving 8 characters per comment.
+
+### 3.6 Enum-name lookup
+
+When the call's argument is a value from a known enum (event
+numbers, OSBYTE action codes), embed the enum name in the comment
+body. The prefix-then-action shape replaces the older
+``generate event: vsync`` form:
+
+```
+GOOD: oseven: vsync                          (Y=&04 → event_start_of_vertical_sync)
+GOOD: oseven: paged-rom-changed              (a hypothetical event)
+SILENT: jsr oseven                           ; (no comment when Y is dynamic)
 ```
 
 If an enum entry is ambiguous about meaning ("`PCALL` — what does
@@ -224,14 +253,14 @@ column would be wrong.
 ```
     lda #&41                                 ; value to write
     ldy #&00                                 ; offset from base
-    jsr oswrsc                               ; write byte to screen
+    jsr oswrsc                               ; oswrsc: write byte to screen
 ```
 
 ### OSRDSC (read byte from screen / paged ROM)
 
 ```
     ldy #&80                                 ; paged ROM number
-    jsr osrdsc                               ; read byte from paged ROM
+    jsr osrdsc                               ; osrdsc: read byte from paged ROM
     sta tmp                                  ; → byte read
 ```
 
@@ -240,26 +269,24 @@ column would be wrong.
 ```
 KNOWN event:
     ldy #&04                                 ; event: vsync
-    jsr oseven                               ; generate event: vsync
+    jsr oseven                               ; oseven: vsync
 
 UNKNOWN event:
-    jsr oseven                               ; generate event Y
+    jsr oseven                               ; (no comment)
 ```
 
 When Y is statically known the JSR comment names the event; when Y
-is dynamic the call falls back to the generic form and there's no
-LDY-side comment.
+is dynamic the analyzer stays silent (per §5.4).
 
 ### OSFIND (open / close file)
 
-| A         | LDA comment                        | JSR comment                |
-|-----------|------------------------------------|----------------------------|
-| `&00`     | (no LDA comment — A=0)             | `close one or all files`   |
-| `&00`+Y=0 | (no LDA comment)                   | `close all files`          |
-| `&40`     | `mode: input` *(or just omit)*     | `open file for input`      |
-| `&80`     | `mode: output` *(or just omit)*    | `open file for output`     |
-| `&C0`     | `mode: update` *(or just omit)*    | `open file for update`     |
-| unknown   | `→ file open mode`                 | `open or close file`       |
+| A         | LDA comment                        | JSR comment                       |
+|-----------|------------------------------------|-----------------------------------|
+| `&00`     | (no LDA comment — A=0)             | `osfind: close one or all files`  |
+| `&40`     | (or just omit)                     | `osfind: open file for input`     |
+| `&80`     | (or just omit)                     | `osfind: open file for output`    |
+| `&C0`     | (or just omit)                     | `osfind: open file for update`    |
+| unknown   | (no comment)                       | (no comment)                      |
 
 Returns:
 
@@ -269,9 +296,15 @@ Returns:
 
 ### OSGBPB (transfer parameter-block read/write)
 
+```
+KNOWN A=&08:    jsr osgbpb                   ; osgbpb: read filenames in current directory
+KNOWN A=&01:    jsr osgbpb                   ; osgbpb: write bytes (at given pointer)
+UNKNOWN:        jsr osgbpb                   ; (no comment)
+```
+
 The OSGBPB calls take a parameter block addressed by XY. py8dis
-attaches comments to *each field* of the parameter block. We do
-the same but with our terser style:
+attaches per-field comments inside the block; dasmos doesn't yet,
+but when we do they should match the style:
 
 ```
 .gbpb_block
@@ -284,6 +317,31 @@ the same but with our terser style:
 The "(N bytes)" suffix marks multi-byte fields so the reader can
 skip past them without counting; it's not redundant the way
 `(A=64)` is — the field-byte count isn't visible on the line.
+
+### OSBYTE / OSWORD (mechanically-derived bodies)
+
+OSBYTE has ~150 actions and OSWORD ~16. Both use mechanical
+derivation from the existing OSBYTE_ENUM / OSWORD_ENUM names:
+strip the ``osbyte_`` / ``osword_`` prefix, replace underscores
+with spaces, prepend ``osbyte: `` / ``osword: ``. Override tables
+catch the few entries where the mechanical strip is awkward.
+
+```
+KNOWN A=&00:    jsr osbyte                   ; osbyte: read os version
+KNOWN A=&02:    jsr osbyte                   ; osbyte: select input stream
+KNOWN A=&7c:    jsr osbyte                   ; osbyte: clear escape
+KNOWN A=&13:    jsr osbyte                   ; osbyte: wait for vsync
+                                                       ↑ override (mech: "vsync")
+
+KNOWN A=&00:    jsr osword                   ; osword: read line
+KNOWN A=&05:    jsr osword                   ; osword: read I/O memory
+                                                       ↑ override
+KNOWN A=&0e:    jsr osword                   ; osword: read CMOS clock
+                                                       ↑ override
+```
+
+The override table preserves a body's casing (acronyms stay
+capitalised); the prefix is added uniformly.
 
 ---
 

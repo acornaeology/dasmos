@@ -589,7 +589,9 @@ class TestAcornMosInlineAutoComments:
             bytes([0xa9, 0x40, 0x20, 0xce, 0xff, 0x60]),
         )
         ir = d.disassemble()
-        assert self._inline_comment_at(ir, 0x1002) == "open file for input"
+        assert self._inline_comment_at(ir, 0x1002) == (
+            "osfind: open file for input"
+        )
 
     def test_osfind_close_attaches_inline_comment(self, tmp_path):
         # LDA #&00 ; JSR osfind ; RTS — A=0 is osfind_close.
@@ -598,7 +600,9 @@ class TestAcornMosInlineAutoComments:
             bytes([0xa9, 0x00, 0x20, 0xce, 0xff, 0x60]),
         )
         ir = d.disassemble()
-        assert self._inline_comment_at(ir, 0x1002) == "close one or all files"
+        assert self._inline_comment_at(ir, 0x1002) == (
+            "osfind: close one or all files"
+        )
 
     def test_osfile_save_attaches_inline_comment(self, tmp_path):
         # LDA #&00 ; JSR osfile ; RTS — A=0 is osfile_save.
@@ -607,7 +611,9 @@ class TestAcornMosInlineAutoComments:
             bytes([0xa9, 0x00, 0x20, 0xdd, 0xff, 0x60]),
         )
         ir = d.disassemble()
-        assert self._inline_comment_at(ir, 0x1002) == "save block of memory"
+        assert self._inline_comment_at(ir, 0x1002) == (
+            "osfile: save block of memory"
+        )
 
     def test_osgbpb_read_filenames_attaches_inline_comment(self, tmp_path):
         # LDA #&08 ; JSR osgbpb ; RTS — A=8 is read filenames.
@@ -617,7 +623,7 @@ class TestAcornMosInlineAutoComments:
         )
         ir = d.disassemble()
         assert self._inline_comment_at(ir, 0x1002) == (
-            "read filenames in current directory"
+            "osgbpb: read filenames in current directory"
         )
 
     def test_oseven_known_event_attaches_inline_comment(self, tmp_path):
@@ -627,7 +633,7 @@ class TestAcornMosInlineAutoComments:
             bytes([0xa0, 0x04, 0x20, 0xbf, 0xff, 0x60]),
         )
         ir = d.disassemble()
-        assert self._inline_comment_at(ir, 0x1002) == "generate event: vsync"
+        assert self._inline_comment_at(ir, 0x1002) == "oseven: vsync"
 
     def test_oseven_unknown_event_attaches_no_inline_comment(self, tmp_path):
         # LDY #&20 (not in EVENT_ENUM) ; JSR oseven ; RTS.
