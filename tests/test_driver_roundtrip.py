@@ -531,6 +531,267 @@ class TestAddressingModesViaSource:
         with pytest.raises(ValueError, match="char_literal_style"):
             BeebasmRenderer(char_literal_style="hex")
 
+    def test_explicit_char_literal_marker_forces_char_form(
+        self, roundtrip_via_beebasm,
+    ):
+        # ``d.char_literal(addr)`` registers a SEMANTIC ``FormatHint
+        # .CHAR`` in the IR — the user has declared "this byte is
+        # intended as an ASCII character". The renderer reads the
+        # hint and chooses its own syntax (in beebasm's case,
+        # ``ASC("c")`` for the default style). Source byte ``&41``
+        # is 'A'; auto-detect would already char-form it, so the
+        # explicit hint should produce the SAME output as auto.
+        source = """
+            org &8000
+        .start
+            ldx #&41
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.char_literal(0x8001)
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        assert 'ldx #ASC("A")' in text
+
+    def test_explicit_char_literal_overrides_auto_detect_disabled(self):
+        # When auto-detection is OFF (renderer ``char_literal_style=
+        # "off"``), the explicit ``d.char_literal(addr)`` marker
+        # still produces a char-form operand. The semantic hint
+        # always wins over the auto-detect kill-switch.
+        from pathlib import Path
+        import tempfile
+        from dasmos.disassembler import Disassembler
+        from dasmos.ext.renderers.beebasm.renderer import BeebasmRenderer
+
+        rom_bytes = bytes([0xa2, 0x41, 0x60])  # ldx #&41 ; rts
+        with tempfile.TemporaryDirectory() as td:
+            rom_path = Path(td) / "p.bin"
+            rom_path.write_bytes(rom_bytes)
+            d = Disassembler.create(cpu="6502")
+            d.load(rom_path, 0x8000)
+            d.entry(0x8000, name="start")
+            d.char_literal(0x8001)
+            ir = d.disassemble()
+            renderer = BeebasmRenderer(char_literal_style="off")
+            output = str(renderer.render(ir))
+        # Auto-detection was off, but the explicit hint still
+        # produced char form (renderer falls back to ``ASC`` as the
+        # universal default when no operand-replacement style is set).
+        assert 'ldx #ASC("A")' in output
+
+    def test_explicit_char_literal_double_quote_uses_quote_form(
+        self, roundtrip_via_beebasm,
+    ):
+        # Default ``char_literal_style="asc"`` skips ``"`` (0x22)
+        # because beebasm's doubled-up form inside an ASC string is
+        # unreadable. With an EXPLICIT ``d.char_literal()`` marker,
+        # the renderer falls back to the cross-style ``'"'`` form
+        # (single-quoted double-quote — beebasm parses it cleanly).
+        source = """
+            org &8000
+        .start
+            lda #&22
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.char_literal(0x8001)
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        assert "lda #'\"'" in text
+        # The plain hex form should NOT also appear on the lda line.
+        lda_line = next(
+            line for line in text.splitlines() if "lda #" in line
+        )
+        assert "&22" not in lda_line
+
+    def test_explicit_char_literal_non_printable_warns_and_falls_back(
+        self, roundtrip_via_beebasm,
+    ):
+        # An explicit char marker on a non-printable byte (no clean
+        # beebasm character literal exists for it) emits a UserWarning
+        # at render time and falls back to plain hex. The warning
+        # tells the user dasmos honoured their semantic intent but
+        # beebasm's lexical layer can't express the byte as a char.
+        import warnings
+        source = """
+            org &8000
+        .start
+            lda #&07
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.char_literal(0x8001)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            text = roundtrip_via_beebasm(source, 0x8000, configure)
+
+        warning_messages = [str(w.message) for w in caught]
+        assert any("char" in m.lower() and "&07" in m for m in warning_messages), (
+            f"expected a char-fallback warning, got: {warning_messages}"
+        )
+        # Output rendered the byte as plain hex (within the small-int
+        # decimal rule range, ``7`` is rendered decimal).
+        assert "lda #7" in text
+
+    def test_format_hint_decimal_forces_base_10(
+        self, roundtrip_via_beebasm,
+    ):
+        # ``FormatHint.DECIMAL`` widens the decimal default (which the
+        # renderer applies only to ``0..9``) to the whole byte range.
+        # Byte ``&ff`` would normally render as hex; the hint forces
+        # ``255``.
+        from dasmos.core.format_hint import FormatHint
+        source = """
+            org &8000
+        .start
+            lda #&ff
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.format_hint(0x8001, FormatHint.DECIMAL)
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        assert "lda #255" in text
+        assert "lda #&ff" not in text
+
+    def test_format_hint_hex_overrides_decimal_default(
+        self, roundtrip_via_beebasm,
+    ):
+        # The renderer's small-int default emits ``7`` for byte
+        # ``&07``. ``FormatHint.HEX`` forces ``&07`` regardless.
+        from dasmos.core.format_hint import FormatHint
+        source = """
+            org &8000
+        .start
+            lda #&07
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.format_hint(0x8001, FormatHint.HEX)
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        assert "lda #&07" in text
+        assert "lda #7\n" not in text  # rule out the bare-decimal form
+
+    def test_format_hint_binary_produces_percent_form(
+        self, roundtrip_via_beebasm,
+    ):
+        # Beebasm's binary literal sigil is ``%``; bit-pattern form
+        # is more readable than hex for flag words / bitmasks.
+        from dasmos.core.format_hint import FormatHint
+        source = """
+            org &8000
+        .start
+            lda #&aa
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.format_hint(0x8001, FormatHint.BINARY)
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        assert "lda #%10101010" in text
+
+    def test_format_hint_octal_warns_and_falls_back_in_beebasm(
+        self, roundtrip_via_beebasm,
+    ):
+        # Beebasm has no native octal syntax. The hint is best-effort:
+        # the renderer warns, the user gets a numeric form (decimal in
+        # this case) plus a ``(octal NNN)`` mention in the warning,
+        # and the assembled byte value is preserved.
+        import warnings as _warnings
+        from dasmos.core.format_hint import FormatHint
+        source = """
+            org &8000
+        .start
+            lda #&ff
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.format_hint(0x8001, FormatHint.OCTAL)
+
+        with _warnings.catch_warnings(record=True) as caught:
+            _warnings.simplefilter("always")
+            text = roundtrip_via_beebasm(source, 0x8000, configure)
+
+        warning_messages = [str(w.message) for w in caught]
+        assert any("octal" in m.lower() for m in warning_messages), (
+            f"expected an OCTAL fallback warning, got: {warning_messages}"
+        )
+        # Decimal fallback (255 = octal 377).
+        assert "lda #255" in text
+
+    def test_format_hint_expression_takes_precedence(
+        self, roundtrip_via_beebasm,
+    ):
+        # Same precedence rule as the CHAR case: if both an
+        # expression and a hint are registered at the same operand
+        # byte, the expression wins. Register the symbol via
+        # ``constant`` so the round-trip re-assembly resolves it.
+        from dasmos.core.format_hint import FormatHint
+        source = """
+            org &8000
+        .start
+            lda #&ff
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.constant(0xff, "MAX_LIVES")
+            d.expr(0x8001, "MAX_LIVES")
+            d.format_hint(0x8001, FormatHint.DECIMAL)
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        assert "lda #MAX_LIVES" in text
+        assert "lda #255" not in text
+
+    def test_explicit_char_literal_user_expression_takes_precedence(
+        self, roundtrip_via_beebasm,
+    ):
+        # If both a user expression and a char-literal hint are
+        # registered at the same operand byte, the expression wins —
+        # the user's chosen symbol is more specific than the hint.
+        source = """
+            org &8000
+        .start
+            ldy #&67
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.constant(0x67, "ascii_g")
+            d.expr(0x8001, "ascii_g")
+            d.char_literal(0x8001)
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        assert "ldy #ascii_g" in text
+        assert 'ASC("g")' not in text
+
     def test_register_suffix_case_lowercase_by_default(
         self, roundtrip_via_beebasm,
     ):

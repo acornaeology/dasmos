@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from dasmos.core.classification import ExpressionRegistry
     from dasmos.core.config import Config
     from dasmos.core.disassembly import ClassificationStore
+    from dasmos.core.format_hint import FormatHintRegistry
     from dasmos.core.labels import LabelManager
     from dasmos.core.memory import MemoryImage
     from dasmos.core.move import MoveManager
@@ -76,6 +77,16 @@ class IntermediateRepresentation:
     @property
     def expressions(self) -> "ExpressionRegistry":
         return self._disassembler.expressions
+
+    @property
+    def format_hints(self) -> "FormatHintRegistry":
+        """Renderer-agnostic format hints registered via
+        :meth:`Disassembler.format_hint` /
+        :meth:`Disassembler.char_literal`. Renderers consult this
+        registry at render time to honour the user's semantic
+        intent for an operand byte.
+        """
+        return self._disassembler.format_hints
 
     @property
     def annotations(self) -> "AnnotationStore":

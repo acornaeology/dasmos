@@ -39,10 +39,12 @@ for the first round-trip slice (no relocations).
 
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING
 
 from dasmos.core.annotations import Align, Annotation, Banner, Comment
 from dasmos.core.classification import Byte, Fill, String, Word
+from dasmos.core.format_hint import FormatHint
 from dasmos.core.memory import BinaryAddr
 from dasmos.core.move import Move
 from dasmos.cpu import Opcode, OperandKind
@@ -1462,39 +1464,139 @@ class BeebasmRenderer(TextRenderer):
         return text.lower() if self.lower_case else text.upper()
 
     def _format_immediate_byte(self, value: int) -> str:
-        """Render an 8-bit immediate operand byte.
+        """Render an 8-bit immediate operand byte using the renderer's
+        default heuristic.
 
         Mirrors py8dis-fork's ``uint_formatter`` rule: bare decimal for
         0..9 (more readable for small counts and indices), hex
         otherwise. Beebasm parses both forms identically so the
         rendered text round-trips.
+
+        Used as the fallback when no :class:`FormatHint` is set at the
+        operand byte and the auto-detect heuristic for printable-as-
+        char doesn't fire.
         """
         if 0 <= value <= 9:
             return str(value)
         return self.hex2(value)
 
-    def _format_char_literal_operand(self, value: int) -> str | None:
-        """Render an immediate operand byte as a beebasm character
-        literal — the ``"asc"`` and ``"quote"`` style produce the
-        operand text; ``"comment"`` and ``"off"`` return ``None``
-        (caller falls back to hex via
-        :meth:`_format_immediate_byte`).
+    def _render_immediate_with_hints(
+        self, ir, operand_addr: int, value: int,
+    ) -> str:
+        """Choose an operand text for an IMMEDIATE byte, honouring
+        any :class:`FormatHint` registered at ``operand_addr``.
 
-        Style-specific quoting:
+        Decision order:
 
-        - ``"asc"`` uses ``ASC("c")`` — beebasm's first-character-of-
-          string function. Apostrophe (``0x27``) renders as
-          ``ASC("'")`` (single quote inside double-quoted string is
-          fine). Double-quote (``0x22``) falls back to hex —
-          beebasm's doubled-up form (``ASC`` of a four-quote string
-          to encode one ``"``) is unreadable.
-        - ``"quote"`` uses ``'c'`` — the universal single-quoted-char
-          form. Apostrophe (``0x27``) falls back to hex (a bare
-          ``'''`` is ambiguous). Double-quote (``0x22``) renders as
-          ``'"'`` (double quote inside single quotes is fine).
+        1. Explicit hint at this byte → dispatch on the hint
+           (``CHAR``, ``DECIMAL``, ``HEX``, ``BINARY``, ``OCTAL``).
+           The renderer translates each abstract semantic into its
+           target assembler's syntax. Hints are best-effort: if
+           beebasm can't natively express a hint (e.g. no octal
+           syntax), the renderer warns and falls back to a sensible
+           equivalent.
+        2. Auto-detect heuristic per ``char_literal_style`` (printable
+           ASCII → char form for ``"asc"``/``"quote"`` styles; left
+           to the comment-hint path for ``"comment"`` style; skipped
+           for ``"off"``).
+        3. Fallback: small-int decimal / hex via
+           :meth:`_format_immediate_byte`.
+        """
+        hint = ir.format_hints.get_or_none(operand_addr)
+        if hint is not None:
+            return self._render_hinted_immediate(hint, value, operand_addr)
+        # No explicit hint — apply the renderer's auto-detect for
+        # printable-as-char per the configured style.
+        char_form = self._auto_format_char_operand(value)
+        if char_form is not None:
+            return char_form
+        return self._format_immediate_byte(value)
 
-        Non-printable bytes (outside ``0x20..0x7E``) always return
-        ``None``: there's no clean beebasm literal for those.
+    def _render_hinted_immediate(
+        self, hint: FormatHint, value: int, operand_addr: int,
+    ) -> str:
+        """Translate a :class:`FormatHint` to beebasm operand syntax.
+
+        Each branch attempts the natural beebasm form for the hint;
+        when beebasm can't express it (or the byte's value can't be
+        represented cleanly — e.g. a non-printable byte under
+        ``CHAR``), the renderer issues a ``UserWarning`` describing
+        the fallback and emits a hex literal.
+        """
+        if hint is FormatHint.CHAR:
+            text = self._render_char_for_explicit_hint(value)
+            if text is not None:
+                return text
+            warnings.warn(
+                f"FormatHint.CHAR at &{operand_addr:04x} can't be "
+                f"expressed as a beebasm character literal for byte "
+                f"&{value:02x} (non-printable); falling back to "
+                f"a numeric literal.",
+                stacklevel=2,
+            )
+            return self._format_immediate_byte(value)
+        if hint is FormatHint.DECIMAL:
+            return str(value)
+        if hint is FormatHint.HEX:
+            return self.hex2(value)
+        if hint is FormatHint.BINARY:
+            # Beebasm's ``%`` sigil + 8-bit bit pattern.
+            return f"%{value:08b}"
+        if hint is FormatHint.OCTAL:
+            # Beebasm has no native octal syntax. Emit decimal and
+            # warn so the user can pick another representation if
+            # the fallback isn't acceptable.
+            warnings.warn(
+                f"FormatHint.OCTAL at &{operand_addr:04x} — beebasm "
+                f"has no octal literal; falling back to decimal "
+                f"{value} (octal {value:o}).",
+                stacklevel=2,
+            )
+            return str(value)
+        # Future hint values land here as an explicit, informative
+        # error rather than a silent fallthrough.
+        raise NotImplementedError(
+            f"BeebasmRenderer doesn't yet handle FormatHint.{hint.name}"
+        )
+
+    def _render_char_for_explicit_hint(self, value: int) -> str | None:
+        """Best-effort beebasm character literal for an explicitly-
+        marked ``CHAR`` byte. Returns ``None`` when the byte has no
+        clean beebasm character literal (caller falls back to hex
+        with a warning).
+
+        Tries the renderer's preferred ``char_literal_style`` first,
+        then cross-style fallbacks for the quote chars where the
+        primary style can't unambiguously express them.
+        """
+        if not (0x20 <= value <= 0x7E):
+            return None
+        c = chr(value)
+        # Quote-char cross-fallback: each style's natural form has a
+        # blind spot at one of ``'`` / ``"``; the OTHER style covers it.
+        if value == 0x22:  # double-quote: clean as 'c' form
+            return f"'{c}'"
+        if value == 0x27:  # apostrophe: clean as ASC("c") form
+            return f'ASC("{c}")'
+        # Other printable bytes follow the renderer's preferred style.
+        # ``"comment"`` and ``"off"`` styles have no native operand-
+        # replacement form; default to ASC for explicit hints since
+        # that's the user's "render this AS A CHAR" intent.
+        if self.char_literal_style == "quote":
+            return f"'{c}'"
+        return f'ASC("{c}")'
+
+    def _auto_format_char_operand(self, value: int) -> str | None:
+        """Auto-detect heuristic — the renderer's default behaviour
+        for printable-ASCII immediates when no explicit hint is set.
+        Returns ``None`` for non-printable bytes, when
+        ``char_literal_style`` is ``"comment"`` or ``"off"``, or when
+        the byte is one whose char form would create awkward quoting
+        in the chosen style.
+
+        This is the renderer's own aesthetic choice (not an IR
+        semantic). The user opts out via ``char_literal_style="off"``
+        or opts in for a specific byte via :meth:`Disassembler.char_literal`.
         """
         if self.char_literal_style not in ("asc", "quote"):
             return None
@@ -1502,31 +1604,34 @@ class BeebasmRenderer(TextRenderer):
             return None
         c = chr(value)
         if self.char_literal_style == "asc":
-            if value == 0x22:  # double-quote
+            if value == 0x22:  # double-quote — awkward inside ASC string
                 return None
             return f'ASC("{c}")'
         # "quote" style.
-        if value == 0x27:  # apostrophe
+        if value == 0x27:  # apostrophe — bare ``'''`` is ambiguous
             return None
         return f"'{c}'"
 
     def _immediate_char_hint(self, ir, binary_addr, opcode: Opcode) -> str:
         """Return a `` ; '<c>'`` trailing hint for printable-ASCII
         immediates in ``"comment"`` style, or the empty string in
-        every other style / suppression case.
+        every other case.
 
-        Suppression conditions (any one is enough):
+        The comment-hint form is a stylistic choice that augments the
+        plain-hex operand instead of replacing it; it is parallel to
+        the operand-replacement forms emitted by
+        :meth:`_auto_format_char_operand`. Suppression conditions:
 
-        - ``char_literal_style`` is not ``"comment"`` (the operand
-          itself becomes the char in ``"asc"`` / ``"quote"`` modes,
-          and ``"off"`` disables annotation entirely).
+        - ``char_literal_style`` is not ``"comment"``.
         - The opcode's addressing mode isn't IMMEDIATE.
         - A user-supplied expression is registered at the operand
-          byte: the user has chosen a more meaningful symbol and the
-          auto-hint would be redundant noise.
+          byte (the user's symbol takes precedence).
+        - A :class:`FormatHint` is registered at the operand byte
+          (the hint dispatcher in ``_render_immediate_with_hints``
+          already decided how to render the byte).
         - The byte isn't printable ASCII (``0x20..0x7E``).
-        - The byte is ``'`` or ``"``: a single-quoted hint would form
-          ambiguous comment syntax (``; '''`` / ``; '"'``).
+        - The byte is ``'`` or ``"`` — would form ambiguous
+          comment syntax.
         """
         if self.char_literal_style != "comment":
             return ""
@@ -1534,6 +1639,8 @@ class BeebasmRenderer(TextRenderer):
             return ""
         operand_addr = int(binary_addr) + 1
         if ir.expressions.get_or_none(operand_addr) is not None:
+            return ""
+        if ir.format_hints.get_or_none(operand_addr) is not None:
             return ""
         value = ir.memory.get_u8(operand_addr)
         if not (0x20 <= value <= 0x7E):
@@ -1633,10 +1740,9 @@ class BeebasmRenderer(TextRenderer):
         if kind is OperandKind.IMMEDIATE:
             # Immediate values aren't addresses; no label lookup.
             value = ir.memory.get_u8(operand_addr)
-            char_form = self._format_char_literal_operand(value)
-            if char_form is not None:
-                return char_form
-            return self._format_immediate_byte(value)
+            return self._render_immediate_with_hints(
+                ir, operand_addr, value,
+            )
 
         if kind is OperandKind.ADDRESS_8:
             v = ir.memory.get_u8(operand_addr)

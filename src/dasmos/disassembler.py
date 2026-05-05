@@ -34,6 +34,7 @@ from typing import Any
 
 from dasmos.core.annotations import Align, AnnotationStore, Banner, Comment
 from dasmos.core.classification import Byte, ExpressionRegistry, Fill, String, Word
+from dasmos.core.format_hint import FormatHint, FormatHintRegistry
 from dasmos.core.config import Config
 from dasmos.core.disassembly import (
     ClassificationError,
@@ -146,6 +147,7 @@ class Disassembler:
         self._labels = LabelManager(self._moves)
         self._classifications = ClassificationStore()
         self._expressions = ExpressionRegistry()
+        self._format_hints = FormatHintRegistry()
         self._annotations = AnnotationStore()
         self._entry_points: list[BinaryAddr] = []
         self._traced: set[int] = set()
@@ -250,6 +252,10 @@ class Disassembler:
     @property
     def expressions(self) -> ExpressionRegistry:
         return self._expressions
+
+    @property
+    def format_hints(self) -> FormatHintRegistry:
+        return self._format_hints
 
     @property
     def annotations(self) -> AnnotationStore:
@@ -699,10 +705,60 @@ class Disassembler:
         for ensuring any names it references are valid in the rendered
         output (typically by also defining them via :meth:`label` or
         an external constant the assembler resolves).
+
+        For renderer-agnostic semantic markers (e.g. "render this byte
+        as an ASCII character / decimal / hex / binary"), use
+        :meth:`format_hint` or its sugars (:meth:`char_literal`)
+        instead — those declare *intent* and let each renderer choose
+        its own syntax.
         """
         self._raise_if_disassembled("expr")
         binary_addr = self._resolve_to_binary_addr(runtime_addr, move)
         self._expressions.add(binary_addr, expression)
+
+    def format_hint(
+        self,
+        runtime_addr,
+        hint: FormatHint,
+        *,
+        move: Move | None = None,
+    ):
+        """Mark the operand byte at ``runtime_addr`` with a renderer-
+        agnostic format hint — a semantic declaration of how the byte
+        should be interpreted (ASCII character, decimal, hex, binary,
+        octal). Each renderer translates the hint to its assembler-
+        specific syntax.
+
+        Hints are weaker than :meth:`expr`: ``expr`` substitutes a
+        concrete text expression; ``format_hint`` declares intent and
+        leaves the syntax to the renderer. When both are registered
+        at the same address, ``expr`` wins (the user's explicit text
+        is more specific than a category).
+
+        See :class:`dasmos.core.format_hint.FormatHint` for the full
+        set of hints. :meth:`char_literal` is a sugar for the
+        ``CHAR`` case.
+        """
+        self._raise_if_disassembled("format_hint")
+        binary_addr = self._resolve_to_binary_addr(runtime_addr, move)
+        self._format_hints.add(binary_addr, hint)
+
+    def char_literal(
+        self,
+        runtime_addr,
+        *,
+        move: Move | None = None,
+    ):
+        """Sugar for ``format_hint(runtime_addr, FormatHint.CHAR)``.
+
+        Declares that the operand byte at ``runtime_addr`` is intended
+        as an ASCII character literal. Renderers express this in
+        their target assembler's grammar — beebasm emits ``ASC("c")``
+        or ``'c'`` (per the renderer's ``char_literal_style``); a
+        future ACME or ca65 renderer would emit ``'c'``; the JSON
+        renderer surfaces the hint in its structured output.
+        """
+        self.format_hint(runtime_addr, FormatHint.CHAR, move=move)
 
     # -- driver-script API: comments / annotations ----------------------
 
