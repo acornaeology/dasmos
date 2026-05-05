@@ -256,6 +256,175 @@ class TestAddressingModesViaSource:
         assert "ldx #&34" in text
         assert "ldy #&56" in text
 
+    def test_immediate_small_int_renders_as_decimal(self, roundtrip_via_beebasm):
+        # py8dis-fork's ``uint_formatter`` rule: values 0..9 render as
+        # bare decimal (``#0``); ≥10 render as hex (``#&0a``).
+        # Mirrors the convention so ported drivers produce the
+        # familiar style and short-form decimal stays readable.
+        source = """
+            org &8000
+        .start
+            lda #0
+            ldx #9
+            ldy #&0a
+            rts
+            equb &ff
+        save "step1.bin", start, P%
+        """
+        text = roundtrip_via_beebasm(
+            source, 0x8000,
+            lambda d: d.entry(0x8000, name="start"),
+        )
+        assert "lda #0" in text and "lda #&00" not in text
+        assert "ldx #9" in text and "ldx #&09" not in text
+        # 10 crosses the boundary — must render hex.
+        assert "ldy #&0a" in text
+        assert "ldy #10" not in text
+
+    def test_immediate_boundary_values(self, roundtrip_via_beebasm):
+        # Edge-case sweep around the decimal-vs-hex boundary.
+        source = """
+            org &8000
+        .start
+            lda #1
+            lda #8
+            lda #&0b
+            lda #&7f
+            lda #&ff
+            rts
+        save "step1.bin", start, P%
+        """
+        text = roundtrip_via_beebasm(
+            source, 0x8000,
+            lambda d: d.entry(0x8000, name="start"),
+        )
+        assert "lda #1" in text
+        assert "lda #8" in text
+        assert "lda #&0b" in text
+        assert "lda #&7f" in text
+        assert "lda #&ff" in text
+
+    def test_immediate_printable_ascii_char_annotation(self, roundtrip_via_beebasm):
+        # py8dis-style trailing char-literal hint for printable
+        # immediates: `ldy #&67  ; 'g'`. Helps the reader spot
+        # ASCII strings being constructed byte-by-byte.
+        source = """
+            org &8000
+        .start
+            ldy #&67
+            ldx #&41
+            rts
+        save "step1.bin", start, P%
+        """
+        text = roundtrip_via_beebasm(
+            source, 0x8000,
+            lambda d: d.entry(0x8000, name="start"),
+        )
+        # Hex value AND char hint, on the same line.
+        ldy_line = next(
+            line for line in text.splitlines()
+            if "ldy #&67" in line
+        )
+        assert "; 'g'" in ldy_line
+        ldx_line = next(
+            line for line in text.splitlines()
+            if "ldx #&41" in line
+        )
+        assert "; 'A'" in ldx_line
+
+    def test_immediate_non_printable_no_char_annotation(
+        self, roundtrip_via_beebasm,
+    ):
+        # Non-printable bytes (control chars, DEL, high-bit set) must
+        # NOT get a char annotation.
+        source = """
+            org &8000
+        .start
+            lda #&00
+            lda #&07
+            lda #&7f
+            lda #&80
+            lda #&ff
+            rts
+        save "step1.bin", start, P%
+        """
+        text = roundtrip_via_beebasm(
+            source, 0x8000,
+            lambda d: d.entry(0x8000, name="start"),
+        )
+        # No ``; '...'`` form should appear on these instruction
+        # lines — pull each line and check.
+        for marker in ("lda #0", "lda #7", "lda #&7f", "lda #&80", "lda #&ff"):
+            line = next(
+                line for line in text.splitlines() if marker in line
+            )
+            # The byte-column inline annotation may show ASCII rendering
+            # of unprintable bytes as ``.`` — that's a different column.
+            # We only care that no ``; 'X'`` (single-quoted char hint)
+            # is appended here.
+            import re
+            assert not re.search(r"; '[^']'", line), (
+                f"unexpected char annotation in: {line!r}"
+            )
+
+    def test_immediate_quote_chars_no_annotation(
+        self, roundtrip_via_beebasm,
+    ):
+        # Apostrophe (&27) and double-quote (&22) would create
+        # ambiguous comment syntax (``; '''`` / ``; '"'``). Suppress
+        # the annotation for these specific bytes.
+        source = """
+            org &8000
+        .start
+            lda #&27
+            lda #&22
+            rts
+        save "step1.bin", start, P%
+        """
+        text = roundtrip_via_beebasm(
+            source, 0x8000,
+            lambda d: d.entry(0x8000, name="start"),
+        )
+        for marker in ("lda #&27", "lda #&22"):
+            line = next(
+                line for line in text.splitlines() if marker in line
+            )
+            import re
+            assert not re.search(r"; '[^']'", line), (
+                f"unexpected quote-char annotation in: {line!r}"
+            )
+
+    def test_immediate_user_expression_suppresses_annotation(
+        self, roundtrip_via_beebasm,
+    ):
+        # When the driver registers a custom expression at the
+        # operand byte (e.g. ``d.expr(...)``) the operand text is the
+        # user's symbol — the auto char-literal hint is suppressed
+        # because the user has chosen a more meaningful name.
+        source = """
+            org &8000
+        .start
+            ldy #&67
+            rts
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.constant(0x67, "ascii_g")
+            d.expr(0x8001, "ascii_g")
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        ldy_line = next(
+            line for line in text.splitlines() if "ldy #ascii_g" in line
+        )
+        # Char annotation MUST NOT appear; the user has named the
+        # constant and the auto-hint would be redundant noise.
+        import re
+        assert not re.search(r"; 'g'", ldy_line), (
+            f"char annotation leaked through expression: {ldy_line!r}"
+        )
+
     def test_zero_page_modes_round_trip(self, roundtrip_via_beebasm):
         # Pin operand SHAPE (`,X` / `,Y`); auto-label generation would
         # replace the literal hex with a synthesised symbol, so disable

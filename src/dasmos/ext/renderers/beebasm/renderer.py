@@ -119,6 +119,7 @@ class BeebasmRenderer(TextRenderer):
         default_word_cols: int = 4,
         show_auto_label_footer: bool = True,
         comment_wrap_column: int = 87,
+        show_char_literals: bool = True,
         **kwargs,
     ):
         super().__init__(name=name, **kwargs)
@@ -173,6 +174,15 @@ class BeebasmRenderer(TextRenderer):
         # ``textwrap.fill`` operates on the raw text and the ``; ``
         # is added per-line at emit time.
         self.comment_wrap_column = comment_wrap_column
+        # When True, append a ``; '<c>'`` hint to immediate-mode
+        # instructions whose operand byte is a printable ASCII
+        # character. Mirrors py8dis-fork's ``show_char_literals``
+        # config. Suppressed when:
+        # - the user has registered a custom expression at the
+        #   operand byte (the user's symbol takes precedence);
+        # - the byte is the ASCII apostrophe (``'``) or double-quote
+        #   (``"``), which would form ambiguous comment syntax.
+        self.show_char_literals = show_char_literals
 
     @property
     def emit_boundary_labels(self) -> bool:
@@ -1404,9 +1414,52 @@ class BeebasmRenderer(TextRenderer):
         operand = self._render_operand(
             ir, binary_addr, opcode, active_move=active_move,
         )
+        char_hint = self._immediate_char_hint(ir, binary_addr, opcode)
         if operand:
-            return f"    {mnemonic} {operand}"
+            return f"    {mnemonic} {operand}{char_hint}"
         return f"    {mnemonic}"
+
+    def _format_immediate_byte(self, value: int) -> str:
+        """Render an 8-bit immediate operand byte.
+
+        Mirrors py8dis-fork's ``uint_formatter`` rule: bare decimal for
+        0..9 (more readable for small counts and indices), hex
+        otherwise. Beebasm parses both forms identically so the
+        rendered text round-trips.
+        """
+        if 0 <= value <= 9:
+            return str(value)
+        return self.hex2(value)
+
+    def _immediate_char_hint(self, ir, binary_addr, opcode: Opcode) -> str:
+        """Return a `` ; '<c>'`` trailing hint for printable-ASCII
+        immediates, or the empty string if the hint should be
+        suppressed.
+
+        Suppression conditions (any one is enough):
+
+        - ``show_char_literals`` is False on this renderer.
+        - The opcode's addressing mode isn't IMMEDIATE.
+        - A user-supplied expression is registered at the operand
+          byte: the user has chosen a more meaningful symbol and the
+          auto-hint would be redundant noise.
+        - The byte isn't printable ASCII (``0x20..0x7E``).
+        - The byte is ``'`` or ``"``: a single-quoted hint would form
+          ambiguous comment syntax (``; '''`` / ``; '"'``).
+        """
+        if not self.show_char_literals:
+            return ""
+        if opcode.addressing_mode.name != "IMMEDIATE":
+            return ""
+        operand_addr = int(binary_addr) + 1
+        if ir.expressions.get_or_none(operand_addr) is not None:
+            return ""
+        value = ir.memory.get_u8(operand_addr)
+        if not (0x20 <= value <= 0x7E):
+            return ""
+        if value in (0x22, 0x27):  # ", '
+            return ""
+        return f" ; '{chr(value)}'"
 
     def _render_operand(
         self, ir, binary_addr, opcode: Opcode, *, active_move=None,
@@ -1492,7 +1545,9 @@ class BeebasmRenderer(TextRenderer):
 
         if kind is OperandKind.IMMEDIATE:
             # Immediate values aren't addresses; no label lookup.
-            return self.hex2(ir.memory.get_u8(operand_addr))
+            return self._format_immediate_byte(
+                ir.memory.get_u8(operand_addr),
+            )
 
         if kind is OperandKind.ADDRESS_8:
             v = ir.memory.get_u8(operand_addr)
