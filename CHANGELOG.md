@@ -1,0 +1,168 @@
+# Changelog
+
+All notable changes to *dasmos* are documented here. The format is
+based on [Keep a Changelog](https://keepachangelog.com/) and the
+project follows [SemVer](https://semver.org/) — though while pre-1.0,
+minor bumps may carry small breaking changes alongside additive ones.
+
+## [Unreleased]
+
+## [0.2.0]
+
+A substantial release. New driver-API surface for renderer-agnostic
+operand formatting (the `FormatHint` family); a runtime-aware tracer
+that correctly classifies instructions inside relocated (`add_move`)
+regions; a much richer `acorn_mos` analyser suite; and a redesigned
+move subsystem with typed `Move` handles. Every change preserves the
+byte-for-byte round-trip oracle.
+
+### Added
+
+- **`FormatHint` API.** New `dasmos.FormatHint` enum (re-exported
+  from the top-level package) declares operand-byte semantic intent
+  separately from the assembler-specific syntax. Hints: `CHAR`,
+  `DECIMAL`, `HEX`, `BINARY`, `OCTAL`, `INKEY` (BBC keyboard scan
+  code). Used via `Disassembler.format_hint(addr, hint)` plus sugar
+  methods `Disassembler.char_literal(addr)` and
+  `Disassembler.inkey_code(addr)`. Each renderer translates a hint
+  into its own grammar; the JSON renderer surfaces it on the
+  per-operand record so downstream tooling can render appropriately.
+- **`acorn_mos` INKEY analyser.** Recognises the BBC's negative-X
+  scan-code pattern at `OSBYTE &79` / `OSBYTE &81` and registers
+  `inkey_key_<name>` constants plus a `FormatHint.INKEY` at the
+  `LDX`'s operand byte. The rendered listing reads
+  `ldx #(255 - inkey_key_ctrl) EOR 128` instead of `ldx #&81`. The
+  JSR-site inline comment names the specific key
+  (`Test for ctrl key pressed`).
+- **Declarative string detection.** `string_detection_min_length`
+  ctor kwarg / property on `Disassembler` (default `3`; `None`
+  disables). Replaces py8dis's closure-based `autostring` with a
+  property the driver sets once. Runs break at labels, move-source
+  boundaries, annotation addresses, and non-printable bytes.
+- **Bucket-1 / -2 acorn_mos analysers.**
+  - Long-form descriptions for OSBYTE / OSWORD (`OSBYTE_DESCRIPTIONS`,
+    `OSWORD_DESCRIPTIONS` data tables — replaces py8dis's
+    1500-line `osbyte_action` if/elif chain).
+  - Per-X-value descriptions for OSBYTEs whose action varies by X
+    (`OSBYTE_X_VALUE_DESCRIPTIONS`).
+  - Post-call register-state descriptions
+    (`OSBYTE_POST_CALL_DESCRIPTIONS` — `X is POS`, `Y is VPOS`, …)
+    attached at the byte after the JSR.
+  - Markdown post-call value tables (`OSBYTE_POST_CALL_TABLES`,
+    `OSARGS_POST_CALL_TABLES`) — e.g. the OS-version table for
+    `OSBYTE &00`, the FS-number table for `OSARGS A=0 Y=0`. Asm
+    renderer flattens via mistletoe; JSON keeps the source markdown
+    so the site generator can render real `<table>` elements.
+- **OSARGS analyser.** Joint `(A, Y)` dispatch (`osargs_analyzer`
+  registered at `&FFDA`). Stacks alongside driver-supplied inline
+  comments via the `auto_generated` flag.
+- **Environment-axis split.** The previous `acorn_bbc_hardware` env
+  is now three orthogonal axes:
+  - `acorn_model_b_hardware` / `acorn_master_hardware` (machine class)
+  - `acorn_fdc_8271` / `acorn_fdc_1770` (FDC variant — opt-in)
+  - `acorn_sideways_rom` (sideways-ROM header labels)
+  Mix and match per ROM target.
+- **`Move` typed handle.** `Disassembler.add_move(...)` returns a
+  `Move` object that's also a context manager — `with move: ...`
+  scopes annotations under it. Stable identity in diagnostics, JSON
+  output, and `@move-name` URI variants in markdown comments.
+- **Porter polish.** `scripts/py8dis2dasmos.py` now preserves hex
+  literals, triple-quotes multiline strings, inserts blank lines
+  before subroutines / labels, simplifies the JSON emit pipeline
+  (drops the `try/except` plus the `json.dumps` plumbing), threads
+  `encoding="utf-8"` into ported `read_text` / `write_text` calls,
+  and rewrites `go(post_trace_steps=lambda: classification.autostring(K))`
+  to the declarative `string_detection_min_length=K` form.
+- **JSON `banners[]` array.** Standalone banners (driver's
+  `d.banner(...)` calls separate from `d.subroutine(...)`) now
+  appear in their own JSON array distinct from `subroutines[]`,
+  so the site generator can render them as banner-only items
+  rather than forcing a synthetic subroutine entry.
+- **Auto-label heuristics.** Return-N convention, Fred-bus support,
+  ergonomic prefixes (`l`, `c`, `sub_c`, `loop_c`).
+- **Vendored ROM fixtures.** ANFS 4.18, ANFS 4.21 (variant 1), NFS
+  3.34, ADFS 1.30 join the existing fixtures as round-trip oracles.
+- **Documentation.**
+  - Format hints + automatic string detection sections in the
+    driver-API guide.
+  - Auto-comment style guide for analyser-driven inline text
+    (`docs/design/auto-comment-style.md`).
+  - Move-subsystem redesign memo (`docs/design/move-redesign-memo.md`).
+  - Migration handover document (`docs/handover_migration.md`).
+
+### Changed
+
+- **Tracer is runtime-aware.** Control-flow targets (JSR / JMP
+  operands, branch offsets) are now computed in *runtime* address
+  space and resolved back to binary via the move map. Previously
+  the tracer treated operand values as binary addresses, which
+  silently terminated trace paths into relocated regions. Recovers
+  proper instruction classification at every JSR-into-moved-code
+  site and at relative branches whose source byte sits inside a
+  move. Mirrors py8dis's runtime-aware tracer (`py8dis/cpu6502.py`).
+- **Move-boundary straddle check by effective ownership.**
+  `_opcode_straddles_move_boundary` now consults `MoveManager`'s
+  per-byte owner map (post-`add_move` last-wins) rather than every
+  registered move's *declared* geometry. An opcode wholly inside a
+  later overlapping move no longer false-positives as straddling
+  (recovers NFS-3.34's BCS at `&9367`).
+- **65C02 CPU state tracking.** `Cmos65C02Cpu` now inherits from
+  `Nmos6502Cpu` plus 65C02-specific overrides for PHX/PHY/PLX/PLY/
+  STZ/BRA/TRB/TSB. Previously the 65C02 inherited only the no-op
+  default `update_state`, so OSBYTE/OSWORD analyser state-tracking
+  silently never fired for any 65C02 ROM (Tube Client, ANFS 4.21).
+- **Mid-classification annotations now render.** Comments and
+  banners attached to bytes *inside* a multi-byte classification
+  (operand bytes, mid-class labels) now appear in the rendered
+  output. Inline comments are gathered across every covered byte
+  and joined; mid-class label-equate lines emit any `BEFORE_LABEL`
+  / `BEFORE_LINE` annotations attached at that mid-class address.
+- **Leftover-byte aggregation.** `_classify_leftovers` now groups
+  consecutive unclassified bytes into a single `Byte(N)` (matching
+  py8dis), breaking only at labels, move boundaries, and annotated
+  addresses. Avoids long `equb &ff [* 1]` runs in the output.
+- **JSON schema additions.** Memory-map entries gain `length`,
+  `group`, `access` columns; subroutines omit `binary_addr` when it
+  equals `runtime_addr` (matches the per-item convention); banners
+  appear in their own `banners[]` array; format hints surface on
+  per-operand records.
+- **Beebasm renderer.** `char_literal_style` setting (`ASC("c")` /
+  `'c'` / quoted-comment / off); `lower_case` setting controls
+  mnemonic and suffix case; small ints render as decimal by
+  default; markdown stripped from banner title / description and
+  equate-line comments via mistletoe; xref summaries use binary
+  addresses on both sides for consistency; expression labels appear
+  in operand text and in the stats footer; mid-instruction xref
+  summaries use the inner binary address.
+- **CPU plug-in names canonicalised** to `6502` and `65C02`
+  (case-insensitive lookup retained).
+- **Encoding.** Driver scripts and rendered output never rely on
+  the locale default; `--encoding` CLI flag added; LF line endings
+  pinned in fixtures.
+- **README** restructured: dasmos introduced on its own merits;
+  lineage paragraphs moved to a closing section.
+
+### Fixed
+
+- **Multi-source / same-destination moves** in the beebasm renderer
+  (each move's source emits separately under its own `pseudopc`).
+- **Auto-label generation suppressed at expression-alias addresses**
+  so `irq1v+1` doesn't compete with synthetic `l0221`.
+- **Porter `output = go(...)`** form handled the same as bare
+  `go(...)`.
+
+### Removed
+
+- **`acorn_bbc_hardware`** env (replaced by the three-axis split
+  above).
+
+## [0.1.3] — 2026-05-04
+
+Patch-level: porter encoding fix and small porter-output tweaks.
+See `git log v0.1.2..v0.1.3` for the full picture.
+
+## [0.1.2] — 2026-05-04
+
+## [0.1.1] — 2026-05-03
+
+First versioned release. Earlier history is in the git log.
