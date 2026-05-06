@@ -123,16 +123,12 @@ class TestNfs334PorterEndToEnd:
 # ---------------------------------------------------------------------------
 
 # Initial ratchet measured when the NFS-3.34 fixture was first
-# vendored. Residuals are a mix of label-name shape differences
-# (e.g. ``string_buf_done`` / ``svc_4_star_command``) and a few
-# free-text words from py8dis comment annotations dasmos doesn't
-# yet emit (``accept_new_claim``, ``hardcoded``, ``matcher``,
-# ``saving``, …).
-# Stepped down: 11 → 6 (mid-class annotation fix) → 5 (bucket 1
-# OSBYTE/OSWORD descriptions, 2026-05-06). Remaining residuals are
-# stats-footer label-frequency entries plus per-X-value lookup
-# variants of OSBYTE descriptions (``redefine`` etc.).
-MAX_COMMENT_TOKENS_DROPPED = 4
+# vendored. Stepped down: 11 → 6 (mid-class annotation fix) → 5
+# (bucket 1 OSBYTE/OSWORD descriptions, 2026-05-06) → 4 (Fix A,
+# overlapping-move straddle false-positive at &9367) → 0 (Fix B,
+# runtime-aware target computation closed the remaining gap;
+# &9508/&950c/&962a now classify as instructions instead of equb).
+MAX_COMMENT_TOKENS_DROPPED = 0
 
 _COMMENT_TOKEN_RE = re.compile(r"[a-z_][a-z_0-9]{3,}")
 
@@ -215,3 +211,35 @@ class TestNfs334Py8disParity:
             f"If you've fixed a fidelity gap, lower "
             f"MAX_COMMENT_TOKENS_DROPPED to the new observed value."
         )
+
+    def test_overlapping_move_sites_classify_as_instructions(
+        self, tmp_path,
+    ):
+        """The four NFS-3.34 sites historically rendered as ``equb``
+        bytes (Bug A: declared-geometry straddle false-positive at
+        &9367; Bug B: runtime-vs-binary tracer confusion at the
+        moved-subroutine bytes &9508/&950c/&962a). After the
+        effective-ownership straddle check + runtime-aware target
+        computation, all four classify as proper instructions.
+
+        Pinning these literal forms guards against regression of
+        either fix — the round-trip oracle alone wouldn't catch
+        a backslide because ``equb`` and the recovered instruction
+        assemble to the same bytes.
+        """
+        if _BEEBASM is None:
+            pytest.skip("beebasm not found")
+
+        output_dirpath = _run_dasmos_driver(tmp_path)
+        asm_text = (output_dirpath / "nfs-3.34.asm").read_text(encoding="utf-8")
+
+        for expected in (
+            "bcs accept_new_claim",
+            "beq string_buf_done",
+            "bne strnh",
+            "sta tube_data_register_4",
+        ):
+            assert expected in asm_text, (
+                f"expected `{expected}` in rendered asm — regression of "
+                f"the overlapping-move tracer fix?"
+            )
