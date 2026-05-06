@@ -1,5 +1,9 @@
 # Dasmos
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/acornaeology/dasmos/master/docs/_static/dasmos-logo.png" alt="Dasmos logo: a stone column inscribed with 6502 mnemonics, topped with a green acorn finial" width="240">
+</p>
+
 A pluggable tracing disassembler for retro CPUs, version `0.1.3`.
 
 <p align="center">
