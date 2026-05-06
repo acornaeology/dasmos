@@ -299,6 +299,101 @@ a code reference. Both also seed the trace at the pointed-to address,
 which often unlocks large stretches of previously-unreachable code.
 
 
+Automatic string detection
+--------------------------
+
+After tracing classifies code and the explicit ``d.byte`` /
+``d.word`` / ``d.string`` calls run, *Dasmos* sweeps the leftover
+unclassified bytes for runs of printable ASCII and promotes them to
+:class:`~dasmos.core.classification.String` classifications. This
+saves you from having to call :meth:`~dasmos.Disassembler.string`
+on every text fragment hidden in the ROM — message tables, status
+strings, error text, and the like surface as ``equs "..."`` rows
+without manual annotation.
+
+The threshold is the minimum run length that gets promoted, set on
+:meth:`Disassembler.create` (or as a plain attribute on the
+disassembler):
+
+.. code-block:: python
+
+   # Default — promote runs of 3 or more printable bytes.
+   d = dasmos.Disassembler.create(cpu="6502")
+
+   # Tighter — only runs of 5 or more, useful for ROMs where short
+   # printable byte sequences are usually data, not text.
+   d = dasmos.Disassembler.create(cpu="6502", string_detection_min_length=5)
+
+   # Disabled — leave every printable run alone for the leftover
+   # ``Byte`` aggregator to handle. Useful for binary-data ROMs
+   # where the printable-ASCII heuristic would mostly misfire.
+   d = dasmos.Disassembler.create(cpu="6502", string_detection_min_length=None)
+
+Runs break at any of: a labelled address, a non-printable byte, an
+already-classified byte, a move source-boundary, or a byte with any
+attached annotation. So an explicit ``d.label(...)`` /
+``d.comment(...)`` at a mid-string address splits the detection at
+exactly the boundary you want, giving you per-segment control without
+turning the heuristic off entirely.
+
+
+Operand format hints
+--------------------
+
+Some operand bytes have a *semantic intent* the renderer can't infer
+from the bytes alone. ``LDA #&41`` could be loading the ASCII code
+for ``A``, a hex-format register flag, or a binary bit pattern — the
+byte value is the same; the rendered form should differ. Format
+hints declare the intent in the IR, and each renderer translates the
+hint into its own assembler-syntax appropriate form.
+
+The general form is :meth:`Disassembler.format_hint
+<dasmos.Disassembler.format_hint>` taking a
+:class:`~dasmos.core.format_hint.FormatHint` enum value:
+
+.. code-block:: python
+
+   from dasmos import FormatHint
+
+   # Address is the OPERAND byte (one past the LDA opcode for a
+   # single-byte-opcode CPU like the 6502). With LDA #&aa at &e016,
+   # the operand is at &e017 — rendering it as %10101010 makes the
+   # alternating-bit intent read.
+   d.format_hint(0xe017, FormatHint.BINARY)
+
+The current set of hints is ``CHAR``, ``DECIMAL``, ``HEX``,
+``BINARY``, ``OCTAL`` and ``INKEY`` (BBC-specific keyboard scan
+code). The beebasm renderer translates each into its native form
+(``ASC("A")`` or ``'A'`` for ``CHAR``; ``%01010101`` for ``BINARY``;
+``(255 - inkey_key_<name>) EOR 128`` for ``INKEY``). The JSON
+renderer surfaces the hint in the per-operand record so downstream
+tooling can choose its own syntax.
+
+Two sugar methods cover the cases used most often:
+
+.. code-block:: python
+
+   # The byte at &9412 is intended as an ASCII character literal —
+   # the renderer chooses ASC("c") / 'c' / similar by its
+   # char_literal_style.
+   d.char_literal(0x9412)
+
+   # The byte at &a3c7 is the negative-X-form INKEY scan code an
+   # OSBYTE &79 / &81 caller loads to scan for one specific key.
+   # Renders as ``(255 - inkey_key_ctrl) EOR 128`` etc.
+   d.inkey_code(0xa3c7)
+
+When the ``acorn_mos`` env's OSBYTE analyser detects a recognisable
+INKEY pattern (``A=&79`` or ``A=&81`` with ``X`` carrying a known
+scan code), it registers ``FormatHint.INKEY`` automatically — call
+:meth:`~dasmos.Disassembler.inkey_code` only when the analyser
+can't infer the pattern (a scan code in a pre-computed table, or
+loaded into ``X`` through an indirect path). Driver-supplied
+expressions via :meth:`~dasmos.Disassembler.expr` always win over
+hints, so ``d.expr(operand_addr, "my_text")`` overrides any analyser
+or driver hint at the same address.
+
+
 Putting it together: a fuller driver
 ------------------------------------
 
