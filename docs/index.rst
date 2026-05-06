@@ -1,3 +1,9 @@
+.. image:: _static/dasmos-banner.svg
+   :alt: Dasmos — a pluggable tracing disassembler for retro CPUs
+   :align: center
+
+|
+
 Dasmos
 ======
 
