@@ -32,6 +32,7 @@ from dasmos.cpu import (
     OperandKind,
 )
 from dasmos.ext.cpus.cpu6502.cpu import (
+    Nmos6502Cpu,
     OPCODES as NMOS_OPCODES,
     AddressingMode as NmosAddressingMode,
     Operation as NmosOperation,
@@ -134,12 +135,18 @@ _add(0xfa, Operation.PLX,    NmosAddressingMode.IMPLIED,          FlowControl.SE
 del _add
 
 
-class Cmos65C02Cpu(Cpu):
+class Cmos65C02Cpu(Nmos6502Cpu):
     """The CMOS 65C02 — NMOS 6502 superset with 8 new mnemonics, 2 new
     addressing modes and 27 new opcode bytes.
 
     Doesn't model the WDC-specific RMB / SMB / BBR / BBS bit-test
     instructions; they're not used by Acorn's 65C02-target ROMs.
+
+    Inherits from :class:`Nmos6502Cpu` so all NMOS state-tracking
+    rules (LDA / LDX / LDY immediate-load tracking, store-preserves,
+    transfer-copies, …) automatically apply. The new 65C02 mnemonics
+    are handled here; everything they don't touch falls through to
+    the NMOS update.
     """
 
     def __init__(self, name: str = CPU_NAME, **kwargs):
@@ -159,3 +166,32 @@ class Cmos65C02Cpu(Cpu):
 
     def opcodes(self) -> dict[int, Opcode]:
         return OPCODES
+
+    def update_state(self, state, opcode, addr, memory) -> None:
+        """Extend NMOS state tracking with the 65C02-only mnemonics.
+
+        - ``PHX`` / ``PHY`` push to the stack but don't touch any
+          register state — preserve.
+        - ``PLX`` / ``PLY`` pull from the stack into X/Y; the value
+          is unknowable here so the destination register is cleared
+          (its ``previous_load_imm_addr`` chain breaks too).
+        - ``STZ`` stores ``#0`` to memory — preserves all registers.
+        - ``BRA`` is an unconditional branch — preserves like the
+          conditional branches in the NMOS handler.
+        - ``TRB`` / ``TSB`` clear/set memory bits using A; A is
+          unchanged but flags would be — leave registers preserved
+          (we don't model flags here).
+
+        Anything else falls through to the NMOS handler.
+        """
+        op = opcode.operation
+        if op is Operation.PLX:
+            state.x = type(state.x)()  # fresh empty RegisterValue
+            return
+        if op is Operation.PLY:
+            state.y = type(state.y)()
+            return
+        if op in (Operation.PHX, Operation.PHY, Operation.STZ,
+                  Operation.BRA, Operation.TRB, Operation.TSB):
+            return  # preserve all state
+        super().update_state(state, opcode, addr, memory)

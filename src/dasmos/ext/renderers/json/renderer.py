@@ -8,6 +8,7 @@ Emits a JSON-serialisable dictionary:
       "meta": {"load_addr": int, "end_addr": int},
       "constants": [{"name": str, "value": int, "comment": str?}, ...],
       "subroutines": [{"addr": int, "name": str?, ..., "fall_through": True?}],
+      "banners": [{"addr": int, "title": str?, "description": str?, ...}],
       "external_labels": {"name": int, ...},
       "memory_map": [{"addr": int, "name": str, "length": int?, ...}],
       "items": [
@@ -70,6 +71,7 @@ class JsonRenderer(Renderer[StructuredOutput]):
             "meta": self._build_meta(ir),
             "constants": self._build_constants(ir),
             "subroutines": self._build_subroutines(ir),
+            "banners": self._build_banners(ir),
             "external_labels": self._build_external_labels(ir),
             "memory_map": self._build_memory_map(ir),
             "items": self._build_items(ir),
@@ -150,7 +152,17 @@ class JsonRenderer(Renderer[StructuredOutput]):
         result: list[dict[str, Any]] = []
         for sub in ir.subroutines:
             entry: dict[str, Any] = {"addr": int(sub.runtime_addr)}
-            if sub.binary_addr is not None:
+            # Mirror the per-item convention: only surface
+            # ``binary_addr`` when the subroutine is in a relocated
+            # region (binary != runtime). Emitting it unconditionally
+            # broke downstream consumers (e.g. the acornaeology site
+            # generator) that join subroutine entries to per-address
+            # items by ``(addr, binary_addr)`` — items omit it when
+            # binary == runtime, so subs must too.
+            if (
+                sub.binary_addr is not None
+                and int(sub.binary_addr) != int(sub.runtime_addr)
+            ):
                 entry["binary_addr"] = int(sub.binary_addr)
             if sub.name:
                 entry["name"] = sub.name
@@ -176,6 +188,69 @@ class JsonRenderer(Renderer[StructuredOutput]):
             result.append(entry)
         return result
 
+    def _build_banners(self, ir) -> list[dict[str, Any]]:
+        """Standalone ``Banner`` annotations — the dasmos analogue of
+        py8dis's ``data_banner``: a visual section header for a data
+        region, with no associated code-entry-point semantics.
+
+        Lives in its own top-level array (parallel to ``subroutines``)
+        so consumers can tell "subroutine entry point" from "data
+        region with header". py8dis-fork conflates the two by putting
+        ``data_banner`` entries in ``subroutines``; dasmos's locked
+        design separates them (``feedback_critical_porting.md``), and
+        the JSON schema reflects that.
+
+        Each entry: ``{addr, [binary_addr], [name], [title],
+        [description], [on_entry], [on_exit]}``. Banners attached as
+        a side-effect of ``d.subroutine()`` are NOT included here —
+        their data is already on the corresponding ``subroutines``
+        entry.
+        """
+        # Addresses with a real subroutine — skip their internal Banner.
+        sub_addrs: set[int] = {
+            int(sub.binary_addr) for sub in ir.subroutines
+            if sub.binary_addr is not None
+        }
+
+        result: list[dict[str, Any]] = []
+        for binary_addr, anns in sorted(
+            ir.annotations.items(), key=lambda kv: int(kv[0]),
+        ):
+            ba = int(binary_addr)
+            if ba in sub_addrs:
+                continue
+            try:
+                runtime_addr = int(ir.moves.b2r(BinaryAddr(ba)))
+            except Exception:
+                runtime_addr = ba
+            for ann in anns:
+                if not isinstance(ann, Banner):
+                    continue
+                entry: dict[str, Any] = {"addr": runtime_addr}
+                if ba != runtime_addr:
+                    entry["binary_addr"] = ba
+                # If a label exists at this runtime address, take its
+                # first explicit name as the banner's ``name``. Matches
+                # py8dis's data_banner shape, where the second
+                # positional arg becomes the entry's ``name``.
+                label = ir.labels.get_label(runtime_addr)
+                if label is not None:
+                    names = sorted(label.explicit_name_texts())
+                    if names:
+                        entry["name"] = names[0]
+                if ann.title:
+                    entry["title"] = ann.title
+                if ann.description:
+                    entry["description"] = ann.description
+                if ann.on_entry:
+                    entry["on_entry"] = dict(ann.on_entry)
+                if ann.on_exit:
+                    entry["on_exit"] = dict(ann.on_exit)
+                result.append(entry)
+                # First banner per address wins; ignore extras.
+                break
+        return result
+
     def _build_external_labels(self, ir) -> dict[str, int]:
         """Labels whose runtime address has no loaded byte — OS entry
         points, hardware registers, etc.
@@ -199,12 +274,12 @@ class JsonRenderer(Renderer[StructuredOutput]):
 
     def _build_memory_map(self, ir) -> list[dict[str, Any]]:
         """Memory-map entries for outside-ROM labels carrying metadata
-        (``description=`` / future ``length=`` / ``group=`` / ``access=``).
+        (``description=`` / ``length=`` / ``group=`` / ``access=``).
 
-        Includes only labels that have at least one of description /
-        length / group / access. Labels currently carry only
-        ``description``; the other three slots stay unpopulated until
-        that infrastructure lands.
+        Includes any labelled, out-of-range address whose Label has
+        at least one of those metadata fields set — a row authored
+        purely with ``length`` / ``access`` and no narrative still
+        belongs in the rendered memory map.
         """
         result: list[dict[str, Any]] = []
         for runtime_addr_obj, label in sorted(
@@ -213,7 +288,13 @@ class JsonRenderer(Renderer[StructuredOutput]):
             runtime_addr = int(runtime_addr_obj)
             if self._label_address_is_in_range(ir, runtime_addr):
                 continue
-            if not label.description:
+            has_metadata = (
+                label.description
+                or label.length is not None
+                or label.group is not None
+                or label.access is not None
+            )
+            if not has_metadata:
                 continue
             names = sorted(label.explicit_name_texts())
             if not names:
@@ -221,8 +302,15 @@ class JsonRenderer(Renderer[StructuredOutput]):
             entry: dict[str, Any] = {
                 "addr": runtime_addr,
                 "name": names[0],
-                "description": label.description,
             }
+            if label.length is not None:
+                entry["length"] = label.length
+            if label.group is not None:
+                entry["group"] = label.group
+            if label.access is not None:
+                entry["access"] = label.access
+            if label.description:
+                entry["description"] = label.description
             result.append(entry)
         return result
 
@@ -496,9 +584,32 @@ class JsonRenderer(Renderer[StructuredOutput]):
                 stacklevel=2,
             )
             return str(value)
+        if hint is FormatHint.INKEY:
+            return self._render_inkey_immediate(value, operand_addr)
         raise NotImplementedError(
             f"JsonRenderer doesn't yet handle FormatHint.{hint.name}"
         )
+
+    def _render_inkey_immediate(self, value: int, operand_addr: int) -> str:
+        """Translate :class:`FormatHint.INKEY` to the symbolic
+        ``(255 - inkey_key_<name>) EOR 128`` form, mirroring the
+        beebasm renderer (see its ``_render_inkey_immediate`` for
+        the encoding rationale). The JSON ``format_hint`` field on
+        the item still surfaces ``"inkey"`` so downstream consumers
+        can render their own representation if they want.
+        """
+        from dasmos.ext.environments.acorn_mos.enums import INKEY_ENUM
+        inkey_key = (255 - value) ^ 0x80
+        name = INKEY_ENUM.get(inkey_key)
+        if name is None:
+            warnings.warn(
+                f"FormatHint.INKEY at &{operand_addr:04x} — byte "
+                f"&{value:02x} doesn't decode to a named BBC INKEY "
+                f"scan code; falling back to a hex literal.",
+                stacklevel=2,
+            )
+            return f"&{value:02x}"
+        return f"(255 - {name}) EOR 128"
 
     @staticmethod
     def _render_char_for_explicit_hint(value: int) -> str | None:

@@ -141,7 +141,12 @@ class TestNfsPorterEndToEnd:
 #   11 — Phase 4.2 full CPU-state tracker (held through 4.3-4.5).
 #        Residual is generic comment-text words from py8dis
 #        annotations dasmos doesn't yet generate.
-MAX_COMMENT_TOKENS_DROPPED = 11
+# Stepped down: 11 → 5 (mid-class annotation fix) → 3 (bucket 1
+# OSBYTE/OSWORD descriptions, 2026-05-06). Remaining residuals are
+# stats-footer label-frequency entries (``dispatch_0_lo``,
+# ``imm_op_dispatch_lo``) plus per-X-value lookup variants
+# (``redefine`` from OSBYTE &14 with X=6).
+MAX_COMMENT_TOKENS_DROPPED = 0
 
 # JSON-parity ratchets. Lower as the JsonRenderer learns more of
 # py8dis's emit_structured() schema. History:
@@ -191,7 +196,16 @@ MAX_EXTRA_FALL_THROUGHS = 25
 #   improvement).
 MAX_PER_ITEM_OPERAND_MISMATCHES = 2
 MAX_PER_ITEM_TARGET_LABEL_MISMATCHES = 0
-MAX_PER_ITEM_COMMENTS_BEFORE_MISMATCHES = 4
+# Bumped 4 → 5 on 2026-05-06: bucket-2 post-call value-tables
+# (OSBYTE 0 → OS-version table, OSARGS 0/0 → FS-number table)
+# attach a Markdown-formatted standalone comment at the byte after
+# the call. py8dis-fork emits a plain indented value-list at the
+# same address; the rendered TEXT differs from dasmos's Markdown
+# pipe-table form, so the comments_before mismatch count goes up
+# at those addresses. Both surfaces describe the same data — the
+# divergence is a deliberate design improvement (Markdown lets the
+# site generator render a real HTML table downstream).
+MAX_PER_ITEM_COMMENTS_BEFORE_MISMATCHES = 5
 # References are compared as SETS (sort-order divergence is
 # deliberate — py8dis emits in trace-insertion order; dasmos picks
 # its own deterministic order). The ratchet bounds items where the
@@ -248,12 +262,13 @@ def _render_dasmos_json(tmp_path) -> dict:
     """
     import re
     ported_src = _porter.port(ORIGINAL_DRIVER_PATH.read_text(encoding="utf-8"))
-    # Swap the beebasm-renderer call for the json renderer. The
-    # porter emits a single ``output = str(d.disassemble().render(
-    # 'beebasm', ...))`` line at the tail; replace its inside.
+    # Swap the beebasm-renderer call for the json renderer. The porter
+    # emits ``ir = d.disassemble()`` followed by
+    # ``output = str(ir.render('beebasm', ...))`` at the tail;
+    # replace just the renderer selection on the ``output =`` line.
     ported_src = re.sub(
-        r"output = str\(d\.disassemble\(\)\.render\([^\)]*\)\)",
-        "output = str(d.disassemble().render('json'))",
+        r"output = str\(ir\.render\([^\)]*\)\)",
+        "output = str(ir.render('json'))",
         ported_src,
     )
     ported_filepath = tmp_path / "ported_driver_json.py"
@@ -351,16 +366,24 @@ class TestNfsPy8disParity:
         2 wired up Disassembler.subroutine + acorn_mos OS-call subs,
         every py8dis-emitted address has a matching dasmos entry
         (MAX_SUBROUTINES_MISSING = 0).
+
+        Note: py8dis-fork puts ``data_banner`` entries in the same
+        ``subroutines`` array. dasmos splits them out into a separate
+        ``banners`` array, so the parity check unions the two arrays
+        on the dasmos side.
         """
         import json as _json
         ref = _json.loads(PY8DIS_REFERENCE_JSON_PATH.read_text(encoding="utf-8"))
         das = _render_dasmos_json(tmp_path)
         ref_addrs = {s["addr"] for s in ref["subroutines"]}
-        das_addrs = {s["addr"] for s in das["subroutines"]}
+        das_addrs = (
+            {s["addr"] for s in das["subroutines"]}
+            | {b["addr"] for b in das.get("banners", [])}
+        )
         missing = ref_addrs - das_addrs
         assert len(missing) <= MAX_SUBROUTINES_MISSING, (
-            f"dasmos missing {len(missing)} subroutines from py8dis "
-            f"output (allowed: {MAX_SUBROUTINES_MISSING})."
+            f"dasmos missing {len(missing)} subroutines/banners from "
+            f"py8dis output (allowed: {MAX_SUBROUTINES_MISSING})."
         )
 
     def test_json_subroutines_fall_through_ratchet(self, tmp_path):

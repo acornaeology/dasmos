@@ -862,33 +862,204 @@ class TestAcornMosInlineAutoComments:
         ir = d.disassemble()
         assert self._inline_comment_at(ir, 0x1002) is None
 
-    def test_osbyte_attaches_prefixed_inline_comment(self, tmp_path):
+    def test_osbyte_attaches_descriptive_inline_comment(self, tmp_path):
         # LDA #&7c ; JSR osbyte ; RTS — &7c is osbyte_clear_escape.
-        # Prefixed form anchors the description: a bare "clear escape
-        # condition" floats free of context, "osbyte: clear escape
-        # condition" reads as "OS call: clear escape condition".
+        # When ``OSBYTE_DESCRIPTIONS`` has an entry for the call
+        # number, the analyzer uses that long descriptive phrase
+        # verbatim — the call is already named on the preceding
+        # ``LDA #osbyte_clear_escape`` line via the registered
+        # constant, so a redundant "osbyte:" prefix here would just
+        # repeat context the reader already has.
         d = self._make(
             tmp_path,
             bytes([0xa9, 0x7c, 0x20, 0xf4, 0xff, 0x60]),
         )
         ir = d.disassemble()
         assert self._inline_comment_at(ir, 0x1002) == (
-            "osbyte: clear escape"
+            "Clear escape condition (no further escape effects)"
         )
 
-    def test_osword_attaches_prefixed_inline_comment(self, tmp_path):
+    def test_osword_attaches_descriptive_inline_comment(self, tmp_path):
         # LDA #&05 ; JSR osword ; RTS — &05 is osword_read_io_memory.
-        # Override table maps it to "read I/O memory" (with the
-        # acronym capitalised and slash) — overrides preserve the
-        # body's casing but the prefix is still added.
+        # ``OSWORD_DESCRIPTIONS`` provides the long descriptive
+        # phrase; same reasoning as the OSBYTE test above.
         d = self._make(
             tmp_path,
             bytes([0xa9, 0x05, 0x20, 0xf1, 0xff, 0x60]),
         )
         ir = d.disassemble()
         assert self._inline_comment_at(ir, 0x1002) == (
-            "osword: read I/O memory"
+            "Read byte of I/O processor memory"
         )
+
+    def test_osbyte_x_value_specific_inline_takes_precedence(self, tmp_path):
+        # LDA #&14 ; LDX #&06 ; JSR osbyte ; RTS — A=&14 is OSBYTE
+        # &14 (Implode/Explode chars), X=&06 selects the "six extra
+        # pages" variant. The X-value-specific description is
+        # strictly more specific than the bare OSBYTE description,
+        # so the analyzer prefers it.
+        d = self._make(
+            tmp_path,
+            bytes([0xa9, 0x14, 0xa2, 0x06, 0x20, 0xf4, 0xff, 0x60]),
+        )
+        ir = d.disassemble()
+        # JSR is at 0x1004 (after LDA #&14 at 0x1000 + LDX #&06 at 0x1002).
+        comment = self._inline_comment_at(ir, 0x1004)
+        assert comment is not None
+        assert "six extra pages" in comment, comment
+        assert "redefine all characters 32-255" in comment, comment
+
+    def test_osbyte_x_unknown_falls_back_to_base_description(self, tmp_path):
+        # LDA #&14 ; JSR osbyte ; RTS — X is unknown, so the per-X
+        # table can't apply. Fall back to the base description.
+        d = self._make(
+            tmp_path,
+            bytes([0xa9, 0x14, 0x20, 0xf4, 0xff, 0x60]),
+        )
+        ir = d.disassemble()
+        assert self._inline_comment_at(ir, 0x1002) == (
+            "Implode or Explode character definition RAM based on X"
+        )
+
+    def test_osbyte_post_call_description_attached_at_next_instruction(
+        self, tmp_path,
+    ):
+        # LDA #&86 ; JSR osbyte ; STX foo ; RTS — OSBYTE &86 returns
+        # POS in X / VPOS in Y. The post-call descriptions for X and
+        # Y get joined and attached as an inline comment at the
+        # instruction immediately after the JSR (the STX line).
+        d = self._make(
+            tmp_path,
+            # LDA #&86      a9 86
+            # JSR &fff4     20 f4 ff
+            # STX foo       8e 00 20
+            # RTS           60
+            bytes([0xa9, 0x86, 0x20, 0xf4, 0xff, 0x8e, 0x00, 0x20, 0x60]),
+        )
+        ir = d.disassemble()
+        # The post-call comment goes on the STX line at 0x1005.
+        comment = self._inline_comment_at(ir, 0x1005)
+        assert comment is not None
+        assert "horizontal text position" in comment, comment
+        assert "vertical text position" in comment, comment
+
+    def test_osbyte_post_call_does_not_clobber_driver_inline(self, tmp_path):
+        # If the driver has already attached an inline comment at the
+        # next instruction, the post-call description must NOT
+        # overwrite it. Driver-supplied annotations always win.
+        d = self._make(
+            tmp_path,
+            bytes([0xa9, 0x86, 0x20, 0xf4, 0xff, 0x8e, 0x00, 0x20, 0x60]),
+        )
+        # Pre-register an inline comment at 0x1005 (the STX) BEFORE
+        # disassemble.
+        from dasmos.core.annotations import Align
+        d.comment(0x1005, "Driver-owned comment", align=Align.INLINE)
+        ir = d.disassemble()
+        assert self._inline_comment_at(ir, 0x1005) == "Driver-owned comment"
+
+    def test_osbyte_zero_emits_post_call_x_value_table(self, tmp_path):
+        # LDA #&00 ; LDX #&01 ; JSR osbyte ; STX foo ; RTS — OSBYTE
+        # &00 reads the OS version into X. The post-call table
+        # documents every possible X-value (OS 1.00 / 1.20 /
+        # 2.00 / 3.2 / 4.0 / 5.0). Renders as a Markdown table at
+        # the byte after the JSR — the STX consumer.
+        d = self._make(
+            tmp_path,
+            # LDA #&00      a9 00
+            # LDX #&01      a2 01
+            # JSR &fff4     20 f4 ff
+            # STX foo       8e 00 20
+            # RTS           60
+            bytes([0xa9, 0x00, 0xa2, 0x01, 0x20, 0xf4, 0xff,
+                   0x8e, 0x00, 0x20, 0x60]),
+        )
+        ir = d.disassemble()
+        # The standalone-comment lookup goes by binary address (the
+        # STX is at 0x1007 = 0x1004 JSR + 3 bytes).
+        from dasmos.core.annotations import Align, Comment
+        bucket = ir.annotations.get_for_align(0x1007, Align.BEFORE_LABEL)
+        comments = [a for a in bucket if isinstance(a, Comment)]
+        assert comments, "expected a post-call value-table comment"
+        # The Markdown table includes every X-value description.
+        joined = "\n".join(c.text for c in comments)
+        assert "American" in joined
+        assert "Master 128" in joined
+        assert "Master Compact" in joined
+        assert "X is the OS version number" in joined
+        # Markdown header row present.
+        assert "| X | Meaning |" in joined
+
+    def test_osargs_per_a_y_inline_text(self, tmp_path):
+        # LDA #&01 ; LDY #&05 ; JSR osargs ; RTS — A=1, Y!=0:
+        # "Write sequential file pointer ...".
+        d = self._make(
+            tmp_path,
+            bytes([0xa9, 0x01, 0xa0, 0x05, 0x20, 0xda, 0xff, 0x60]),
+        )
+        # Register osargs at &FFDA.
+        d.label(0xffda, "osargs")
+        ir = d.disassemble()
+        comment = self._inline_comment_at(ir, 0x1004)
+        assert comment is not None
+        assert "Write sequential file pointer" in comment
+
+    def test_osargs_a0_y0_emits_fs_number_table(self, tmp_path):
+        # LDA #&00 ; LDY #&00 ; JSR osargs ; STA foo ; RTS — A=0
+        # Y=0 returns the filing-system number in A. Post-call table
+        # is the FS-number list.
+        d = self._make(
+            tmp_path,
+            bytes([0xa9, 0x00, 0xa0, 0x00, 0x20, 0xda, 0xff,
+                   0x8d, 0x00, 0x20, 0x60]),
+        )
+        d.label(0xffda, "osargs")
+        ir = d.disassemble()
+        from dasmos.core.annotations import Align, Comment
+        bucket = ir.annotations.get_for_align(0x1007, Align.BEFORE_LABEL)
+        comments = [a for a in bucket if isinstance(a, Comment)]
+        assert comments
+        joined = "\n".join(c.text for c in comments)
+        assert "Network filing system" in joined
+        assert "Teletext filing system" in joined
+        assert "IEEE filing system" in joined
+        assert "Videodisc filing system" in joined
+        assert "1200 baud" in joined
+
+    def test_analyser_inline_stacks_alongside_driver_inline(self, tmp_path):
+        # The OSARGS analyser's "Write sequential file pointer ..."
+        # text should stack alongside a driver-supplied inline
+        # comment at the same address. Both get emitted by the
+        # renderer (joined with "  ").
+        from dasmos.core.annotations import Align
+        d = self._make(
+            tmp_path,
+            bytes([0xa9, 0x01, 0xa0, 0x05, 0x20, 0xda, 0xff, 0x60]),
+        )
+        d.label(0xffda, "osargs")
+        d.comment(0x1004, "OSARGS: set file pointer", align=Align.INLINE)
+        ir = d.disassemble()
+        # Both annotations should be present at 0x1004.
+        from dasmos.core.annotations import Comment
+        bucket = ir.annotations.get_for_align(0x1004, Align.INLINE)
+        comments = [a for a in bucket if isinstance(a, Comment)]
+        texts = [c.text for c in comments]
+        assert "OSARGS: set file pointer" in texts
+        assert any("Write sequential file pointer" in t for t in texts)
+
+    def test_osbyte_falls_back_to_prefix_when_no_description(self, tmp_path):
+        # When ``OSBYTE_DESCRIPTIONS`` has no entry for the call,
+        # the analyzer falls back to the mechanical
+        # ``osbyte: <name-stripped>`` form. OSBYTE &b0 has an enum
+        # entry but no description — exercises the fallback.
+        d = self._make(
+            tmp_path,
+            bytes([0xa9, 0xb0, 0x20, 0xf4, 0xff, 0x60]),
+        )
+        ir = d.disassemble()
+        # &b0 → osbyte_read_write_cfs_timeout → "read write cfs timeout"
+        comment = self._inline_comment_at(ir, 0x1002)
+        assert comment is not None and comment.startswith("osbyte:")
 
     def test_osbyte_unknown_value_attaches_no_inline_comment(self, tmp_path):
         # LDA #&20 (not in OSBYTE_ENUM) ; JSR osbyte ; RTS — same
@@ -899,3 +1070,217 @@ class TestAcornMosInlineAutoComments:
         )
         ir = d.disassemble()
         assert self._inline_comment_at(ir, 0x1002) is None
+
+
+class TestAcornMosInkeyHint:
+    """OSBYTE &79 / &81 INKEY auto-detection: when X's high bit is
+    set AND ``(255 - X) EOR 128`` matches a named INKEY scan code,
+    the analyser registers an ``inkey_key_<name>`` constant and
+    tags the LDX operand with :class:`FormatHint.INKEY` so the
+    renderer emits ``(255 - inkey_key_<name>) EOR 128``.
+    """
+
+    @staticmethod
+    def _make(tmp_path, program: bytes, load_addr: int = 0x1000):
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(program)
+        d = Disassembler.create(
+            cpu="6502", environments=["acorn_mos"],
+        )
+        d.load(bin_path, load_addr)
+        d.entry(load_addr)
+        return d
+
+    @staticmethod
+    def _inline_comment_at(ir, binary_addr: int) -> str | None:
+        from dasmos.core.annotations import Align, Comment
+        anns = ir.annotations.get_for_align(binary_addr, Align.INLINE)
+        for ann in anns:
+            if isinstance(ann, Comment):
+                return ann.text
+        return None
+
+    def test_osbyte_81_with_ctrl_attaches_inkey_aware_inline(self, tmp_path):
+        # When the INKEY pattern fires, the JSR-site inline replaces
+        # the bare ``osbyte: inkey`` description with one that names
+        # the specific key — strictly more informative.
+        d = self._make(
+            tmp_path,
+            bytes([0xa2, 0x81, 0xa9, 0x81, 0x20, 0xf4, 0xff, 0x60]),
+        )
+        ir = d.disassemble()
+        # JSR is at 0x1004 (LDX at 0x1000 + LDA at 0x1002).
+        assert self._inline_comment_at(ir, 0x1004) == (
+            "Test for ctrl key pressed"
+        )
+
+    def test_osbyte_79_with_keypad_4_uses_spaced_bare_name(self, tmp_path):
+        # The bare-name strip replaces underscores with spaces so
+        # multi-token names read as English.
+        # X = (255 - 123) EOR 128 = 132 ^ 128 = 4 — wait, recompute:
+        # inkey_key_keypad_4 = -123 & 0xff = 133. X byte =
+        # (255 - 133) EOR 128 = 122 EOR 128 = 0xfa.
+        d = self._make(
+            tmp_path,
+            bytes([0xa2, 0xfa, 0xa9, 0x79, 0x20, 0xf4, 0xff, 0x60]),
+        )
+        ir = d.disassemble()
+        assert self._inline_comment_at(ir, 0x1004) == (
+            "Test for keypad 4 key pressed"
+        )
+
+    def test_osbyte_81_with_low_x_falls_back_to_bare_inline(self, tmp_path):
+        # Without the high bit on X, the call ISN'T an INKEY scan;
+        # the inline must be the generic OSBYTE description, not
+        # the INKEY-aware override.
+        d = self._make(
+            tmp_path,
+            bytes([0xa2, 0x20, 0xa9, 0x81, 0x20, 0xf4, 0xff, 0x60]),
+        )
+        ir = d.disassemble()
+        comment = self._inline_comment_at(ir, 0x1004)
+        # Whatever the OSBYTE-&81 bare description says, it must
+        # NOT name a specific INKEY key.
+        assert comment is not None
+        assert "Test for" not in comment
+        assert "key pressed" not in comment
+
+    def test_osbyte_81_with_ctrl_registers_hint_and_constant(self, tmp_path):
+        # LDX #&81 ; LDA #&81 ; JSR osbyte ; RTS
+        # X=&81 decodes to inkey_key_ctrl: (255 - 0x81) EOR 0x80 =
+        # 0xfe = 254 (the unsigned form of -2 from py8dis's
+        # inkey_enum). LDX's operand byte is at 0x1001.
+        from dasmos.core.format_hint import FormatHint
+        d = self._make(
+            tmp_path,
+            bytes([0xa2, 0x81, 0xa9, 0x81, 0x20, 0xf4, 0xff, 0x60]),
+        )
+        ir = d.disassemble()
+        # FormatHint.INKEY was attached at the LDX operand.
+        assert ir.format_hints.get_or_none(0x1001) is FormatHint.INKEY
+        # Constant registered with the unsigned-form value (254) so
+        # the equate `inkey_key_ctrl = 254` makes
+        # `(255 - inkey_key_ctrl) EOR 128` reduce to byte &81.
+        names = [(c.name, c.value) for c in d.constants]
+        assert ("inkey_key_ctrl", 254) in names
+
+    def test_osbyte_79_with_shift_registers_hint(self, tmp_path):
+        # LDX #&80 ; LDA #&79 ; JSR osbyte ; RTS
+        # X=&80 → inkey_key = (255 - 0x80) EOR 0x80 = 0x7f EOR 0x80
+        # = 0xff = 255 = inkey_key_shift (-1 & 0xff).
+        from dasmos.core.format_hint import FormatHint
+        d = self._make(
+            tmp_path,
+            bytes([0xa2, 0x80, 0xa9, 0x79, 0x20, 0xf4, 0xff, 0x60]),
+        )
+        ir = d.disassemble()
+        assert ir.format_hints.get_or_none(0x1001) is FormatHint.INKEY
+        names = [(c.name, c.value) for c in d.constants]
+        assert ("inkey_key_shift", 255) in names
+
+    def test_osbyte_81_with_x_low_bit_no_inkey_hint(self, tmp_path):
+        # LDX #&20 ; LDA #&81 ; JSR osbyte ; RTS — X<&80 is the
+        # "wait for any key with timeout" mode, NOT the negative-
+        # scan-code mode. Analyser must NOT register an INKEY hint.
+        d = self._make(
+            tmp_path,
+            bytes([0xa2, 0x20, 0xa9, 0x81, 0x20, 0xf4, 0xff, 0x60]),
+        )
+        ir = d.disassemble()
+        assert ir.format_hints.get_or_none(0x1001) is None
+
+    def test_unrelated_osbyte_does_not_trigger_inkey_hint(self, tmp_path):
+        # LDX #&81 ; LDA #&7c ; JSR osbyte ; RTS — A=&7c is
+        # osbyte_clear_escape, not in {&79, &81}. The X value
+        # happens to look like an INKEY byte but the call isn't
+        # one, so no hint must be attached.
+        d = self._make(
+            tmp_path,
+            bytes([0xa2, 0x81, 0xa9, 0x7c, 0x20, 0xf4, 0xff, 0x60]),
+        )
+        ir = d.disassemble()
+        assert ir.format_hints.get_or_none(0x1001) is None
+
+    def test_osbyte_81_with_unmapped_high_bit_value_no_hint(self, tmp_path):
+        # X=&ff decodes to inkey_key = (255 - 0xff) EOR 0x80 = 0x80
+        # = 128, which has no named INKEY entry (the BBC's INKEY
+        # table runs -1..-125; -128 is outside the range). Analyser
+        # must skip silently — better to leave the operand as a
+        # plain hex literal than to emit a misleading symbol.
+        d = self._make(
+            tmp_path,
+            bytes([0xa2, 0xff, 0xa9, 0x81, 0x20, 0xf4, 0xff, 0x60]),
+        )
+        ir = d.disassemble()
+        assert ir.format_hints.get_or_none(0x1001) is None
+
+    def test_driver_expr_wins_over_inkey_auto_detection(self, tmp_path):
+        # If a driver has already registered an explicit expression
+        # at the LDX operand byte, the INKEY analyser must NOT
+        # override it — driver intent wins.
+        from dasmos.core.format_hint import FormatHint
+        d = self._make(
+            tmp_path,
+            bytes([0xa2, 0x81, 0xa9, 0x81, 0x20, 0xf4, 0xff, 0x60]),
+        )
+        d.expr(0x1001, "my_special_key_byte")
+        ir = d.disassemble()
+        # Driver expression preserved; no FormatHint registered.
+        assert ir.format_hints.get_or_none(0x1001) is None
+
+    def test_renderer_emits_symbolic_inkey_form(self, tmp_path):
+        # End-to-end: the rendered LDX line should read
+        # ``ldx #(255 - inkey_key_ctrl) EOR 128`` (modulo case).
+        from dasmos.ext.renderers.beebasm.renderer import BeebasmRenderer
+        d = self._make(
+            tmp_path,
+            bytes([0xa2, 0x81, 0xa9, 0x81, 0x20, 0xf4, 0xff, 0x60]),
+        )
+        ir = d.disassemble()
+        renderer = BeebasmRenderer()
+        text = str(renderer.render(ir))
+        assert "(255 - inkey_key_ctrl) EOR 128" in text, text
+
+    def test_inkey_code_sugar_attaches_hint(self, tmp_path):
+        # d.inkey_code(addr) is the explicit driver hook for cases
+        # where the analyser can't infer the pattern (e.g. byte in
+        # a table, indirect load through ZP). It must register the
+        # hint without any nearby JSR osbyte context.
+        from dasmos.core.format_hint import FormatHint
+        d = self._make(
+            tmp_path,
+            # LDX #&81 ; RTS — no surrounding OSBYTE call.
+            bytes([0xa2, 0x81, 0x60]),
+        )
+        d.inkey_code(0x1001)
+        ir = d.disassemble()
+        assert ir.format_hints.get_or_none(0x1001) is FormatHint.INKEY
+
+    def test_format_hint_inkey_unmapped_byte_falls_back_with_warning(
+        self, tmp_path,
+    ):
+        # When a driver registers FormatHint.INKEY at a byte that
+        # doesn't decode to any named INKEY key, the renderer must
+        # emit a warning and fall back to a hex literal — never
+        # produce a broken or misleading symbolic form.
+        import warnings as _warnings
+        from dasmos.ext.renderers.beebasm.renderer import BeebasmRenderer
+        d = self._make(
+            tmp_path,
+            # LDX #&55 ; RTS — &55 has high bit clear so it's
+            # outside the INKEY domain entirely; with the explicit
+            # hint, the renderer warns + falls back.
+            bytes([0xa2, 0x55, 0x60]),
+        )
+        d.inkey_code(0x1001)
+        ir = d.disassemble()
+        renderer = BeebasmRenderer()
+        with _warnings.catch_warnings(record=True) as caught:
+            _warnings.simplefilter("always")
+            text = str(renderer.render(ir))
+        assert any(
+            "FormatHint.INKEY" in str(w.message) for w in caught
+        ), [str(w.message) for w in caught]
+        # Falls back to a hex literal — &55 appears verbatim in the
+        # rendered LDX line.
+        assert "ldx #&55" in text.lower(), text

@@ -24,7 +24,9 @@ disassembler in one shot.
 import argparse
 import ast
 import difflib
+import io
 import sys
+import tokenize
 from pathlib import Path
 
 # Map py8dis CPU names to dasmos plug-in names.
@@ -86,19 +88,20 @@ PY8DIS_FUNCTION_RENAMES: dict[str, str] = {
 # ``dropped_internal_names`` so the cascade drops any follow-up
 # statement that uses the would-be-defined variable.
 UNSUPPORTED_PY8DIS_FUNCTIONS: frozenset[str] = frozenset({
-    # JSON-output renderer hook from the py8dis fork. dasmos doesn't
-    # have a JSON renderer yet (planned as a separate plug-in). The
-    # NFS-3.65 driver and others end with ``structured =
-    # get_structured(); ... json.dumps(structured) ...``; dropping
-    # the call cascades through the dropped-name tracker so the
-    # surrounding JSON dump statements drop too.
-    "get_structured",
     # py8dis's auto-comment suppression hook. py8dis generates
     # automatic per-instruction comments and ``no_automatic_comment``
     # inhibits that at a given address. dasmos doesn't generate
     # auto-comments, so suppressing them is a no-op — drop the call.
     "no_automatic_comment",
 })
+
+
+# Name of the local variable the porter binds the IR to so the same
+# trace is shared between the asm and JSON render passes. Both
+# ``go(...)`` and ``get_structured()`` rewrites use this name; the
+# porter emits a single ``<IR_VAR_NAME> = d.disassemble()`` line at
+# the first point of use and reuses it.
+IR_VAR_NAME = "ir"
 
 
 # py8dis names that are part of ``py8dis.commands`` and now live in
@@ -211,8 +214,35 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
         # (8271 vs 1770), which py8dis bundled into ``bbc()`` but
         # dasmos treats as an opt-in upgrade.
         self.extra_envs: tuple[str, ...] = tuple(extra_envs)
+        # Tracks whether ``ir = d.disassemble()`` has already been
+        # emitted into the rewritten module body. Set when the first
+        # caller of the IR (``go()`` or ``get_structured()``) is
+        # rewritten; checked subsequently to avoid emitting it twice.
+        self._ir_var_emitted = False
+        # Per-statement signal: visit_Call sets this when it rewrites
+        # a ``get_structured()`` call to ``ir.render('json').data``,
+        # so visit_Module knows to prepend the IR-var assignment to
+        # the surrounding statement if it hasn't already been emitted.
+        self._used_ir_in_visit = False
+        # ``autostring_min_length`` value extracted from a top-level
+        # ``go(...)`` (or ``output = go(...)``) call by the pre-scan in
+        # :meth:`visit_Module`. ``None`` means "use py8dis's default
+        # of 3" (so dasmos's matching default applies). A specific
+        # integer or ``None`` (from ``post_trace_steps=lambda: None``)
+        # threads through to ``string_detection_min_length=`` on the
+        # ``Disassembler.create(...)`` constructor.
+        self._string_detection_min_length: int | None = 3
+        self._string_detection_explicit = False
 
     def visit_Module(self, node: ast.Module) -> ast.Module:
+        # Pre-scan for top-level ``go(...)`` calls so any
+        # ``autostring_min_length=`` / ``post_trace_steps=`` kwargs
+        # threaded through to ``Disassembler.create(...)`` further
+        # down. ``go()`` appears AFTER ``load()`` in py8dis driver
+        # scripts, so without a pre-scan the ctor would already be
+        # built without the right setting.
+        self._prescan_go_kwargs(node)
+
         new_body: list[ast.stmt] = []
         used_align_inline = False
         # Names bound to py8dis internals via dropped ``from
@@ -343,7 +373,14 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
                 continue
 
             # Visit children first — rewrites Call nodes inside.
+            # ``_used_ir_in_visit`` is set by visit_Call when it
+            # rewrites ``get_structured()`` to ``ir.render('json').data``
+            # somewhere inside this statement; we use that signal to
+            # decide whether to prepend ``ir = d.disassemble()`` to
+            # the surrounding statement.
+            self._used_ir_in_visit = False
             stmt = self.visit(stmt)
+            stmt_used_ir = self._used_ir_in_visit
 
             # Top-level Expr(Call(...)) special-cases.
             if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
@@ -362,15 +399,25 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
 
             # ``output = go(print_output=False)`` — go() used as a
             # value; rewrite RHS to the rendered-text expression and
-            # keep the assignment.
+            # emit ``ir = d.disassemble()`` first if not already
+            # emitted.
             if (
                 isinstance(stmt, ast.Assign)
                 and isinstance(stmt.value, ast.Call)
                 and self._call_name(stmt.value) == "go"
             ):
+                new_body.extend(self._maybe_emit_ir_assignment())
                 stmt.value = self._render_text_expression()
                 new_body.append(stmt)
                 continue
+
+            # If visit_Call rewrote a ``get_structured()`` somewhere
+            # inside this statement (e.g. inside a try/except, or as
+            # the rhs of an assignment), prepend the IR-var
+            # assignment so the rewritten expression has a binding to
+            # use.
+            if stmt_used_ir:
+                new_body.extend(self._maybe_emit_ir_assignment())
 
             # Detect Align.INLINE usage anywhere in the rewritten
             # statement (so we can decide whether to import Align).
@@ -378,6 +425,16 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
                 used_align_inline = True
 
             new_body.append(stmt)
+
+        # Lift the canonical ``try: structured = get_structured(); ...
+        # write_text(json.dumps(structured)) ...; except: ...`` pattern
+        # into a flat write_text(str(ir.render('json'))) sequence.
+        # The defensive try/except hides bugs, the .data + json.dumps
+        # plumbing is redundant (StructuredOutput is already
+        # __str__-able), and dropping both makes the ported driver
+        # readable. Runs before extra-env injection so the lifted
+        # statements participate normally in the rest of the body.
+        new_body = _simplify_json_emit(new_body)
 
         # Inject any caller-requested opt-in envs as additional
         # ``d.use_environment(...)`` calls. Place them next to the
@@ -400,12 +457,12 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
                 )))
                 insertion_index += 1
 
-        # Build the import block to prepend.
-        imports: list[ast.stmt] = [
+        # Build the dasmos import block.
+        dasmos_imports: list[ast.stmt] = [
             ast.Import(names=[ast.alias(name="dasmos", asname=None)]),
         ]
         if used_align_inline:
-            imports.append(
+            dasmos_imports.append(
                 ast.ImportFrom(
                     module="dasmos",
                     names=[ast.alias(name="Align", asname=None)],
@@ -415,11 +472,11 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
 
         # Detect names from py8dis.commands that have been relocated
         # to dasmos sub-modules (e.g. ``stringhi_hook`` →
-        # ``dasmos.hooks``); prepend explicit imports for any actually
+        # ``dasmos.hooks``); add explicit imports for any actually
         # used by the ported body.
         relocations_needed = self._find_relocations_needed(new_body)
         for module, names in sorted(relocations_needed.items()):
-            imports.append(
+            dasmos_imports.append(
                 ast.ImportFrom(
                     module=module,
                     names=[ast.alias(name=n, asname=None) for n in sorted(names)],
@@ -427,7 +484,37 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
                 )
             )
 
-        return ast.Module(body=imports + new_body, type_ignores=[])
+        # Splice the dasmos imports AFTER the leading docstring + any
+        # existing imports (typically the driver's stdlib block:
+        # json, os, sys, pathlib). Putting them at the very top would
+        # demote the module docstring to a stranded string literal
+        # and read against PEP 8's "stdlib first, third-party after"
+        # convention.
+        insertion_idx = self._import_insertion_index(new_body)
+        new_body[insertion_idx:insertion_idx] = dasmos_imports
+
+        return ast.Module(body=new_body, type_ignores=[])
+
+    @staticmethod
+    def _import_insertion_index(body: list[ast.stmt]) -> int:
+        """Return the index in ``body`` where ``import dasmos`` (and
+        its companions) should be inserted: after a leading docstring
+        and any contiguous stdlib import block, but before the first
+        non-import / non-docstring statement.
+        """
+        idx = 0
+        # Leading module docstring is an Expr wrapping a string Constant.
+        if (
+            idx < len(body)
+            and isinstance(body[idx], ast.Expr)
+            and isinstance(body[idx].value, ast.Constant)
+            and isinstance(body[idx].value.value, str)
+        ):
+            idx += 1
+        # Then any contiguous block of imports.
+        while idx < len(body) and isinstance(body[idx], (ast.Import, ast.ImportFrom)):
+            idx += 1
+        return idx
 
     @staticmethod
     def _extra_env_insertion_index(body: list[ast.stmt]) -> int:
@@ -493,14 +580,24 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
             visitor.visit(stmt)
         return result
 
-    def visit_Call(self, node: ast.Call) -> ast.Call:
+    def visit_Call(self, node: ast.Call) -> ast.expr:
         """Rewrite a free-function call into a ``d.method`` call when
-        the function name is one we recognise.
+        the function name is one we recognise. ``get_structured()``
+        is a special case: it returns a value (not a side-effecting
+        method) and is replaced with the equivalent expression
+        ``ir.render('json').data``.
         """
         self.generic_visit(node)  # transform children first
 
         if isinstance(node.func, ast.Name):
             name = node.func.id
+            # ``get_structured()`` → ``ir.render('json').data``. The
+            # caller (visit_Module) emits ``ir = d.disassemble()``
+            # before this statement if the IR var hasn't been
+            # introduced yet.
+            if name == "get_structured" and not node.args and not node.keywords:
+                self._used_ir_in_visit = True
+                return self._json_render_data_expression()
             # Apply py8dis→dasmos renames (e.g. ``move`` →
             # ``add_move``) before the DASMOS_METHODS check.
             dasmos_name = PY8DIS_FUNCTION_RENAMES.get(name, name)
@@ -544,6 +641,105 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
         for kw in call.keywords:
             if kw.arg == "assembler_name" and isinstance(kw.value, ast.Constant):
                 self.assembler_name = kw.value.value
+
+    def _prescan_go_kwargs(self, module: ast.Module) -> None:
+        """Walk ``module.body`` looking for top-level ``go(...)``
+        calls (either bare ``go(...)`` or ``output = go(...)``) and
+        extract their ``autostring_min_length`` / ``post_trace_steps``
+        kwargs into :attr:`_string_detection_min_length`.
+
+        Recognised forms:
+
+        - ``go()`` / ``go(print_output=False)`` — defaults apply
+          (autostring runs with ``min_length=3``).
+        - ``go(autostring_min_length=N)`` — sets the threshold to N.
+        - ``go(post_trace_steps=lambda: None)`` — disables autostring
+          (translates to ``string_detection_min_length=None``).
+        - ``go(post_trace_steps=lambda: classification.autostring(K))``
+          — disables py8dis's default and runs autostring with
+          ``min_length=K``. Translates to
+          ``string_detection_min_length=K``.
+
+        Anything fancier (a real custom callable bound to
+        ``post_trace_steps``) is reported as a porter limitation —
+        the dasmos analogue is a per-address
+        ``_post_trace_jsr_analyzers`` registration, not a generic
+        post-trace hook, so blind translation isn't safe.
+        """
+        for stmt in module.body:
+            call = self._extract_go_call(stmt)
+            if call is None:
+                continue
+            for kw in call.keywords:
+                if kw.arg == "autostring_min_length":
+                    if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, int):
+                        self._string_detection_min_length = kw.value.value
+                        self._string_detection_explicit = True
+                elif kw.arg == "post_trace_steps":
+                    self._consume_post_trace_steps_kwarg(kw.value)
+            # First go() wins. Multiple go() calls in one driver
+            # would be unusual; if encountered, the first sets the
+            # ctor and the rest get the same translation.
+            return
+
+    @staticmethod
+    def _extract_go_call(stmt: ast.stmt) -> ast.Call | None:
+        """Return the :class:`ast.Call` for a top-level ``go(...)``
+        call (bare or as the rhs of an assignment), or ``None`` if
+        the statement isn't a ``go`` invocation.
+        """
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
+            call = stmt.value
+        elif isinstance(stmt, ast.Assign) and isinstance(stmt.value, ast.Call):
+            call = stmt.value
+        else:
+            return None
+        if isinstance(call.func, ast.Name) and call.func.id == "go":
+            return call
+        return None
+
+    def _consume_post_trace_steps_kwarg(self, value: ast.expr) -> None:
+        """Translate the ``post_trace_steps=`` lambda from py8dis's
+        ``go()`` into a setting on dasmos's
+        :attr:`string_detection_min_length`. See
+        :meth:`_prescan_go_kwargs` for the recognised shapes.
+        """
+        # post_trace_steps=lambda: None — disables autostring entirely.
+        if (
+            isinstance(value, ast.Lambda)
+            and not value.args.args
+            and isinstance(value.body, ast.Constant)
+            and value.body.value is None
+        ):
+            self._string_detection_min_length = None
+            self._string_detection_explicit = True
+            return
+        # post_trace_steps=lambda: classification.autostring(K) — set
+        # the threshold to K.
+        if (
+            isinstance(value, ast.Lambda)
+            and not value.args.args
+            and isinstance(value.body, ast.Call)
+            and isinstance(value.body.func, ast.Attribute)
+            and value.body.func.attr == "autostring"
+            and len(value.body.args) == 1
+            and isinstance(value.body.args[0], ast.Constant)
+            and isinstance(value.body.args[0].value, int)
+        ):
+            self._string_detection_min_length = value.body.args[0].value
+            self._string_detection_explicit = True
+            return
+        # Anything else is too custom for a blind translation. Warn
+        # the porter user via stderr; leave the default in place.
+        print(
+            "warning: post_trace_steps= kwarg on go() uses an unrecognised "
+            "shape; the default string-detection setting "
+            f"(min_length={self._string_detection_min_length}) is being "
+            "preserved. Convert any custom post-trace work into per-address "
+            "analyzers via Disassembler._post_trace_jsr_analyzers in the "
+            "ported driver if needed.",
+            file=sys.stderr,
+        )
 
     def _convert_load(self, call: ast.Call) -> list[ast.stmt]:
         """Convert ``load(addr, file, cpu, md5=...)`` into:
@@ -596,6 +792,35 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
         # py8dis-fork and dasmos output during the migration).
         # ``return_`` is dasmos's default and matches py8dis too —
         # no override needed.
+        ctor_kwargs: list[ast.keyword] = [
+            ast.keyword(arg="cpu", value=dasmos_cpu),
+            ast.keyword(
+                arg="auto_label_data_prefix",
+                value=ast.Constant(value="l"),
+            ),
+            ast.keyword(
+                arg="auto_label_code_prefix",
+                value=ast.Constant(value="c"),
+            ),
+            ast.keyword(
+                arg="auto_label_subroutine_prefix",
+                value=ast.Constant(value="sub_c"),
+            ),
+            ast.keyword(
+                arg="auto_label_loop_prefix",
+                value=ast.Constant(value="loop_c"),
+            ),
+        ]
+        # Thread an explicit ``string_detection_min_length=`` kwarg
+        # through only when the source ``go(...)`` call set
+        # ``autostring_min_length`` or ``post_trace_steps`` to a
+        # non-default shape. Otherwise the default (3) on the dasmos
+        # side already matches py8dis.
+        if self._string_detection_explicit:
+            ctor_kwargs.append(ast.keyword(
+                arg="string_detection_min_length",
+                value=ast.Constant(value=self._string_detection_min_length),
+            ))
         ctor = ast.Assign(
             targets=[ast.Name(id="d", ctx=ast.Store())],
             value=ast.Call(
@@ -609,25 +834,7 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
                     ctx=ast.Load(),
                 ),
                 args=[],
-                keywords=[
-                    ast.keyword(arg="cpu", value=dasmos_cpu),
-                    ast.keyword(
-                        arg="auto_label_data_prefix",
-                        value=ast.Constant(value="l"),
-                    ),
-                    ast.keyword(
-                        arg="auto_label_code_prefix",
-                        value=ast.Constant(value="c"),
-                    ),
-                    ast.keyword(
-                        arg="auto_label_subroutine_prefix",
-                        value=ast.Constant(value="sub_c"),
-                    ),
-                    ast.keyword(
-                        arg="auto_label_loop_prefix",
-                        value=ast.Constant(value="loop_c"),
-                    ),
-                ],
+                keywords=ctor_kwargs,
             ),
         )
 
@@ -650,8 +857,9 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
         return [ctor, load_call]
 
     def _convert_go(self, call: ast.Call) -> list[ast.stmt]:
-        """Convert top-level ``go(...)`` into ``ir = d.disassemble();
-        print(str(ir.render(...)))``.
+        """Convert top-level ``go(...)`` into a (possibly empty)
+        ``ir = d.disassemble()`` line followed by
+        ``print(str(ir.render(...)))``.
 
         For an ``output = go(print_output=False)`` form (go used as a
         value), see the ``Assign`` branch in :meth:`visit_Module` —
@@ -662,66 +870,34 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
         when used at the top level. The default behaviour (print to
         stdout) matches py8dis's default.
         """
-        # ir = d.disassemble()
-        disasm = ast.Assign(
-            targets=[ast.Name(id="ir", ctx=ast.Store())],
-            value=ast.Call(
-                func=ast.Attribute(
-                    value=ast.Name(id="d", ctx=ast.Load()),
-                    attr="disassemble",
-                    ctx=ast.Load(),
-                ),
-                args=[],
-                keywords=[],
-            ),
-        )
+        stmts: list[ast.stmt] = list(self._maybe_emit_ir_assignment())
         # print(str(ir.render("beebasm", **py8dis_compat_kwargs)))
         render_print = ast.Expr(
             value=ast.Call(
                 func=ast.Name(id="print", ctx=ast.Load()),
-                args=[
-                    ast.Call(
-                        func=ast.Name(id="str", ctx=ast.Load()),
-                        args=[
-                            ast.Call(
-                                func=ast.Attribute(
-                                    value=ast.Name(id="ir", ctx=ast.Load()),
-                                    attr="render",
-                                    ctx=ast.Load(),
-                                ),
-                                args=[ast.Constant(value=self.assembler_name)],
-                                keywords=self._py8dis_compat_render_kwargs(),
-                            ),
-                        ],
-                        keywords=[],
-                    ),
-                ],
+                args=[self._render_text_expression()],
                 keywords=[],
             ),
         )
-        return [disasm, render_print]
+        stmts.append(render_print)
+        return stmts
 
     def _render_text_expression(self) -> ast.Call:
-        """Build the expression ``str(d.disassemble().render("<asm>"))``.
+        """Build the expression ``str(ir.render("<asm>", ...))``.
 
-        Used as the RHS of ``output = go(print_output=False)`` and any
-        other context where the rendered text is consumed as a value
-        rather than printed implicitly.
+        Used as the RHS of ``output = go(print_output=False)`` and as
+        the inner expression of the ``print(str(...))`` shape emitted
+        by :meth:`_convert_go`. Always references the shared ``ir``
+        variable; the caller is responsible for emitting
+        ``ir = d.disassemble()`` first via
+        :meth:`_maybe_emit_ir_assignment`.
         """
         return ast.Call(
             func=ast.Name(id="str", ctx=ast.Load()),
             args=[
                 ast.Call(
                     func=ast.Attribute(
-                        value=ast.Call(
-                            func=ast.Attribute(
-                                value=ast.Name(id="d", ctx=ast.Load()),
-                                attr="disassemble",
-                                ctx=ast.Load(),
-                            ),
-                            args=[],
-                            keywords=[],
-                        ),
+                        value=ast.Name(id=IR_VAR_NAME, ctx=ast.Load()),
                         attr="render",
                         ctx=ast.Load(),
                     ),
@@ -731,6 +907,52 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
             ],
             keywords=[],
         )
+
+    def _json_render_data_expression(self) -> ast.Attribute:
+        """Build the expression ``ir.render('json').data``.
+
+        Used as the replacement for ``get_structured()``. The driver's
+        downstream ``json.dumps(structured)`` continues to work
+        because ``StructuredOutput.data`` is a plain dict — the same
+        shape py8dis-fork's ``structured.py`` returned.
+        """
+        return ast.Attribute(
+            value=ast.Call(
+                func=ast.Attribute(
+                    value=ast.Name(id=IR_VAR_NAME, ctx=ast.Load()),
+                    attr="render",
+                    ctx=ast.Load(),
+                ),
+                args=[ast.Constant(value="json")],
+                keywords=[],
+            ),
+            attr="data",
+            ctx=ast.Load(),
+        )
+
+    def _maybe_emit_ir_assignment(self) -> list[ast.stmt]:
+        """Return ``[ir = d.disassemble()]`` the first time this is
+        called per port, ``[]`` thereafter. Lets multiple sites that
+        depend on the IR (the asm render, the JSON render) share one
+        trace.
+        """
+        if self._ir_var_emitted:
+            return []
+        self._ir_var_emitted = True
+        return [
+            ast.Assign(
+                targets=[ast.Name(id=IR_VAR_NAME, ctx=ast.Store())],
+                value=ast.Call(
+                    func=ast.Attribute(
+                        value=ast.Name(id="d", ctx=ast.Load()),
+                        attr="disassemble",
+                        ctx=ast.Load(),
+                    ),
+                    args=[],
+                    keywords=[],
+                ),
+            ),
+        ]
 
     @staticmethod
     def _py8dis_compat_render_kwargs() -> list[ast.keyword]:
@@ -990,6 +1212,312 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
         return False
 
 
+def _annotate_int_literals(source: str, tree: ast.AST) -> None:
+    """Stash the original token text of every integer literal in
+    ``source`` onto its corresponding :class:`ast.Constant` node as
+    ``_original_literal``.
+
+    Python's ``ast`` module discards the lexical form of numeric
+    literals — ``0xE000`` and ``57344`` parse to the same node. Driver
+    scripts read by humans rely on the hex form for addresses, so we
+    walk the source's tokens, record the original text of every
+    integer-literal NUMBER token by ``(line, col)``, then attach that
+    text to the matching Constant node. The custom unparser later
+    uses ``_original_literal`` when present and falls back to
+    ``repr(value)`` for nodes the porter synthesised.
+    """
+    by_pos: dict[tuple[int, int], str] = {}
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(source).readline)
+        for tok in tokens:
+            if tok.type == tokenize.NUMBER:
+                by_pos[tok.start] = tok.string
+    except tokenize.TokenizeError:
+        return  # malformed source; bail rather than crash the porter
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, int)
+            and not isinstance(node.value, bool)
+        ):
+            key = (node.lineno, node.col_offset)
+            if key in by_pos:
+                text = by_pos[key]
+                # Only stash the original if it actually carries
+                # information beyond ``repr(value)`` — i.e. a hex /
+                # binary / octal prefix, or underscore separators.
+                # Decimal literals round-trip fine through repr().
+                if any(c in text for c in "_xXbBoO"):
+                    node._original_literal = text
+
+
+class _PortedDriverUnparser(ast._Unparser):  # noqa: SLF001 — stdlib-internal
+    """Subclass of :class:`ast._Unparser` with three customisations
+    needed by the dasmos porter:
+
+    1. **Hex / binary / underscore-separated int literals** are
+       preserved when the porter has stashed an ``_original_literal``
+       on the Constant node (see :func:`_annotate_int_literals`).
+    2. **Multiline string Constants** render as triple-quoted strings
+       (literal newlines), matching the docstring path the base
+       unparser already takes — comment / description text in driver
+       scripts is meant to be readable.
+    3. **Blank-line annotations**: statements with a
+       ``_blank_lines_before`` attribute get that many extra
+       newlines inserted before them, so subroutine and label
+       declarations break up the otherwise-monolithic body.
+
+    The ``ast._Unparser`` private API is stable across recent CPython
+    releases and is what :func:`ast.unparse` itself uses.
+    """
+
+    def visit_Constant(self, node: ast.Constant) -> None:
+        original = getattr(node, "_original_literal", None)
+        if original is not None:
+            self.write(original)
+            return
+        if isinstance(node.value, str) and "\n" in node.value:
+            self._write_str_avoiding_backslashes(node.value)
+            return
+        super().visit_Constant(node)
+
+    def traverse(self, node):
+        if isinstance(node, ast.stmt):
+            blanks = getattr(node, "_blank_lines_before", 0)
+            for _ in range(blanks):
+                self.write("\n")
+        super().traverse(node)
+
+
+def _is_ir_render_json_data(node: ast.expr | None) -> bool:
+    """True iff ``node`` is the expression ``ir.render('json').data``
+    (the rewritten form of py8dis ``get_structured()``).
+    """
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "data"
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Attribute)
+        and node.value.func.attr == "render"
+        and isinstance(node.value.func.value, ast.Name)
+        and node.value.func.value.id == IR_VAR_NAME
+        and len(node.value.args) == 1
+        and isinstance(node.value.args[0], ast.Constant)
+        and node.value.args[0].value == "json"
+    )
+
+
+def _try_wraps_json_emit(stmt: ast.stmt) -> bool:
+    """True iff ``stmt`` is a ``Try`` whose body contains the JSON-emit
+    rewrite (``ir.render('json').data`` somewhere inside).
+    """
+    if not isinstance(stmt, ast.Try):
+        return False
+    for child in ast.walk(stmt):
+        if _is_ir_render_json_data(child):
+            return True
+    return False
+
+
+class _JsonDumpsToStrRender(ast.NodeTransformer):
+    """Replace ``json.dumps(<var_name>)`` with ``str(ir.render('json'))``.
+
+    Used after an ``<var_name> = ir.render('json').data`` assignment is
+    detected — combined with dropping that assignment, this collapses
+    the four-step py8dis JSON-emit pattern into a single
+    ``write_text(str(ir.render('json')), ...)`` call.
+    """
+
+    def __init__(self, var_name: str):
+        self.var_name = var_name
+        self.count = 0
+
+    def visit_Call(self, node: ast.Call) -> ast.expr:
+        self.generic_visit(node)
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "dumps"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "json"
+            and len(node.args) == 1
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id == self.var_name
+        ):
+            self.count += 1
+            return ast.Call(
+                func=ast.Name(id="str", ctx=ast.Load()),
+                args=[
+                    ast.Call(
+                        func=ast.Attribute(
+                            value=ast.Name(id=IR_VAR_NAME, ctx=ast.Load()),
+                            attr="render",
+                            ctx=ast.Load(),
+                        ),
+                        args=[ast.Constant(value="json")],
+                        keywords=[],
+                    ),
+                ],
+                keywords=[],
+            )
+        return node
+
+
+def _references_module(body: list[ast.stmt], module_name: str) -> bool:
+    """True iff ``body`` contains any ``<module_name>.<...>`` attribute
+    access (i.e. the import of ``module_name`` is still used).
+    Imports themselves don't count as a reference — we're asking
+    whether the body uses the module, not whether it imports it.
+    """
+    for stmt in body:
+        if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+            continue
+        for node in ast.walk(stmt):
+            if (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == module_name
+            ):
+                return True
+            if (
+                isinstance(node, ast.Name)
+                and node.id == module_name
+            ):
+                return True
+    return False
+
+
+def _is_plain_import(stmt: ast.stmt, module_name: str) -> bool:
+    """True iff ``stmt`` is ``import <module_name>`` (no ``from``,
+    no ``as alias``) — the form the porter drops when the module
+    becomes unused after JSON simplification.
+    """
+    return (
+        isinstance(stmt, ast.Import)
+        and len(stmt.names) == 1
+        and stmt.names[0].name == module_name
+        and stmt.names[0].asname is None
+    )
+
+
+def _simplify_json_emit(body: list[ast.stmt]) -> list[ast.stmt]:
+    """Collapse the canonical py8dis JSON-emit shape into one
+    ``write_text(str(ir.render('json')), ...)`` line.
+
+    Three transformations, applied in order:
+
+    1. Lift the body of any ``try:`` whose body contains an
+       ``ir.render('json').data`` reference, dropping the try/except
+       wrapper. The defensive wrapper was hiding bugs in the py8dis
+       JSON path; the dasmos JSON renderer is reliable.
+    2. Drop any ``<X> = ir.render('json').data`` assignment whose
+       only downstream use is in a ``json.dumps(<X>)`` call, and
+       replace each such call with ``str(ir.render('json'))``.
+    3. If the body no longer references ``json`` (after step 2),
+       drop ``import json``.
+    """
+    # 1. Lift try/except wrappers around the JSON emit.
+    lifted: list[ast.stmt] = []
+    for stmt in body:
+        if _try_wraps_json_emit(stmt):
+            lifted.extend(stmt.body)
+        else:
+            lifted.append(stmt)
+
+    # 2. Find the ``<X> = ir.render('json').data`` assignment, drop it,
+    # and replace ``json.dumps(<X>)`` with ``str(ir.render('json'))``.
+    # The detection is intentionally conservative — only proceed if
+    # there's exactly one such assignment and it's used only via
+    # json.dumps.
+    assign_idx: int | None = None
+    var_name: str | None = None
+    for i, stmt in enumerate(lifted):
+        if (
+            isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], ast.Name)
+            and _is_ir_render_json_data(stmt.value)
+        ):
+            assign_idx = i
+            var_name = stmt.targets[0].id
+            break
+
+    if var_name is not None:
+        replacer = _JsonDumpsToStrRender(var_name)
+        for i, stmt in enumerate(lifted):
+            if i == assign_idx:
+                continue
+            new_stmt = replacer.visit(stmt)
+            ast.fix_missing_locations(new_stmt)
+            lifted[i] = new_stmt
+        if replacer.count > 0 and assign_idx is not None:
+            del lifted[assign_idx]
+
+    # 3. Drop ``import json`` if json is no longer referenced anywhere
+    # in the body.
+    if not _references_module(lifted, "json"):
+        lifted = [s for s in lifted if not _is_plain_import(s, "json")]
+
+    return lifted
+
+
+def _annotate_blank_lines(body: list[ast.stmt]) -> None:
+    """Tag top-level ``d.subroutine(...)`` and ``d.label(...)`` calls
+    with ``_blank_lines_before`` so the unparser sets them off
+    visually.
+
+    - ``d.subroutine(...)`` gets two blank lines before it (a clear
+      section break).
+    - Standalone ``d.label(...)`` gets one blank line before it.
+    - When a ``d.label(addr, ...)`` is immediately followed by a
+      ``d.subroutine(addr, ...)`` at the same address, the label
+      gets the two blanks and the subroutine gets none — the pair
+      reads as a single header.
+    """
+    for i, stmt in enumerate(body):
+        if _is_d_call(stmt, "subroutine"):
+            if i > 0 and _is_d_call_at_same_addr(body[i - 1], "label", stmt):
+                body[i - 1]._blank_lines_before = 2
+                # Subroutine itself gets nothing — the label above
+                # already carries the section break.
+            else:
+                stmt._blank_lines_before = 2
+        elif _is_d_call(stmt, "label"):
+            # Don't overwrite a 2-blank annotation a future iteration
+            # set on this same node (label-followed-by-subroutine
+            # pattern lifts blanks UP to the label).
+            if not getattr(stmt, "_blank_lines_before", 0):
+                stmt._blank_lines_before = 1
+
+
+def _is_d_call(stmt: ast.stmt, attr: str) -> bool:
+    """True iff ``stmt`` is ``d.<attr>(...)`` as a top-level call."""
+    return (
+        isinstance(stmt, ast.Expr)
+        and isinstance(stmt.value, ast.Call)
+        and isinstance(stmt.value.func, ast.Attribute)
+        and stmt.value.func.attr == attr
+        and isinstance(stmt.value.func.value, ast.Name)
+        and stmt.value.func.value.id == "d"
+    )
+
+
+def _is_d_call_at_same_addr(label_stmt, label_attr, ref_stmt) -> bool:
+    """True iff ``label_stmt`` is ``d.<label_attr>(addr, ...)`` whose
+    ``addr`` matches the first positional arg of ``ref_stmt`` (also
+    a ``d.<...>(addr, ...)`` call).
+    """
+    if not _is_d_call(label_stmt, label_attr):
+        return False
+    if not (
+        isinstance(ref_stmt, ast.Expr)
+        and isinstance(ref_stmt.value, ast.Call)
+        and ref_stmt.value.args
+        and label_stmt.value.args
+    ):
+        return False
+    return ast.dump(label_stmt.value.args[0]) == ast.dump(ref_stmt.value.args[0])
+
+
 def port(source: str, extra_envs: tuple[str, ...] = ()) -> str:
     """Translate ``source`` (a py8dis driver script) to dasmos form.
 
@@ -1002,10 +1530,14 @@ def port(source: str, extra_envs: tuple[str, ...] = ()) -> str:
     into ``bbc()`` but dasmos treats as an opt-in upgrade.
     """
     tree = ast.parse(source)
+    _annotate_int_literals(source, tree)
     transformer = Py8disToDasmosTransformer(extra_envs=extra_envs)
     new_tree = transformer.visit(tree)
     ast.fix_missing_locations(new_tree)
-    return ast.unparse(new_tree) + "\n"
+    if isinstance(new_tree, ast.Module):
+        _annotate_blank_lines(new_tree.body)
+    unparser = _PortedDriverUnparser()
+    return unparser.visit(new_tree) + "\n"
 
 
 def main(argv: list[str] | None = None) -> int:

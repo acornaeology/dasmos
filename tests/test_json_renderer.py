@@ -54,13 +54,15 @@ class TestPluginRegistration:
 
 
 class TestTopLevelSchema:
-    """The dict has the same top-level keys py8dis-fork emits, in the
-    same order. Downstream consumers depend on this shape (see
+    """The dict has a stable top-level shape. Compared to py8dis-fork's
+    schema, dasmos splits ``data_banner`` out into its own ``banners``
+    array (so consumers can tell "subroutine entry point" from "data
+    region with header"). All other keys mirror py8dis (see
     ``project_jsonrenderer_schema`` memory).
     """
 
     EXPECTED_KEYS = (
-        "meta", "constants", "subroutines",
+        "meta", "constants", "subroutines", "banners",
         "external_labels", "memory_map", "items",
     )
 
@@ -402,3 +404,198 @@ class TestSubroutinesSection:
         ir = d.disassemble()
         subs = ir.render(JsonRenderer()).data["subroutines"]
         assert "fall_through" not in subs[0]
+
+    def test_non_relocated_sub_omits_binary_addr(self, tmp_path):
+        # When a subroutine sits at its natural binary address (no
+        # ``move()`` redirects it), the JSON entry omits ``binary_addr``
+        # — matching the per-item convention. The acornaeology site
+        # generator uses ``(addr, binary_addr)`` as the key that joins
+        # subroutine entries to item entries, so a stray ``binary_addr``
+        # on the sub side breaks the lookup and the structured banner
+        # falls back to plain-comment rendering.
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0x60]))
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.subroutine(0x8000, "frob", title="Frob the bus")
+        ir = d.disassemble()
+        subs = ir.render(JsonRenderer()).data["subroutines"]
+        assert subs[0]["addr"] == 0x8000
+        assert "binary_addr" not in subs[0], subs[0]
+
+    def test_standalone_banner_appears_in_banners_array(self, tmp_path):
+        # d.banner() (without an accompanying d.subroutine()) is the
+        # dasmos analogue of py8dis's data_banner — a visual section
+        # header for a data region. dasmos's JSON schema gives these
+        # their own ``banners`` array (parallel to ``subroutines``) so
+        # downstream consumers can tell "subroutine entry point" from
+        # "data region with header" without inspecting fields.
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0x00] * 4))
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.label(0x8000, "table_x")
+        d.banner(0x8000, title="Lookup table X",
+                 description="32-entry sine table.")
+        out = d.disassemble().render(JsonRenderer())
+        # Not in subroutines (no entry-point semantics).
+        assert all(s["addr"] != 0x8000 for s in out.data["subroutines"])
+        # In banners.
+        entry = next((b for b in out.data["banners"] if b["addr"] == 0x8000), None)
+        assert entry is not None, out.data["banners"]
+        assert entry["name"] == "table_x"
+        assert entry["title"] == "Lookup table X"
+        assert entry["description"] == "32-entry sine table."
+
+    def test_subroutine_with_internal_banner_does_not_appear_in_banners(self, tmp_path):
+        # d.subroutine() internally attaches a Banner annotation
+        # (so the asm renderer can produce a banner block). The
+        # subroutine's title/description are already on the
+        # ``subroutines`` entry — the internal Banner must NOT
+        # produce a duplicate ``banners`` entry at the same address.
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0x60]))
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.subroutine(0x8000, "frob",
+                     title="Frob the bus", description="Does things.")
+        out = d.disassemble().render(JsonRenderer())
+        # In subroutines.
+        subs = [s for s in out.data["subroutines"] if s["addr"] == 0x8000]
+        assert len(subs) == 1, subs
+        assert subs[0]["name"] == "frob"
+        # NOT in banners.
+        banners = [b for b in out.data["banners"] if b["addr"] == 0x8000]
+        assert banners == [], banners
+
+    def test_banner_carries_on_entry_on_exit(self, tmp_path):
+        # Banner annotations can carry register-usage tables too.
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0x00] * 4))
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.label(0x8000, "table_y")
+        d.banner(0x8000, title="Table Y",
+                 description="...",
+                 on_entry={"a": "index"},
+                 on_exit={"a": "value"})
+        out = d.disassemble().render(JsonRenderer())
+        entry = next(b for b in out.data["banners"] if b["addr"] == 0x8000)
+        assert entry["on_entry"] == {"a": "index"}
+        assert entry["on_exit"] == {"a": "value"}
+
+    def test_banner_without_label_uses_no_name(self, tmp_path):
+        # Bannered addresses don't strictly need a label.
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0x00]))
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.banner(0x8000, title="Anonymous banner",
+                 description="No label here.")
+        out = d.disassemble().render(JsonRenderer())
+        entry = next(b for b in out.data["banners"] if b["addr"] == 0x8000)
+        assert "name" not in entry, entry
+        assert entry["title"] == "Anonymous banner"
+
+    def test_banners_present_as_empty_list_when_none_attached(self, tmp_path):
+        # The top-level ``banners`` key is always present, as an
+        # empty list when no Banner annotations exist. Downstream
+        # consumers can iterate it unconditionally.
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0x60]))
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.entry(0x8000, name="start")
+        out = d.disassemble().render(JsonRenderer())
+        assert out.data["banners"] == []
+
+    def test_relocated_sub_keeps_binary_addr(self, tmp_path):
+        # When a subroutine is in a relocated region, the binary
+        # address differs from the runtime address and BOTH must be
+        # surfaced (the item-level emission also keeps both).
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0xea, 0x60]))  # nop, rts
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.add_move(0x0400, 0x8000, 2)
+        d.subroutine(0x0400, "moved")
+        d.entry(0x0400)
+        ir = d.disassemble()
+        subs = ir.render(JsonRenderer()).data["subroutines"]
+        assert subs[0]["addr"] == 0x0400
+        assert subs[0]["binary_addr"] == 0x8000
+
+
+class TestMemoryMapMetadata:
+    """``memory_map`` entries describe out-of-load-range labels that
+    document RAM / hardware locations. Driver scripts attach extra
+    metadata via ``d.label(addr, name, length=, group=, access=,
+    description=)``; the JSON renderer must surface every populated
+    field so the site generator can render the access column,
+    group-bucket the rows, and show address ranges.
+    """
+
+    def test_emits_length_group_access(self, tmp_path):
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0x60]))
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.label(0x0080, "mem_ptr", description="Indirect pointer.",
+                length=2, group="zero_page", access="rw")
+        out = d.disassemble().render(JsonRenderer())
+        mm = out.data["memory_map"]
+        entry = next(e for e in mm if e["name"] == "mem_ptr")
+        assert entry["addr"] == 0x80
+        assert entry["length"] == 2
+        assert entry["group"] == "zero_page"
+        assert entry["access"] == "rw"
+        assert entry["description"] == "Indirect pointer."
+
+    def test_label_with_metadata_but_no_description_still_emitted(self, tmp_path):
+        # An author may want a memory-map row purely as a labelled
+        # workspace location with a bus-access annotation, without
+        # narrative description text. Skipping such labels would drop
+        # them from the rendered memory-map page.
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0x60]))
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.label(0xFE40, "system_via_orb",
+                length=1, group="io", access="rw")
+        out = d.disassemble().render(JsonRenderer())
+        mm = out.data["memory_map"]
+        entry = next(e for e in mm if e["name"] == "system_via_orb")
+        assert entry["access"] == "rw"
+        assert entry["group"] == "io"
+        assert "description" not in entry
+
+    def test_optional_fields_omitted_when_unset(self, tmp_path):
+        # A label with only a description (no length/group/access)
+        # emits just description — no spurious empty fields.
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0x60]))
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.label(0x0070, "scratch", description="Scratch byte.")
+        out = d.disassemble().render(JsonRenderer())
+        mm = out.data["memory_map"]
+        entry = next(e for e in mm if e["name"] == "scratch")
+        assert entry["description"] == "Scratch byte."
+        assert "length" not in entry
+        assert "group" not in entry
+        assert "access" not in entry
+
+    def test_in_range_label_with_metadata_not_in_memory_map(self, tmp_path):
+        # Labels INSIDE the loaded range describe code/data in the
+        # ROM and should NOT appear in memory_map (which is about
+        # out-of-ROM memory: zero page, workspace, hardware).
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0x60]))
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.label(0x8000, "in_rom",
+                length=1, group="rom", access="r",
+                description="Inside ROM.")
+        out = d.disassemble().render(JsonRenderer())
+        mm = out.data["memory_map"]
+        assert all(e["name"] != "in_rom" for e in mm), mm

@@ -32,16 +32,85 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from dasmos.core.annotations import Align
+from dasmos.core.format_hint import FormatHint
 from dasmos.core.memory import BinaryAddr
 from dasmos.ext.environments.acorn_mos.enums import (
     EVENT_ENUM,
+    INKEY_ENUM,
+    OSARGS_INLINE,
+    OSARGS_POST_CALL_TABLES,
+    OSBYTE_DESCRIPTIONS,
     OSBYTE_ENUM,
+    OSBYTE_POST_CALL_DESCRIPTIONS,
+    OSBYTE_POST_CALL_TABLES,
     OSBYTE_X_SECONDARY_ENUMS,
+    OSBYTE_X_VALUE_DESCRIPTIONS,
     OSFILE_ENUM,
     OSFIND_ENUM,
     OSGBPB_ENUM,
+    OSWORD_DESCRIPTIONS,
     OSWORD_ENUM,
 )
+
+
+# OSBYTE actions that scan / wait for a specific physical key whose
+# scan code arrives in X as ``(255 - inkey_key_<name>) EOR 128``:
+#
+#   &79  ``osbyte_scan_keyboard``   — scan keyboard for one key
+#   &81  ``osbyte_inkey``           — INKEY (read keyboard with time-limit)
+#
+# Both have other modes too — &79 with X<&80 reads a key matrix
+# row; &81 with X+Y as a positive 16-bit time limit waits for any
+# key. The INKEY hint should only register when X has its high bit
+# set, signalling "negative scan code".
+OSBYTE_INKEY_DISPATCH_VALUES = frozenset({0x79, 0x81})
+
+
+def _detect_inkey_pattern(a_value: int, state_before_jsr) -> tuple[str, int] | None:
+    """If the call is an INKEY-mode keyboard scan / test, return
+    ``(inkey_name, inkey_key_byte)`` — the named INKEY symbol the
+    LDX byte decodes to plus the unsigned-byte form (e.g.
+    ``("inkey_key_ctrl", 254)``). Returns ``None`` when this isn't
+    an INKEY pattern.
+
+    A pattern fires only for OSBYTE &79 / &81 when X has its high
+    bit set AND ``(255 - X) EOR 128`` resolves to a named entry in
+    :data:`INKEY_ENUM`. Anything else (mismatched action, X<&80,
+    or a high-bit byte that doesn't decode) is left to the generic
+    OSBYTE handling.
+    """
+    if a_value not in OSBYTE_INKEY_DISPATCH_VALUES:
+        return None
+    x = state_before_jsr.x
+    if x.value is None or x.previous_load_imm_addr is None:
+        return None
+    if not (x.value & 0x80):
+        return None
+    inkey_key = (255 - x.value) ^ 0x80
+    inkey_name = INKEY_ENUM.get(inkey_key)
+    if inkey_name is None:
+        return None
+    return inkey_name, inkey_key
+
+
+def _inkey_inline_text(inkey_name: str) -> str:
+    """Build the JSR-site inline-comment text for an INKEY pattern.
+
+    Strips the ``inkey_key_`` prefix and replaces underscores with
+    spaces, keeping ``key`` in the phrase so the reading flows for
+    every name in :data:`INKEY_ENUM`:
+
+    - ``inkey_key_ctrl``           → ``Test for ctrl key pressed``
+    - ``inkey_key_keypad_4``       → ``Test for keypad 4 key pressed``
+    - ``inkey_key_left_square_bracket`` →
+      ``Test for left square bracket key pressed``
+
+    The phrasing matches py8dis-fork's ``"Test for ... key pressed"``
+    so this contributes the same vocabulary tokens (``test``, ``key``,
+    ``pressed``) to the comment-vocab parity oracle.
+    """
+    bare = inkey_name[len("inkey_key_"):].replace("_", " ")
+    return f"Test for {bare} key pressed"
 
 if TYPE_CHECKING:
     from dasmos.disassembler import Disassembler
@@ -147,30 +216,36 @@ def _build_inline_table(
     enum: dict[int, str],
     prefix: str,
     overrides: dict[int, str],
+    descriptions: dict[int, str] | None = None,
 ) -> dict[int, str]:
     """Build a value→inline-comment table from an OS-call enum.
 
-    The default body is mechanically derived from the enum entry's
-    name (strip ``<prefix>_``, underscores → spaces). Each entry is
-    then prepended with ``<prefix>: `` so the rendered comment
-    reads e.g. ``osbyte: select input stream`` — the call-name
-    prefix anchors the action description in context (without it,
-    a comment like "select input stream" floats free of the OS-
-    call call-site and can be misread as part of surrounding code).
+    Three sources, applied in priority order (highest first):
 
-    The OSBYTE / OSWORD action vocabularies are large and varied
-    enough that the prefix carries real information. Smaller
-    enums whose action names are already self-anchored
-    (``open file for input``, ``read filenames in current
-    directory``) don't need this prefix and use a hand-crafted
-    table instead.
+    1. ``descriptions`` (when supplied): a long, self-anchored phrase
+       like ``Read top of operating system RAM address (OSHWM)``.
+       Used verbatim — the call name is already named on the
+       preceding ``LDA #osbyte_<name>`` line via the registered
+       constant, so a leading ``osbyte:`` prefix here would only
+       duplicate context.
+    2. ``overrides``: a short imperative phrase that doesn't match
+       the mechanical strip (e.g. ``vsync`` → ``wait for vsync``).
+       Prefixed with ``<prefix>: ``.
+    3. Mechanical strip of the enum name (``osbyte_select_input_stream``
+       → ``select input stream``). Prefixed with ``<prefix>: ``.
 
-    ``overrides`` takes precedence over the mechanical body, but
-    the ``<prefix>: `` prepend still happens — write override
-    bodies WITHOUT the prefix.
+    Improvement over py8dis-fork: there, the OSBYTE descriptions
+    live inside a 1500-line ``osbyte_action`` if/elif chain. dasmos
+    expresses the same content as a pure data table
+    (``OSBYTE_DESCRIPTIONS`` / ``OSWORD_DESCRIPTIONS`` in
+    :mod:`enums`) — easier to scan, easier to test, and shared with
+    future per-X-value lookup analysers.
     """
     out: dict[int, str] = {}
     for value, name in enum.items():
+        if descriptions is not None and value in descriptions:
+            out[value] = descriptions[value]
+            continue
         if value in overrides:
             body = overrides[value]
         else:
@@ -181,9 +256,11 @@ def _build_inline_table(
 
 OSBYTE_INLINE = _build_inline_table(
     OSBYTE_ENUM, "osbyte", OSBYTE_INLINE_OVERRIDES,
+    descriptions=OSBYTE_DESCRIPTIONS,
 )
 OSWORD_INLINE = _build_inline_table(
     OSWORD_ENUM, "osword", OSWORD_INLINE_OVERRIDES,
+    descriptions=OSWORD_DESCRIPTIONS,
 )
 
 
@@ -192,29 +269,36 @@ def _attach_inline_jsr_comment(
     jsr_binary_addr: int,
     text: str,
 ) -> None:
-    """Attach a JSR-site inline comment if no existing inline
-    annotation conflicts. Translates the binary address to runtime
-    via the active-move stack so the comment routes to the right
-    classification under relocation.
+    """Attach an analyser-driven inline comment at a JSR/JMP site.
 
-    The duplicate-annotation warning in :class:`AnnotationStore`
-    will fire if the analyzer somehow attaches the same text twice
-    or if a driver-supplied inline comment with the same text is
-    already registered — both indicate a real authoring conflict.
+    Stacks alongside any driver-supplied inline comment at the same
+    address — both render in the asm output (joined with two spaces
+    by the renderer's per-classification gather). This matches
+    py8dis-fork's behaviour where the driver writes a partial
+    comment (``OSARGS: set file pointer``) and the OS-call
+    auto-comment appends specifics (``Write sequential file
+    pointer``) to land on one line.
+
+    Skips only when an annotation with the EXACT same text already
+    exists, so re-running the analyser is idempotent.
+
+    Marks the new comment ``auto_generated=True`` so the
+    duplicate-comment warning in :class:`AnnotationStore` (intended
+    to flag authoring bugs where one driver call overwrites another)
+    suppresses for this case — analyser stacking is intentional.
     """
     runtime_addr = int(disassembler.moves.b2r(BinaryAddr(jsr_binary_addr)))
-    # Skip if any inline comment is already at this address —
-    # driver-supplied comments win over auto-generated ones.
+    from dasmos.core.annotations import Comment
     existing = disassembler.annotations.get_for_align(
         jsr_binary_addr, Align.INLINE,
     )
     for ann in existing:
-        # Skip just for inline-comment duplicates; banner / xref
-        # blocks at the same address are independent.
-        from dasmos.core.annotations import Comment
-        if isinstance(ann, Comment):
-            return
-    disassembler.comment(runtime_addr, text, align=Align.INLINE)
+        if isinstance(ann, Comment) and ann.text == text:
+            return  # already attached — idempotent re-run
+    disassembler.annotations.add(
+        BinaryAddr(jsr_binary_addr),
+        Comment(text=text, align=Align.INLINE, auto_generated=True),
+    )
 
 
 def _analyzer_for(
@@ -320,6 +404,129 @@ def osword_analyzer(
     _maybe_register_xy_address(disassembler, state_before_jsr)
 
 
+def _format_value_table(
+    register: str,
+    intro: str,
+    values: dict[int, str],
+) -> str:
+    """Render a value-table as Markdown.
+
+    Output layout:
+        <intro>:
+
+        | <REG> | Meaning |
+        |-------|---------|
+        | 0     | …       |
+        | 1     | …       |
+
+    The asm renderer flattens the Markdown via mistletoe so the
+    asm comment shows a padded pipe-table; the JSON renderer keeps
+    the source markdown verbatim so the site generator can render
+    a real HTML table.
+    """
+    rows = sorted(values.items())
+    lines = [f"{intro}:", ""]
+    lines.append(f"| {register.upper()} | Meaning |")
+    lines.append("|---|---|")
+    for value, desc in rows:
+        lines.append(f"| {value} | {desc} |")
+    return "\n".join(lines)
+
+
+def _attach_post_call_table(
+    disassembler: "Disassembler",
+    jsr_binary_addr: int,
+    table_specs: dict[str, tuple[str, dict[int, str]]],
+) -> None:
+    """Emit one or more value-table comments at the byte after the
+    JSR/JMP. Each spec maps a register letter to ``(intro, values)``;
+    each becomes a separate standalone (BEFORE_LABEL) Markdown-table
+    comment. Driver-supplied annotations at the destination are
+    respected: this won't overwrite an existing comment, but stacks
+    alongside it.
+    """
+    classification = disassembler.classifications.get_classification(
+        jsr_binary_addr,
+    )
+    from dasmos.cpu import Opcode
+    if not isinstance(classification, Opcode):
+        return
+    next_addr = jsr_binary_addr + classification.length()
+    runtime_addr = int(disassembler.moves.b2r(BinaryAddr(next_addr)))
+    for register, (intro, values) in sorted(table_specs.items()):
+        if not values:
+            continue
+        text = _format_value_table(register, intro, values)
+        # Skip if a comment with the same text already exists at this
+        # address — guards against re-runs (e.g. multiple JSR sites
+        # to the same target attaching the same table at the same
+        # next-instruction address). The duplicate-comment warning
+        # in AnnotationStore covers exact duplicates differently;
+        # this earlier short-circuit avoids the warning entirely.
+        existing = disassembler.annotations.get_for_align(
+            next_addr, Align.BEFORE_LABEL,
+        )
+        from dasmos.core.annotations import Comment
+        if any(
+            isinstance(a, Comment) and a.text == text for a in existing
+        ):
+            continue
+        disassembler.comment(runtime_addr, text)
+
+
+def _attach_post_call_descriptions(
+    disassembler: "Disassembler",
+    jsr_binary_addr: int,
+    descriptions: dict[str, str],
+) -> None:
+    """Attach an inline comment at the binary address immediately
+    after the JSR/JMP for each register named in ``descriptions``.
+
+    For OSBYTE calls that return values in registers (e.g. OSBYTE
+    &86 returns POS in X and VPOS in Y), py8dis attaches an inline
+    comment at the next instruction that READS that register — its
+    "next-use of X" tracker. dasmos's simplified rule attaches at
+    the first byte after the call site, which is where py8dis's
+    next-use almost always lands in real Acorn ROM code (the very
+    next instruction typically consumes the returned register).
+
+    Multiple register descriptions for one call get joined with
+    ``" / "`` so they live on a single inline comment, e.g.
+    ``X is the horizontal text position ('POS') / Y is the vertical
+    text position ('VPOS')`` — readable as one annotation about
+    "what the registers contain after the call".
+    """
+    # Compute the next-instruction binary address. JSR is 3 bytes
+    # (opcode + abs16); JMP abs is also 3 bytes. The call site's
+    # opcode at jsr_binary_addr is one of those.
+    classification = disassembler.classifications.get_classification(
+        jsr_binary_addr,
+    )
+    from dasmos.cpu import Opcode
+    if not isinstance(classification, Opcode):
+        return
+    next_addr = jsr_binary_addr + classification.length()
+    # Skip if any inline comment is already there (driver-provided
+    # comments win).
+    existing = disassembler.annotations.get_for_align(
+        next_addr, Align.INLINE,
+    )
+    from dasmos.core.annotations import Comment
+    for ann in existing:
+        if isinstance(ann, Comment):
+            return
+    # Stable ordering for joinery: A first (rare), then X, then Y.
+    parts: list[str] = []
+    for reg in ("a", "x", "y"):
+        text = descriptions.get(reg)
+        if text is not None:
+            parts.append(text)
+    if not parts:
+        return
+    runtime_addr = int(disassembler.moves.b2r(BinaryAddr(next_addr)))
+    disassembler.comment(runtime_addr, " / ".join(parts), align=Align.INLINE)
+
+
 def _maybe_register_xy_address(disassembler, state) -> None:
     """If (X, Y) immediately-loaded values form the address of a
     labelled location, register ``<(label)`` / ``>(label)`` at the
@@ -388,8 +595,27 @@ def osbyte_analyzer(
             a_operand = a.previous_load_imm_addr + 1
             if disassembler.expressions.get_or_none(a_operand) is None:
                 disassembler.expr(a_operand, a_name)
-            # Inline auto-comment at the JSR site.
-            inline_text = OSBYTE_INLINE.get(a_value)
+            # Inline auto-comment at the JSR site. Precedence
+            # (highest first):
+            #   1. INKEY-aware phrasing for OSBYTE &79 / &81 when
+            #      the X byte decodes to a named scan code — names
+            #      the specific key (``Test for ctrl key pressed``).
+            #   2. Per-X-value descriptions for OSBYTEs with a
+            #      small enumerated X (``OSBYTE_X_VALUE_DESCRIPTIONS``).
+            #   3. Generic OSBYTE description (``OSBYTE_INLINE``).
+            inkey_pattern = _detect_inkey_pattern(a_value, state_before_jsr)
+            inline_text = None
+            if inkey_pattern is not None:
+                inkey_name, _ = inkey_pattern
+                inline_text = _inkey_inline_text(inkey_name)
+            if inline_text is None:
+                x_value_table = OSBYTE_X_VALUE_DESCRIPTIONS.get(a_value)
+                if x_value_table is not None:
+                    x = state_before_jsr.x
+                    if x.value is not None:
+                        inline_text = x_value_table.get(x.value)
+            if inline_text is None:
+                inline_text = OSBYTE_INLINE.get(a_value)
             if inline_text is not None:
                 _attach_inline_jsr_comment(
                     disassembler, jsr_binary_addr, inline_text,
@@ -410,6 +636,48 @@ def osbyte_analyzer(
                         x_operand = x.previous_load_imm_addr + 1
                         if disassembler.expressions.get_or_none(x_operand) is None:
                             disassembler.expr(x_operand, x_name)
+            # Post-call: attach descriptive inline comments at the
+            # next byte after the JSR/JMP for each register named in
+            # OSBYTE_POST_CALL_DESCRIPTIONS[a_value]. py8dis tracks
+            # "next-use of register" precisely; dasmos uses the
+            # simpler "first opcode after the call" anchor (matches
+            # py8dis's output for the cases in our migration since
+            # the immediately-following instruction usually IS the
+            # register-using consumer).
+            post_call = OSBYTE_POST_CALL_DESCRIPTIONS.get(a_value)
+            if post_call is not None:
+                _attach_post_call_descriptions(
+                    disassembler, jsr_binary_addr, post_call,
+                )
+            # Post-call value-tables: when the OSBYTE returns a
+            # register from a small enumeration (OS-version, …),
+            # emit a Markdown table at the byte after the call site
+            # listing every possible value.
+            post_call_table = OSBYTE_POST_CALL_TABLES.get(a_value)
+            if post_call_table is not None:
+                _attach_post_call_table(
+                    disassembler, jsr_binary_addr, post_call_table,
+                )
+            # INKEY pattern registration: when the detection above
+            # fired, register the unsigned-form constant (so the
+            # equate table gets ``inkey_key_<name> = <unsigned>``)
+            # and tag the LDX's immediate-operand byte with
+            # FormatHint.INKEY so the renderer emits the symbolic
+            # ``(255 - inkey_key_<name>) EOR 128`` form. The
+            # unsigned constant value is what makes that expression
+            # reduce cleanly to a single byte under beebasm's
+            # evaluation — see ``_render_inkey_immediate`` for the
+            # encoding rationale.
+            if inkey_pattern is not None:
+                inkey_name, inkey_key = inkey_pattern
+                if not any(
+                    c.name == inkey_name and c.value == inkey_key
+                    for c in disassembler.constants
+                ):
+                    disassembler.constant(inkey_key, inkey_name)
+                x_operand = state_before_jsr.x.previous_load_imm_addr + 1
+                if disassembler.expressions.get_or_none(x_operand) is None:
+                    disassembler.format_hint(x_operand, FormatHint.INKEY)
 
 
 # OSEVEN takes an event number in Y. The JSR-site comment is
@@ -423,3 +691,54 @@ oseven_analyzer = _analyzer_for(
         for n, terse in EVENT_NAMES_TERSE.items()
     },
 )
+
+
+def osargs_analyzer(
+    disassembler: "Disassembler",
+    jsr_binary_addr: int,
+    state_before_jsr,
+) -> None:
+    """OSARGS analyzer with (A, Y) joint dispatch.
+
+    OSARGS (&FFDA) takes the action in A and a file handle (or 0
+    for "no file" / "all files") in Y. Most A values fork further
+    on Y == 0 vs Y != 0 — e.g. A=0 Y=0 returns the filing-system
+    number in A, while A=0 Y!=0 reads a sequential file pointer
+    into the zero-page address X. The :data:`OSARGS_INLINE` table
+    encodes the per-(A, Y) inline phrasing.
+
+    Two side-effects when the dispatch resolves cleanly:
+
+    1. **Inline auto-comment** at the JSR/JMP site — appends to any
+       existing driver-supplied inline comment (the analyser-driven
+       text is marked ``auto_generated`` so the duplicate-warning
+       guard in :class:`AnnotationStore` is skipped).
+    2. **Post-call value-table** at the byte after the call when
+       the call's documented result is a small enum
+       (only A=0 Y=0 → filing-system number for now).
+    """
+    a = state_before_jsr.a
+    y = state_before_jsr.y
+    if a.value is None:
+        return
+    a_table = OSARGS_INLINE.get(a.value)
+    if a_table is None:
+        return
+    # Pick the most-specific Y match; fall back to None bucket.
+    inline_text = None
+    if y.value is not None:
+        inline_text = a_table.get(y.value)
+    if inline_text is None:
+        inline_text = a_table.get(None)
+    if inline_text is not None:
+        _attach_inline_jsr_comment(
+            disassembler, jsr_binary_addr, inline_text,
+        )
+    # Post-call value-tables (currently only the FS-number table
+    # for A=0 Y=0).
+    if y.value is not None:
+        post_call_table = OSARGS_POST_CALL_TABLES.get((a.value, y.value))
+        if post_call_table is not None:
+            _attach_post_call_table(
+                disassembler, jsr_binary_addr, post_call_table,
+            )

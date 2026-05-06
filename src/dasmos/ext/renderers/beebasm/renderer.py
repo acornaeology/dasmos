@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING
 from dasmos.core.annotations import Align, Annotation, Banner, Comment
 from dasmos.core.classification import Byte, Fill, String, Word
 from dasmos.core.format_hint import FormatHint
+from dasmos.core.markdown_asm import markdown_to_asm_text, strip_address_uri_links
 from dasmos.core.memory import BinaryAddr
 from dasmos.core.move import Move
 from dasmos.cpu import Opcode, OperandKind
@@ -585,8 +586,9 @@ class BeebasmRenderer(TextRenderer):
                 f"{c.name.ljust(max_name_len)} = {self.hex(int(c.value))}"
             )
             if c.comment:
-                line = f"{line}  {self.comment_prefix()} " + " ".join(
-                    c.comment.split()
+                line = (
+                    f"{line}  {self.comment_prefix()} "
+                    f"{markdown_to_asm_text(c.comment, inline=True)}"
                 )
             lines.append(line)
         return lines
@@ -727,11 +729,37 @@ class BeebasmRenderer(TextRenderer):
                     inner_label = ir.labels.get_label(inner_runtime)
                     if inner_label is None:
                         continue
+                    # Mid-instruction labels live inside an opcode's
+                    # operand bytes — the addr the human cares about
+                    # is the BINARY one (where the byte sits in the
+                    # ROM dump). Inside a relocated region, the
+                    # runtime address is artificial: it's the dest
+                    # of the move, not where you'd find the byte in
+                    # the ROM file. Match py8dis-fork's xref-summary
+                    # convention (binary addresses both for the
+                    # cited label AND its referencing sites) so a
+                    # ROM-author reading the listing alongside a hex
+                    # dump can correlate without translating.
                     inner_xref = self._format_inline_xref_summary(
-                        inner_label, inner_runtime,
+                        inner_label, inner_binary,
                     )
                     if inner_xref is not None:
                         lines.append(inner_xref)
+                    # Emit any BEFORE_LABEL / BEFORE_LINE annotations
+                    # attached at the mid-class binary address right
+                    # before the equate line — the equate plays the
+                    # role of the inline label, so these annotations
+                    # belong above it (matches the structure py8dis
+                    # uses when the same address has a real
+                    # classification of its own).
+                    for ann in ir.annotations.get_for_align(
+                        inner_binary, Align.BEFORE_LABEL,
+                    ):
+                        lines.extend(self._render_annotation(ann))
+                    for ann in ir.annotations.get_for_align(
+                        inner_binary, Align.BEFORE_LINE,
+                    ):
+                        lines.extend(self._render_annotation(ann))
                     for inner_name in sorted(inner_label.explicit_name_texts()):
                         lines.append(f"{inner_name} = {base_name}+{off}")
                     self._inline_emitted_runtime_addrs.add(inner_runtime)
@@ -745,12 +773,26 @@ class BeebasmRenderer(TextRenderer):
             ir, binary_addr, classification, active_move=active_move,
         )
 
-        inline_anns = ir.annotations.get_for_align(binary_addr, Align.INLINE)
-        user_inline_text = None
-        if inline_anns:
-            user_inline_text = "  ".join(
-                self._render_annotation_inline(a) for a in inline_anns
-            )
+        # Gather inline comments from EVERY byte covered by this
+        # classification, not just the start address. Driver scripts
+        # commonly attach an inline comment to an operand byte (the
+        # ``dead`` token in NFS-3.65 &9B4F sits inside a 3-byte JMP
+        # at &9B4D); without this, the operand-byte comment is
+        # silently dropped.
+        inline_pieces: list[str] = []
+        for off in range(classification.length()):
+            for ann in ir.annotations.get_for_align(
+                binary_addr + off, Align.INLINE,
+            ):
+                rendered = self._render_annotation_inline(ann)
+                # Strip the ``;`` prefix on all but the first piece so
+                # the join reads as one comment, not three.
+                if inline_pieces:
+                    prefix = self.comment_prefix() + " "
+                    if rendered.startswith(prefix):
+                        rendered = rendered[len(prefix):]
+                inline_pieces.append(rendered)
+        user_inline_text = "  ".join(inline_pieces) if inline_pieces else None
         if self.byte_column and content_lines:
             line_byte_counts = self._line_byte_counts(classification)
             cumulative = 0
@@ -898,8 +940,9 @@ class BeebasmRenderer(TextRenderer):
         for name, addr, description in entries:
             line = f"{name.ljust(max_name_len)} = {self.hex(addr)}"
             if description:
-                line = f"{line}  {self.comment_prefix()} " + " ".join(
-                    description.split()
+                line = (
+                    f"{line}  {self.comment_prefix()} "
+                    f"{markdown_to_asm_text(description, inline=True)}"
                 )
             lines.append(line)
             # If this address has tracked references, follow the equate
@@ -1240,8 +1283,20 @@ class BeebasmRenderer(TextRenderer):
             if not label.references:
                 continue
             count = len({int(r.binary_addr) for r in label.references})
-            for name in sorted(label.explicit_name_texts()):
-                rows.append((name, count))
+            # Use ``all_names_by_move_id`` so expression-style names
+            # (registered via ``d.expr_label(addr, "<base>-1")``)
+            # appear in the frequency table too, alongside regular
+            # explicit names. py8dis-fork includes expressions in
+            # this footer; without doing the same, dasmos drops
+            # rows like ``dispatch_0_lo-1: 1`` from the bottom-of-
+            # listing summary.
+            seen: set[str] = set()
+            for names in label.all_names_by_move_id().values():
+                for name in names:
+                    if name in seen:
+                        continue
+                    seen.add(name)
+                    rows.append((name, count))
         # Boundary-label aliases at the start/end of the loaded range.
         if self.emit_boundary_labels:
             try:
@@ -1413,8 +1468,10 @@ class BeebasmRenderer(TextRenderer):
             out.append(f"{prefix} {label_text}")
             for key, value in mapping.items():
                 # Register names render uppercase; the value text is
-                # whatever the user supplied.
-                out.append(f"{prefix}     {key.upper()}: {value}")
+                # user-supplied prose with the same Markdown conventions
+                # as descriptions, so flatten through the same helper.
+                value_text = markdown_to_asm_text(value, inline=True)
+                out.append(f"{prefix}     {key.upper()}: {value_text}")
         return out
 
     # -- per-classification rendering -------------------------------------
@@ -1555,11 +1612,43 @@ class BeebasmRenderer(TextRenderer):
                 stacklevel=2,
             )
             return str(value)
+        if hint is FormatHint.INKEY:
+            return self._render_inkey_immediate(value, operand_addr)
         # Future hint values land here as an explicit, informative
         # error rather than a silent fallthrough.
         raise NotImplementedError(
             f"BeebasmRenderer doesn't yet handle FormatHint.{hint.name}"
         )
+
+    def _render_inkey_immediate(self, value: int, operand_addr: int) -> str:
+        """Translate a :class:`FormatHint.INKEY` byte to its symbolic
+        beebasm form.
+
+        The byte the disassembler sees is ``X = (255 - inkey_key_<n>)
+        EOR 128`` (mod 256), where ``inkey_key_<n>`` is the unsigned-
+        byte form of the BBC's negative key number — e.g.
+        ``inkey_key_ctrl`` is registered as the constant ``254`` so
+        that ``(255 - 254) EOR 128 = &81`` is the byte the OS expects
+        for "scan for ctrl". To recover the symbol, invert:
+        ``inkey_key = (255 - byte) EOR 128``.
+
+        Lazy-imports the BBC INKEY table from the ``acorn_mos`` env
+        so the renderer stays machine-agnostic. Bytes that don't
+        decode to a named INKEY key fall back to a hex literal with a
+        one-time warning.
+        """
+        from dasmos.ext.environments.acorn_mos.enums import INKEY_ENUM
+        inkey_key = (255 - value) ^ 0x80
+        name = INKEY_ENUM.get(inkey_key)
+        if name is None:
+            warnings.warn(
+                f"FormatHint.INKEY at &{operand_addr:04x} — byte "
+                f"&{value:02x} doesn't decode to a named BBC INKEY "
+                f"scan code; falling back to a hex literal.",
+                stacklevel=2,
+            )
+            return self.hex2(value)
+        return f"(255 - {name}) EOR 128"
 
     def _render_char_for_explicit_hint(self, value: int) -> str | None:
         """Best-effort beebasm character literal for an explicitly-
@@ -1806,6 +1895,18 @@ class BeebasmRenderer(TextRenderer):
                 if not self._label_address_is_in_range(ir, addr):
                     self._used_external_labels.add(addr)
                 return names[0]
+            # No explicit name — fall back to an expression. Drivers
+            # use ``d.expr_label(addr, "<base>-1")`` to register a
+            # use-site form for an address that's a one-byte-before-
+            # base offset (the classic ``LDA dispatch_lo-1,X``
+            # pattern). py8dis renders those operands using the
+            # expression form too; without this fallback dasmos's
+            # operand stays as raw hex.
+            for expr_list in label.expressions.values():
+                if expr_list:
+                    if not self._label_address_is_in_range(ir, addr):
+                        self._used_external_labels.add(addr)
+                    return expr_list[0]
         return self.hex2(addr) if width == 8 else self.hex4(addr)
 
     @staticmethod

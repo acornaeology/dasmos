@@ -148,10 +148,13 @@ class TestAnfs421PorterEndToEnd:
 # ---------------------------------------------------------------------------
 
 # Initial measurement was 8. Closing the return-N rule in
-# 2026-05-04 work brought it to 3 — only ``eeprom``, ``sync``,
-# ``vertical`` remain as free-text words from py8dis comment
-# annotations dasmos doesn't emit.
-MAX_COMMENT_TOKENS_DROPPED = 3
+# 2026-05-04 work brought it to 3. Bucket 1 (OSBYTE/OSWORD
+# descriptions) plus the 65C02 state-tracking fix (Cmos65C02Cpu
+# now inherits from Nmos6502Cpu so the OS-call analyzers fire on
+# 65C02 ROMs) bring this to 1 — only ``eeprom`` remains, where the
+# call site uses an X-value-conditional description py8dis derives
+# from the X register at the call site (bucket 2 territory).
+MAX_COMMENT_TOKENS_DROPPED = 0
 
 _COMMENT_TOKEN_RE = re.compile(r"[a-z_][a-z_0-9]{3,}")
 

@@ -512,6 +512,179 @@ class TestPerAddressingModeFormatting:
 
 
 # ---------------------------------------------------------------------------
+# Equate-line comment rendering — markdown flattening parity
+# ---------------------------------------------------------------------------
+
+
+class TestEquateDescriptionMarkdown:
+    """The equate table (``label = &xxxx  ; <description>``) and the
+    constant equate block (``name = value  ; <comment>``) emit
+    user-supplied free-text fields. That text is authored as Markdown
+    (CommonMark + GFM tables + the custom ``[name](address:HEX)``
+    cross-reference URI) just like inline / banner comments. The asm
+    renderer must flatten those markdown markers — backticks,
+    address-uri links, emphasis — exactly as the inline / banner paths
+    already do, so the assembled listing has no leftover markup.
+
+    The JSON renderer keeps the markdown verbatim (downstream HTML
+    consumes it); only the asm path needs to strip.
+    """
+
+    def test_label_equate_strips_backticks(self, tmp_path):
+        d = _make_disassembler_with_program(tmp_path, b"\xa9\x00\x60", 0x8000)
+        d.entry(0x8000)
+        # Out-of-range zero-page label so it goes in the equate table.
+        d.label(0x0080, "mem_ptr_lo", description="Low byte. Pair with `mem_ptr_hi`.")
+        text = str(d.disassemble().render("beebasm"))
+        equate_line = next(
+            line for line in text.splitlines() if line.startswith("mem_ptr_lo")
+        )
+        assert "`" not in equate_line, equate_line
+
+    def test_label_equate_strips_address_uri_links(self, tmp_path):
+        d = _make_disassembler_with_program(tmp_path, b"\xa9\x00\x60", 0x8000)
+        d.entry(0x8000)
+        d.label(
+            0x0080, "mem_ptr_lo",
+            description="Pair with [`mem_ptr_hi`](address:0081); see [`ram_test`](address:E00B?hex).",
+        )
+        text = str(d.disassemble().render("beebasm"))
+        equate_line = next(
+            line for line in text.splitlines() if line.startswith("mem_ptr_lo")
+        )
+        assert "address:" not in equate_line, equate_line
+        assert "[" not in equate_line, equate_line
+        assert "mem_ptr_hi" in equate_line
+        # ?hex flag preserves the raw hex parenthesised.
+        assert "ram_test (&E00B)" in equate_line
+
+    def test_label_equate_strips_emphasis(self, tmp_path):
+        d = _make_disassembler_with_program(tmp_path, b"\xa9\x00\x60", 0x8000)
+        d.entry(0x8000)
+        d.label(0x0080, "mem_ptr_lo", description="**Critical**: do not write while *busy*.")
+        text = str(d.disassemble().render("beebasm"))
+        equate_line = next(
+            line for line in text.splitlines() if line.startswith("mem_ptr_lo")
+        )
+        assert "**" not in equate_line, equate_line
+        # Single-asterisks would also leak — guard against it.
+        for token in equate_line.split():
+            assert not (token.startswith("*") or token.endswith("*")), equate_line
+
+    def test_label_equate_collapses_to_single_line(self, tmp_path):
+        # The equate description is shown inline on the equate line, so
+        # multi-paragraph source must collapse to one line of plaintext.
+        d = _make_disassembler_with_program(tmp_path, b"\xa9\x00\x60", 0x8000)
+        d.entry(0x8000)
+        d.label(
+            0x0080, "mem_ptr_lo",
+            description="First sentence.\n\nSecond paragraph.",
+        )
+        text = str(d.disassemble().render("beebasm"))
+        equate_lines = [
+            line for line in text.splitlines() if line.startswith("mem_ptr_lo")
+        ]
+        # Exactly one equate line for this label.
+        assert len(equate_lines) == 1, equate_lines
+        assert "First sentence." in equate_lines[0]
+        assert "Second paragraph." in equate_lines[0]
+
+    def test_constant_equate_strips_markdown(self, tmp_path):
+        d = _make_disassembler_with_program(tmp_path, b"\xa9\x00\x60", 0x8000)
+        d.entry(0x8000)
+        d.constant(0x0d, "osbyte_clear_escape",
+                   comment="OSBYTE call number (see [`osbyte`](address:FFF4?hex)).")
+        text = str(d.disassemble().render("beebasm"))
+        equate_line = next(
+            line for line in text.splitlines()
+            if line.startswith("osbyte_clear_escape")
+        )
+        assert "[" not in equate_line, equate_line
+        assert "address:" not in equate_line, equate_line
+        assert "`" not in equate_line, equate_line
+        assert "osbyte (&FFF4)" in equate_line
+
+    def test_banner_on_entry_strips_markdown(self, tmp_path):
+        # The Banner ``On Entry:`` / ``On Exit:`` register-value text
+        # is also user-authored prose with the same markdown
+        # conventions as descriptions — flatten the same way.
+        d = _make_disassembler_with_program(tmp_path, b"\x60", 0x8000)
+        d.subroutine(
+            0x8000, "frob", title="Frob the bus",
+            description="Plain prose body.",
+            on_entry={"a": "FS function code (see [`txcb_func`](address:0080?hex))"},
+            on_exit={"c": "set on **error** path"},
+        )
+        text = str(d.disassemble().render("beebasm"))
+        banner_lines = [line for line in text.splitlines() if "A:" in line or "C:" in line]
+        joined = "\n".join(banner_lines)
+        assert "[" not in joined, joined
+        assert "`" not in joined, joined
+        assert "**" not in joined, joined
+        assert "address:" not in joined, joined
+        assert "txcb_func (&0080)" in joined
+
+
+class TestMidClassificationComments:
+    """Comments and banners attached at addresses INSIDE a multi-byte
+    classification (e.g. the operand byte of a 3-byte JMP, or a label
+    that sits at offset +1 inside a Byte/String run) must still
+    render in the asm output. py8dis-fork preserves them; dasmos used
+    to drop them because the renderer only fetched annotations at
+    the classification's start address.
+
+    The two driver-side patterns this covers are:
+
+    1. ``d.comment(addr+k, …, align=Align.INLINE)`` where ``k`` is
+       inside an opcode's operand bytes — the comment text should
+       append to the trailing inline comment on the rendered
+       instruction line.
+    2. ``d.comment(addr+k, …)`` (default standalone alignment) where
+       ``k`` is inside a data-classification span and ``addr+k``
+       carries a label too — the comment should render adjacent to
+       the mid-class label's equate line.
+    """
+
+    def test_inline_comment_inside_instruction_appended(self, tmp_path):
+        # 3-byte JMP indirect ($6c $58 $0d) at 0x8000.
+        # Inline comment at the start AND at the operand high byte.
+        d = _make_disassembler_with_program(
+            tmp_path, b"\x6c\x58\x0d", 0x8000,
+        )
+        d.entry(0x8000)
+        from dasmos.core.annotations import Align
+        d.comment(0x8000, "Call remote JSR", align=Align.INLINE)
+        d.comment(0x8002, "ORA opcode flags this byte as dead",
+                  align=Align.INLINE)
+        text = str(d.disassemble().render("beebasm"))
+        # The JMP is one rendered line; both comments must appear on
+        # it (concatenated with whitespace).
+        jmp_line = next(line for line in text.splitlines() if "jmp" in line)
+        assert "Call remote JSR" in jmp_line, jmp_line
+        assert "ORA opcode flags this byte as dead" in jmp_line, jmp_line
+
+    def test_standalone_comment_at_mid_class_label_renders(self, tmp_path):
+        # Acorn sideways-ROM copyright pattern: a String classification
+        # spans nul + "(C)ROFF" + nul (9 bytes from &800C-&8014). The
+        # author registers a label and a multi-line standalone comment
+        # at &800D, INSIDE that classification.
+        d = _make_disassembler_with_program(
+            tmp_path, b"\x00(C)ROFF\x00", 0x8000,
+        )
+        # Force the whole 9 bytes to be one String classification.
+        d.string(0x8000, length=9)
+        d.label(0x8001, "copyright_string")
+        d.comment(0x8001,
+                  "The 'ROFF' suffix is reused by the *ROFF\n"
+                  "command matcher (svc_star_command) — a space-\n"
+                  "saving trick.")
+        text = str(d.disassemble().render("beebasm"))
+        # All four content tokens must appear somewhere in the asm.
+        for token in ("ROFF", "matcher", "svc_star_command", "saving"):
+            assert token in text, f"{token!r} missing from output:\n{text}"
+
+
+# ---------------------------------------------------------------------------
 # THE round-trip: render → beebasm → binary equality
 # ---------------------------------------------------------------------------
 

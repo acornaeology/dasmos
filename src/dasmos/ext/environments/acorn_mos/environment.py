@@ -161,6 +161,7 @@ class AcornMosEnvironment(Environment):
         # that turns ``lda #&xx`` into ``lda #osbyte_<name>`` at
         # render time. See ``hooks.py`` for per-call detail.
         from dasmos.ext.environments.acorn_mos.hooks import (
+            osargs_analyzer,
             osbyte_analyzer,
             oseven_analyzer,
             osfile_analyzer,
@@ -172,6 +173,7 @@ class AcornMosEnvironment(Environment):
         disassembler._post_trace_jsr_analyzers[0xfff1] = osword_analyzer
         disassembler._post_trace_jsr_analyzers[0xffce] = osfind_analyzer
         disassembler._post_trace_jsr_analyzers[0xffdd] = osfile_analyzer
+        disassembler._post_trace_jsr_analyzers[0xffda] = osargs_analyzer
         disassembler._post_trace_jsr_analyzers[0xffd1] = osgbpb_analyzer
         # OSEVEN takes an event number in Y; analyzer substitutes it.
         disassembler._post_trace_jsr_analyzers[0xffbf] = oseven_analyzer

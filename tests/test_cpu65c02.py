@@ -289,3 +289,52 @@ class TestRoundTripVia65C02:
         assert jmp_lines, (
             f"expected `jmp (...,x)` in output:\n{text}"
         )
+
+
+class TestCpuStateTracking:
+    """The 65C02 inherits CPU state tracking from :class:`Nmos6502Cpu`
+    so post-trace analyzers (OSBYTE / OSWORD recognition etc.) work
+    on 65C02 ROMs the same way they do on plain 6502. The new 65C02
+    mnemonics extend the rule set:
+
+    - PHX / PHY preserve all registers (push-only).
+    - PLX / PLY clear X / Y respectively (value pulled from stack
+      can't be derived from any tracked predecessor).
+    - STZ / BRA / TRB / TSB don't modify A / X / Y so preserve.
+    """
+
+    def test_phx_then_lda_imm_then_jsr_state_seen_at_jsr(self, tmp_path):
+        # PHX preserves A, so LDA #&13 just before a JSR osbyte
+        # should still leave A=&13 known at the JSR site. Without
+        # 65C02-aware state tracking, A would be unknown and the
+        # OSBYTE analyzer would fail to recognise the call.
+        # &8000: PHX (DA) ; LDA #&13 (A9 13) ; JSR &FFF4 (20 F4 FF) ; RTS (60).
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(b"\xda\xa9\x13\x20\xf4\xff\x60")
+        d = Disassembler.create(cpu="65C02")
+        d.load(bin_path, 0x8000)
+        d.entry(0x8000)
+        d.label(0xfff4, "osbyte")  # mark target as known
+        ir = d.disassemble()
+
+        state_at_jsr = d._cpu_state_at.get(0x8003)
+        assert state_at_jsr is not None
+        assert state_at_jsr.a.value == 0x13
+        # And the previous-load-imm address points back to the LDA's
+        # operand byte (0x8002 = 0x8001 + 1).
+        assert state_at_jsr.a.previous_load_imm_addr == 0x8001
+
+    def test_plx_clears_x(self, tmp_path):
+        # LDX #&05 ; PLX  → after PLX, X is unknown again.
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(b"\xa2\x05\xfa\x60")  # LDX #5; PLX; RTS
+        d = Disassembler.create(cpu="65C02")
+        d.load(bin_path, 0x8000)
+        d.entry(0x8000)
+        ir = d.disassemble()
+
+        state_at_rts = d._cpu_state_at.get(0x8003)
+        assert state_at_rts is not None
+        # X cleared by PLX; previous-load-imm chain broken.
+        assert state_at_rts.x.value is None
+        assert state_at_rts.x.previous_load_imm_addr is None

@@ -74,6 +74,24 @@ class FormatHint(Enum):
     #: and warn at render time.
     OCTAL = "octal"
 
+    #: This byte is the negative-X form of an Acorn INKEY scan code
+    #: — the input to ``OSBYTE &79`` (scan keyboard) or ``OSBYTE &81``
+    #: (INKEY) when scanning for a specific key by its internal
+    #: number rather than its ASCII representation. The byte value
+    #: ``X`` decodes via ``key_code = 255 - (X EOR 128)`` to a key
+    #: number named in the BBC's INKEY table (``inkey_key_ctrl``,
+    #: ``inkey_key_shift``, …). The renderer expresses this as
+    #: ``(255 - inkey_key_<name>) EOR 128`` so the source reads as
+    #: the symbolic intent — ``ldx #(255 - inkey_key_ctrl) EOR 128``.
+    #:
+    #: BBC-specific. Other systems with their own scan-code
+    #: conventions would use a different hint or a renderer-supplied
+    #: lookup. The renderer lazy-imports the BBC INKEY table from the
+    #: ``acorn_mos`` env when this hint is encountered; bytes that
+    #: don't map to any named INKEY key fall back to a hex literal
+    #: with a one-time warning.
+    INKEY = "inkey"
+
 
 class FormatHintRegistry:
     """Per-disassembly map from binary address to a :class:`FormatHint`.

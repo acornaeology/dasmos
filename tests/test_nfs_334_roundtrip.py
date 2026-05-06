@@ -128,7 +128,11 @@ class TestNfs334PorterEndToEnd:
 # free-text words from py8dis comment annotations dasmos doesn't
 # yet emit (``accept_new_claim``, ``hardcoded``, ``matcher``,
 # ``saving``, …).
-MAX_COMMENT_TOKENS_DROPPED = 11
+# Stepped down: 11 → 6 (mid-class annotation fix) → 5 (bucket 1
+# OSBYTE/OSWORD descriptions, 2026-05-06). Remaining residuals are
+# stats-footer label-frequency entries plus per-X-value lookup
+# variants of OSBYTE descriptions (``redefine`` etc.).
+MAX_COMMENT_TOKENS_DROPPED = 4
 
 _COMMENT_TOKEN_RE = re.compile(r"[a-z_][a-z_0-9]{3,}")
 

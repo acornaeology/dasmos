@@ -52,6 +52,17 @@ class DisassemblerError(DasmosError):
     """Raised on misuse of the :class:`Disassembler` orchestration."""
 
 
+def _is_printable_ascii(byte_value: int) -> bool:
+    """True for bytes in the printable ASCII range 0x20..0x7E.
+
+    Matches py8dis's ``utils.isprint``: excludes control characters
+    (including DEL 0x7F) and high-bit bytes (0x80–0xFF). Used by the
+    string-run heuristic to decide whether a byte could be part of a
+    text string.
+    """
+    return 0x20 <= byte_value <= 0x7E
+
+
 @dataclass
 class Constant:
     """A named value registered via :meth:`Disassembler.constant`.
@@ -111,6 +122,7 @@ class Disassembler:
         auto_label_loop_prefix: str = "loop_",
         auto_label_loop_limit: int = 256,
         auto_label_return_prefix: str | None = "return_",
+        string_detection_min_length: int | None = 3,
     ):
         self._cpu = cpu
         self._config = Config()
@@ -141,6 +153,14 @@ class Disassembler:
         # Sequential id assigned per unique RTS-target address, in
         # discovery order. Populated during _generate_auto_labels.
         self._return_label_id_for_addr: dict[int, int] = {}
+        # Heuristic that promotes runs of unclassified printable ASCII
+        # bytes to ``String`` classifications, so a run of N >= this
+        # threshold renders as one ``equs "..."`` directive instead of
+        # N individual ``equb`` rows. Set to ``None`` to disable
+        # entirely. Read by :meth:`disassemble` between :meth:`_trace`
+        # and :meth:`_classify_leftovers`. Default 3 matches py8dis's
+        # ``autostring(min_length=3)``.
+        self.string_detection_min_length = string_detection_min_length
         size = cpu.address_space_size
         self._memory = MemoryImage(address_space_size=size)
         self._moves = MoveManager(address_space_size=size)
@@ -760,6 +780,30 @@ class Disassembler:
         """
         self.format_hint(runtime_addr, FormatHint.CHAR, move=move)
 
+    def inkey_code(
+        self,
+        runtime_addr,
+        *,
+        move: Move | None = None,
+    ):
+        """Sugar for ``format_hint(runtime_addr, FormatHint.INKEY)``.
+
+        Declares that the operand byte at ``runtime_addr`` is the
+        negative-X form of an Acorn INKEY scan code (the byte loaded
+        into X for ``OSBYTE &79`` / ``OSBYTE &81`` to scan for a
+        specific key by its internal number). Renderers express the
+        byte symbolically as ``(255 - inkey_key_<name>) EOR 128``
+        when the value matches a named INKEY key in the BBC's
+        scan-code table; bytes that don't match any named key fall
+        back to a hex literal with a one-time warning.
+
+        Use this when the analyser can't infer the pattern from a
+        nearby ``JSR osbyte`` — for example when the scan code lives
+        in a table of pre-computed values, or is loaded into X
+        through a longer pipeline of stores and reads.
+        """
+        self.format_hint(runtime_addr, FormatHint.INKEY, move=move)
+
     # -- driver-script API: comments / annotations ----------------------
 
     def _resolve_to_binary_addr(
@@ -963,6 +1007,8 @@ class Disassembler:
                 "disassemble() has already been called on this Disassembler"
             )
         self._trace()
+        if self.string_detection_min_length is not None:
+            self._classify_string_runs(self.string_detection_min_length)
         self._classify_leftovers()
         # Compute per-instruction CPU state via a linear sweep of
         # the now-classified code. Optional — the CPU plug-in opts
@@ -1117,19 +1163,147 @@ class Disassembler:
                     return True
         return False
 
-    def _classify_leftovers(self) -> None:
-        """Mark every loaded-but-unclassified byte as a 1-byte
-        :class:`~dasmos.core.classification.Byte`.
+    def _classify_string_runs(self, min_length: int) -> None:
+        """Promote runs of unclassified printable ASCII bytes to
+        ``String`` classifications.
 
-        Iterates all loaded ranges; any byte not already classified
-        (either by trace or by a user driver-script call) becomes a
-        ``Byte(1)``. This guarantees the renderer sees a complete
-        classification of the loaded image.
+        Walks each loaded range left-to-right. A candidate run is a
+        consecutive sequence of bytes that are loaded, unclassified,
+        and printable (32–126 inclusive — matches py8dis's
+        ``utils.isprint``). A run breaks at any of:
+
+        - the next address that is already classified;
+        - the next address that is not loaded;
+        - the next address that is non-printable;
+        - the next address with a label;
+        - a binary address that is the start or end of any move
+          (so a single ``String`` cannot straddle a move boundary —
+          the asm renderer emits one classification at one runtime
+          range);
+        - a binary address that has any annotation attached (so
+          per-byte comments / banners aren't lost — the renderer
+          attaches annotations at the START of each classification
+          only).
+
+        If the run's length is at least ``min_length``, classify the
+        whole run as :class:`~dasmos.core.classification.String`.
+        Otherwise leave the bytes alone — :meth:`_classify_leftovers`
+        sweeps them up afterwards into a ``Byte`` run.
+
+        Mirrors py8dis-fork's ``classification.autostring`` but is
+        invoked declaratively from :meth:`disassemble` based on
+        :attr:`string_detection_min_length` rather than via a
+        ``post_trace_steps`` closure on ``go()``.
         """
+        if min_length < 2:
+            raise DisassemblerError(
+                f"string_detection_min_length must be >= 2 (got {min_length}); "
+                f"single-character classifications would always trigger"
+            )
+
+        move_boundaries: set[int] = set()
+        for move in self._moves.moves:
+            move_boundaries.add(int(move.src_binary_addr))
+            move_boundaries.add(int(move.src_binary_addr) + move.length)
+
         for start, end in self._memory.load_ranges:
-            for addr in range(int(start), int(end)):
-                if self._memory.is_loaded(addr) and not self._classifications.is_classified(addr):
-                    self._classifications.add_classification(addr, Byte(1))
+            addr = int(start)
+            range_end = int(end)
+            while addr < range_end:
+                if (
+                    not self._memory.is_loaded(addr)
+                    or self._classifications.is_classified(addr)
+                    or not _is_printable_ascii(self._memory.get_u8(addr))
+                ):
+                    addr += 1
+                    continue
+                run_end = addr + 1
+                while run_end < range_end:
+                    if not self._memory.is_loaded(run_end):
+                        break
+                    if self._classifications.is_classified(run_end):
+                        break
+                    if not _is_printable_ascii(self._memory.get_u8(run_end)):
+                        break
+                    if run_end in move_boundaries:
+                        break
+                    runtime = self._moves.b2r(BinaryAddr(run_end))
+                    if runtime in self._labels:
+                        break
+                    if BinaryAddr(run_end) in self._annotations:
+                        break
+                    run_end += 1
+                length = run_end - addr
+                if length >= min_length:
+                    self._classifications.add_classification(
+                        addr, String(length),
+                    )
+                addr = run_end
+
+    def _classify_leftovers(self) -> None:
+        """Aggregate every loaded-but-unclassified byte into ``Byte``
+        runs.
+
+        Walks each loaded range left-to-right. Consecutive
+        unclassified bytes accumulate into a single
+        :class:`~dasmos.core.classification.Byte` of the run's length.
+        A run ends at any of:
+
+        - the next address that is already classified;
+        - the next address that is not loaded;
+        - the next address with a label (so the label gets a fresh
+          ``Byte`` it can anchor to);
+        - the end of the load range.
+
+        Mirrors py8dis-fork's ``classification.classify_leftovers``
+        behaviour, so 33 unlabelled ``&FF`` filler bytes between two
+        labels render as one ``equb &ff, &ff, …`` row instead of 33
+        single-byte rows.
+        """
+        # Move-boundary set: every binary address at which a move
+        # begins or ends. Aggregation breaks at these so a single
+        # ``Byte`` classification never straddles a move boundary —
+        # the asm renderer emits each classification at one runtime
+        # range, and a straddler would write past the destination's
+        # end (beebasm's "Trying to assemble over existing code").
+        move_boundaries: set[int] = set()
+        for move in self._moves.moves:
+            move_boundaries.add(int(move.src_binary_addr))
+            move_boundaries.add(int(move.src_binary_addr) + move.length)
+
+        for start, end in self._memory.load_ranges:
+            addr = int(start)
+            range_end = int(end)
+            while addr < range_end:
+                if (
+                    not self._memory.is_loaded(addr)
+                    or self._classifications.is_classified(addr)
+                ):
+                    addr += 1
+                    continue
+                run_end = addr + 1
+                while run_end < range_end:
+                    if not self._memory.is_loaded(run_end):
+                        break
+                    if self._classifications.is_classified(run_end):
+                        break
+                    if run_end in move_boundaries:
+                        break
+                    runtime = self._moves.b2r(BinaryAddr(run_end))
+                    if runtime in self._labels:
+                        break
+                    # Break at annotated bytes too. The renderer's
+                    # per-classification emission attaches annotations
+                    # at the START of each classification — if we
+                    # aggregated through an annotated byte, its
+                    # comment / banner would never be rendered.
+                    if BinaryAddr(run_end) in self._annotations:
+                        break
+                    run_end += 1
+                self._classifications.add_classification(
+                    addr, Byte(run_end - addr),
+                )
+                addr = run_end
 
     # -- internals: deferred expressions -------------------------------
 

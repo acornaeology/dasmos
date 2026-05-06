@@ -149,7 +149,9 @@ class TestAdfsPorterEndToEnd:
 # Residual 14 is mostly free-text words from py8dis's auto-comment
 # generator (``baud``, ``ieee``, ``paged``, ``teletext``, …) plus
 # 2 mid-instruction hex addresses (``bc7e``, ``bcad``).
-MAX_COMMENT_TOKENS_DROPPED = 14
+# Lowered 14 → 9 on 2026-05-06 when OSBYTE/OSWORD descriptions
+# replaced the mechanical-derivation inline comments (bucket 1).
+MAX_COMMENT_TOKENS_DROPPED = 0
 
 _COMMENT_TOKEN_RE = re.compile(r"[a-z_][a-z_0-9]{3,}")
 

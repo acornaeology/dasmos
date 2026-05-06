@@ -151,7 +151,18 @@ class AnnotationStore:
             ),
             None,
         )
-        if existing is not None:
+        # The duplicate-comment warning targets authoring bugs (one
+        # ``d.comment(addr, ...)`` accidentally appending to a prior
+        # one instead of overriding it). Analyser-driven stacking is
+        # different — environments deliberately layer extra context
+        # alongside driver-supplied comments. Suppress the warning
+        # when EITHER end of the stack is auto-generated.
+        either_auto = (
+            getattr(entry, "auto_generated", False)
+            or (existing is not None
+                and getattr(existing, "auto_generated", False))
+        )
+        if existing is not None and not either_auto:
             import warnings
             existing_text = self._summary(existing)
             new_text = self._summary(entry)

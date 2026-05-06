@@ -140,7 +140,10 @@ class TestAnfs418PorterEndToEnd:
 # correctly omits the name. The token thus appears in the py8dis
 # reference but not in dasmos output, contributing one more to
 # this ratchet.
-MAX_COMMENT_TOKENS_DROPPED = 14
+# Lowered 14 → 9 on 2026-05-06 when OSBYTE/OSWORD descriptions
+# replaced the mechanical-derivation inline comments (bucket 1 of
+# the comment-vocab parity workstream).
+MAX_COMMENT_TOKENS_DROPPED = 2
 
 _COMMENT_TOKEN_RE = re.compile(r"[a-z_][a-z_0-9]{3,}")
 
