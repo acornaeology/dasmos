@@ -7,6 +7,7 @@ from :mod:`dasmos` rather than reaching into sub-modules.
 __version__ = "0.1.3"
 
 from dasmos.core.annotations import Align, Annotation, AnnotationStore, Banner, Comment
+from dasmos.core.format_hint import FormatHint
 from dasmos.cpu import (
     Cpu,
     CpuExtensionError,
@@ -46,6 +47,7 @@ __all__ = [
     "Extension",
     "ExtensionError",
     "FlowControl",
+    "FormatHint",
     "IntermediateRepresentation",
     "Opcode",
     "OperandKind",

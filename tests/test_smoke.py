@@ -58,3 +58,14 @@ def test_beebasm_renderer_plugin_is_registered() -> None:
 def test_extension_errors_inherit_from_base() -> None:
     assert issubclass(CpuExtensionError, DasmosError)
     assert issubclass(RendererExtensionError, DasmosError)
+
+
+def test_format_hint_reexported_from_top_level() -> None:
+    # Driver scripts use the natural ``from dasmos import FormatHint``
+    # alongside Disassembler / Align — reaching into the sub-module
+    # would surprise. Lock the public-package exposure here.
+    from dasmos import FormatHint
+    # Every hint the driver-API surface advertises (CHAR / DECIMAL /
+    # HEX / BINARY / OCTAL / INKEY) must be present.
+    for name in ("CHAR", "DECIMAL", "HEX", "BINARY", "OCTAL", "INKEY"):
+        assert hasattr(FormatHint, name), name
