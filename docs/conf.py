@@ -41,7 +41,10 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "design"]
 
 html_theme = "sphinx_rtd_theme"
 html_static_path = ["_static"]
-html_logo = "_static/dasmos-logo.png"
+# The small variant is sized for the ~250px sphinx_rtd_theme sidebar.
+# The full-size dasmos-logo.png stays in _static for downloads and for
+# the README — Sphinx only needs the smaller version.
+html_logo = "_static/dasmos-logo-small.png"
 
 html_theme_options = {
     "navigation_depth": 3,
