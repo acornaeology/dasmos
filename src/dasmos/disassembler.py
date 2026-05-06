@@ -28,6 +28,7 @@ Per ``docs/design/decisions.md``:
 from __future__ import annotations
 
 from collections import deque
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -42,7 +43,7 @@ from dasmos.core.disassembly import (
 )
 from dasmos.core.labels import LabelManager
 from dasmos.core.memory import BinaryAddr, MemoryImage
-from dasmos.core.move import Move, MoveManager
+from dasmos.core.move import BASE_MOVE_ID, Move, MoveManager
 from dasmos.cpu import Cpu, create_cpu
 from dasmos.exceptions import DasmosError
 from dasmos.ir import IntermediateRepresentation
@@ -1059,85 +1060,107 @@ class Disassembler:
 
             if not self._memory.is_loaded(addr):
                 continue
-            opcode_byte = self._memory.get_u8(addr)
-            opcode = opcodes.get(opcode_byte)
-            if opcode is None:
-                # Undefined opcode — terminate this path.
-                continue
-            if not self._memory.is_loaded(addr, opcode.length()):
-                # The opcode byte is loaded but its operand isn't —
-                # we can't safely classify (and the renderer would
-                # crash trying to read the operand). Terminate this
-                # path; the opcode byte falls through to the leftover
-                # pass as a Byte(1).
-                continue
 
-            # Classify (skip if any byte in the range is already
-            # classified — could be a manual byte() call or a prior
-            # trace path overlapping us).
-            #
-            # Move boundary: an opcode whose byte range straddles a
-            # move boundary can't be rendered as a single instruction
-            # — its bytes need to land in different runtime-address
-            # spaces to satisfy each move's copyblock, and beebasm
-            # assembles one instruction's bytes contiguously at one
-            # PC. Leave the bytes for the leftover-classify pass to
-            # mark individually as ``Byte(1)`` so each lands under
-            # the right move at render time.
-            #
-            # Surface a warning so the driver author knows what the
-            # rendered output WILL look like (split equbs rather
-            # than the original instruction) — the scenario itself
-            # is valid (NFS-3.65's BVC at &9564 straddling moves 3
-            # and 4 reflects real ROM behaviour) but the rendering
-            # is surprising enough to flag.
-            if not self._classifications.is_classified(addr, opcode.length()):
-                if self._opcode_straddles_move_boundary(addr, opcode.length()):
-                    import warnings
-                    warnings.warn(
-                        f"opcode at &{addr:04x} ({opcode.default_mnemonic()}, "
-                        f"{opcode.length()} bytes) straddles a move "
-                        f"boundary; rendering each byte individually as "
-                        f"``equb`` since one instruction can't span two "
-                        f"runtime spaces.",
-                        stacklevel=2,
-                    )
-                else:
-                    try:
-                        self._classifications.add_classification(addr, opcode)
-                    except ClassificationError:
-                        # Defensive — is_classified should have caught
-                        # this. Continue tracing regardless.
-                        pass
+            # Push the binary's owning move on the active-move stack
+            # for the duration of this step. Mirrors py8dis's
+            # ``with movemanager.move_id_for_binary_addr[binary_addr]:``
+            # wrapper around its disassemble() step (py8dis/cpu.py).
+            # When the trace step computes a control-flow target as
+            # a runtime address, downstream :meth:`MoveManager.r2b`
+            # disambiguation favours the active move — i.e. "while
+            # tracing inside move N, prefer move N for ambiguous
+            # runtime→binary lookups". For bytes outside any user
+            # move (BASE_MOVE_ID), the active stack is left unchanged.
+            owning_move_id = self._moves._move_id_for_binary_addr[addr]
+            owning_move_ctx = (
+                self._moves.move_for_id(owning_move_id)
+                if owning_move_id != BASE_MOVE_ID
+                else nullcontext()
+            )
 
-            # Continue tracing whether we classified or not — the
-            # control flow is determined by the opcode, not by who
-            # owns the classification record.
-            #
-            # Subroutine hooks: when this is a JSR whose target has a
-            # registered hook, the hook decides where the trace
-            # continues *instead of* the default fall-through. The
-            # target (the called subroutine) is still queued.
-            from dasmos.cpu import FlowControl as _FlowControl
-            if (
-                opcode.flow_control is _FlowControl.SUBROUTINE_CALL
-                and self._subroutine_hooks
-            ):
-                target = opcode._compute_target(self._memory, addr)
-                if target is not None and target in self._subroutine_hooks:
-                    hook = self._subroutine_hooks[target]
-                    continuation = hook(self, addr)
-                    if (
-                        continuation is not None
-                        and 0 <= continuation < self._memory.address_space_size
-                    ):
-                        pending.append(continuation)
-                    if 0 <= target < self._memory.address_space_size:
-                        pending.append(target)
+            with owning_move_ctx:
+                opcode_byte = self._memory.get_u8(addr)
+                opcode = opcodes.get(opcode_byte)
+                if opcode is None:
+                    # Undefined opcode — terminate this path.
                     continue
-            for next_addr in opcode.next_addresses(self._memory, addr):
-                if 0 <= next_addr < self._memory.address_space_size:
-                    pending.append(next_addr)
+                if not self._memory.is_loaded(addr, opcode.length()):
+                    # The opcode byte is loaded but its operand isn't
+                    # — we can't safely classify (and the renderer
+                    # would crash trying to read the operand).
+                    # Terminate this path; the opcode byte falls
+                    # through to the leftover pass as a Byte(1).
+                    continue
+
+                # Classify (skip if any byte in the range is already
+                # classified — could be a manual byte() call or a prior
+                # trace path overlapping us).
+                #
+                # Move boundary: an opcode whose byte range straddles
+                # a move boundary can't be rendered as a single
+                # instruction — its bytes need to land in different
+                # runtime-address spaces to satisfy each move's
+                # copyblock, and beebasm assembles one instruction's
+                # bytes contiguously at one PC. Leave the bytes for
+                # the leftover-classify pass to mark individually as
+                # ``Byte(1)`` so each lands under the right move at
+                # render time.
+                #
+                # Surface a warning so the driver author knows what
+                # the rendered output WILL look like (split equbs
+                # rather than the original instruction) — the
+                # scenario itself is valid (NFS-3.65's BVC at &9564
+                # straddling moves 3 and 4 reflects real ROM
+                # behaviour) but the rendering is surprising enough
+                # to flag.
+                if not self._classifications.is_classified(addr, opcode.length()):
+                    if self._opcode_straddles_move_boundary(addr, opcode.length()):
+                        import warnings
+                        warnings.warn(
+                            f"opcode at &{addr:04x} ({opcode.default_mnemonic()}, "
+                            f"{opcode.length()} bytes) straddles a move "
+                            f"boundary; rendering each byte individually as "
+                            f"``equb`` since one instruction can't span two "
+                            f"runtime spaces.",
+                            stacklevel=2,
+                        )
+                    else:
+                        try:
+                            self._classifications.add_classification(addr, opcode)
+                        except ClassificationError:
+                            # Defensive — is_classified should have
+                            # caught this. Continue tracing regardless.
+                            pass
+
+                # Continue tracing whether we classified or not — the
+                # control flow is determined by the opcode, not by
+                # who owns the classification record.
+                #
+                # Subroutine hooks: when this is a JSR whose target
+                # has a registered hook, the hook decides where the
+                # trace continues *instead of* the default
+                # fall-through. The target (the called subroutine) is
+                # still queued.
+                from dasmos.cpu import FlowControl as _FlowControl
+                if (
+                    opcode.flow_control is _FlowControl.SUBROUTINE_CALL
+                    and self._subroutine_hooks
+                ):
+                    target = opcode._compute_target(self._memory, addr)
+                    if target is not None and target in self._subroutine_hooks:
+                        hook = self._subroutine_hooks[target]
+                        continuation = hook(self, addr)
+                        if (
+                            continuation is not None
+                            and 0 <= continuation < self._memory.address_space_size
+                        ):
+                            pending.append(continuation)
+                        if 0 <= target < self._memory.address_space_size:
+                            pending.append(target)
+                        continue
+                for next_addr in opcode.next_addresses(self._memory, addr):
+                    if 0 <= next_addr < self._memory.address_space_size:
+                        pending.append(next_addr)
 
     def _opcode_straddles_move_boundary(
         self, addr: int, length: int,
