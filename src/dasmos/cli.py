@@ -98,7 +98,7 @@ ADDRESS = _AddressParam()
 @click.group()
 @click.version_option(__version__, prog_name="dasmos")
 def cli() -> None:
-    """A pluggable tracing disassembler."""
+    """An extensible tracing disassembler."""
 
 
 @cli.command(name="list-cpus")

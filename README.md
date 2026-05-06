@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/acornaeology/dasmos/master/docs/_static/dasmos-banner.svg" alt="Dasmos — a pluggable tracing disassembler for retro CPUs">
+  <img src="https://raw.githubusercontent.com/acornaeology/dasmos/master/docs/_static/dasmos-banner.svg" alt="Dasmos — an extensible tracing disassembler for classic CPUs">
 </p>
 
-A pluggable tracing disassembler for retro CPUs, version `0.1.3`.
+An extensible tracing disassembler for classic CPUs, version `0.1.3`.
 
 <p align="center">
   <a href="https://pypi.org/project/dasmos/"><img src="https://img.shields.io/pypi/v/dasmos.svg" alt="PyPI"></a>
@@ -104,7 +104,7 @@ py8dis annotation-content parity).
 $ dasmos --help
 Usage: dasmos [OPTIONS] COMMAND [ARGS]...
 
-  A pluggable tracing disassembler.
+  An extensible tracing disassembler.
 
 Options:
   --version  Show the version and exit.

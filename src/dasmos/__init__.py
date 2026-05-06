@@ -1,4 +1,4 @@
-"""dasmos — a pluggable tracing disassembler.
+"""dasmos — an extensible tracing disassembler.
 
 The top-level package re-exports the public API. Consumers should import
 from :mod:`dasmos` rather than reaching into sub-modules.

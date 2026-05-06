@@ -1,5 +1,5 @@
 .. image:: _static/dasmos-banner.svg
-   :alt: Dasmos — a pluggable tracing disassembler for retro CPUs
+   :alt: Dasmos — an extensible tracing disassembler for classic CPUs
    :align: center
 
 |
@@ -10,8 +10,8 @@ Dasmos
    *From Ancient Greek* δασμός *(dasmós, "division"), from* δαίω
    *(daíō, "to divide, share").*
 
-A pluggable tracing disassembler for retro-CPU ROMs, with first-class
-support for the 6502 and the BBC Micro / Master family.
+An extensible tracing disassembler for classic-CPU ROMs, with
+first-class support for the 6502 and the BBC Micro / Master family.
 
 *Dasmos* has two surfaces. The :doc:`command line <cli>` runs the whole
 pipeline against a binary in one shot — useful for triage, sanity

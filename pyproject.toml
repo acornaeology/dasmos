@@ -8,7 +8,7 @@ dynamic = ["version"]
 authors = [
     { name = "Robert Smallshire", email = "rob@sixty-north.com" },
 ]
-description = "Pluggable tracing disassembler with CPU, renderer and environment extension points."
+description = "Extensible tracing disassembler for classic CPUs, with CPU, renderer and environment extension points."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
