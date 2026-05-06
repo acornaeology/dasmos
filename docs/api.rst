@@ -48,6 +48,15 @@ Annotations: comments and banners
    :no-index:
 
 
+Format hints: renderer-agnostic operand-format intent
+-----------------------------------------------------
+
+.. automodule:: dasmos.core.format_hint
+   :members:
+   :show-inheritance:
+   :no-index:
+
+
 Output: text and structured
 ---------------------------
 
