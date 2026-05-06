@@ -272,6 +272,74 @@ class Opcode(Classification):
         # OperandKind.NONE / IMMEDIATE: no target to follow.
         return None
 
+    def _compute_target_runtime(
+        self, memory, binary_addr: int, b2r,
+    ) -> int | None:
+        """Decode the operand into a control-flow target as a RUNTIME
+        address.
+
+        Mirrors :meth:`_compute_target` for ABS-mode opcodes (whose
+        operand bytes already encode a runtime address by the 6502's
+        usual convention) but does branch-target arithmetic in
+        runtime space: ``b2r(binary_addr) + length + offset``. A
+        relative branch whose source byte sits inside a moved region
+        produces a target in the move's destination runtime space —
+        matching the runtime addresses where labels were registered
+        — instead of a binary address that's only meaningful when
+        runtime equals binary.
+
+        Mirrors py8dis-fork's runtime-aware tracer (see
+        ``py8dis/cpu6502.py:807-899`` for branches and JSR/JMP).
+
+        ``b2r`` is the binary→runtime conversion function (typically
+        ``MoveManager.b2r``). For non-moved code the conversion is
+        identity, so callers that don't care about move-aware
+        arithmetic can pass ``lambda x: x``; callers that want the
+        full move-aware semantics pass ``moves.b2r``.
+
+        Returns None when operand bytes aren't loaded or the
+        addressing mode doesn't yield a target.
+        """
+        operand_addr = binary_addr + 1
+        kind = self.addressing_mode.operand_kind
+
+        if kind is OperandKind.RELATIVE_OFFSET:
+            if not memory.is_loaded(operand_addr):
+                return None
+            offset = memory.get_u8(operand_addr)
+            if offset >= 0x80:
+                offset -= 0x100
+            return int(b2r(binary_addr)) + self.length() + offset
+
+        # ABS / ZP modes — operand bytes ARE the (runtime) target
+        # address. Same as the legacy method.
+        if kind is OperandKind.ADDRESS_16:
+            if not memory.is_loaded(operand_addr, 2):
+                return None
+            return memory.get_u16_le(operand_addr)
+
+        if kind is OperandKind.ADDRESS_8:
+            if not memory.is_loaded(operand_addr):
+                return None
+            return memory.get_u8(operand_addr)
+
+        if kind is OperandKind.ADDRESS_16_INDIRECT:
+            # py8dis's OpcodeJmpInd.disassemble doesn't auto-trace
+            # indirect JMPs at all. Match that conservatively: we
+            # follow only when the operand-as-binary is loaded
+            # (works for non-moved code, the common case); when the
+            # pointer storage is in moved space we drop the trace
+            # path. A future refactor could plumb r2b through here
+            # to follow more cases.
+            if not memory.is_loaded(operand_addr, 2):
+                return None
+            ptr = memory.get_u16_le(operand_addr)
+            if not memory.is_loaded(ptr, 2):
+                return None
+            return memory.get_u16_le(ptr)
+
+        return None
+
 
 class Cpu(Extension):
     """Base class for CPU (processor) plug-ins.

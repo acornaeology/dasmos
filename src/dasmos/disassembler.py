@@ -1136,31 +1136,103 @@ class Disassembler:
                 # control flow is determined by the opcode, not by
                 # who owns the classification record.
                 #
-                # Subroutine hooks: when this is a JSR whose target
-                # has a registered hook, the hook decides where the
-                # trace continues *instead of* the default
-                # fall-through. The target (the called subroutine) is
-                # still queued.
+                # Compute control-flow targets in RUNTIME space then
+                # convert back to binary via the move map. The active
+                # move (pushed at the top of this step) acts as the
+                # tiebreaker for runtime addresses covered by more
+                # than one move's destination — "while tracing inside
+                # move N, prefer move N for ambiguous lookups". This
+                # mirrors py8dis's runtime-aware tracer (cpu6502.py
+                # OpcodeAbs.disassemble + OpcodeBranch.disassemble).
+                #
+                # For non-moved code, b2r/r2b are identity, so the
+                # only difference vs. the legacy operand-as-binary
+                # arithmetic is when an operand value sits inside a
+                # moved region — there the legacy form would queue
+                # an unloaded binary (the operand is a runtime addr
+                # whose binary correspondent lives somewhere else).
+                #
+                # Subroutine hooks fire when the call's runtime target
+                # matches a registered hook (the hook dict is keyed
+                # by runtime). The hook returns a binary address
+                # where execution resumes after the JSR, so its
+                # return value is enqueued unconverted.
                 from dasmos.cpu import FlowControl as _FlowControl
-                if (
-                    opcode.flow_control is _FlowControl.SUBROUTINE_CALL
-                    and self._subroutine_hooks
+                fall_through = addr + opcode.length()
+                flow = opcode.flow_control
+                if flow is _FlowControl.SEQUENTIAL:
+                    if 0 <= fall_through < self._memory.address_space_size:
+                        pending.append(fall_through)
+                elif flow in (
+                    _FlowControl.RETURN,
+                    _FlowControl.BREAK,
+                    _FlowControl.UNDEFINED,
                 ):
-                    target = opcode._compute_target(self._memory, addr)
-                    if target is not None and target in self._subroutine_hooks:
-                        hook = self._subroutine_hooks[target]
+                    pass
+                else:
+                    target_runtime = opcode._compute_target_runtime(
+                        self._memory, addr, self._moves.b2r,
+                    )
+                    if (
+                        flow is _FlowControl.SUBROUTINE_CALL
+                        and target_runtime is not None
+                        and target_runtime in self._subroutine_hooks
+                    ):
+                        hook = self._subroutine_hooks[target_runtime]
                         continuation = hook(self, addr)
                         if (
                             continuation is not None
                             and 0 <= continuation < self._memory.address_space_size
                         ):
                             pending.append(continuation)
-                        if 0 <= target < self._memory.address_space_size:
-                            pending.append(target)
+                        target_binary = self._target_runtime_to_binary(
+                            target_runtime,
+                        )
+                        if target_binary is not None:
+                            pending.append(target_binary)
                         continue
-                for next_addr in opcode.next_addresses(self._memory, addr):
-                    if 0 <= next_addr < self._memory.address_space_size:
-                        pending.append(next_addr)
+                    target_binary = self._target_runtime_to_binary(
+                        target_runtime,
+                    )
+                    if flow is _FlowControl.JUMP:
+                        if target_binary is not None:
+                            pending.append(target_binary)
+                    else:
+                        # SUBROUTINE_CALL or CONDITIONAL_BRANCH: both
+                        # have an implicit fall-through alongside the
+                        # target.
+                        if 0 <= fall_through < self._memory.address_space_size:
+                            pending.append(fall_through)
+                        if target_binary is not None:
+                            pending.append(target_binary)
+
+    def _target_runtime_to_binary(
+        self, target_runtime: int | None,
+    ) -> int | None:
+        """Resolve a control-flow target's runtime address to a
+        binary address suitable for trace-queue enqueueing.
+
+        Returns None when the target can't be resolved cleanly
+        (operand wasn't loaded, runtime address is ambiguous between
+        multiple moves with none on the active stack, or the
+        resulting binary address falls outside the address space).
+        Used by :meth:`_trace` to convert each control-flow target
+        from runtime to binary before queueing.
+        """
+        if target_runtime is None:
+            return None
+        from dasmos.core.memory import RuntimeAddr
+        # 6502 addresses fit in 16 bits; mask to defend against
+        # arithmetic overflow in branch-target computation (signed
+        # offset arithmetic on the high end of the address space).
+        runtime = RuntimeAddr(target_runtime & 0xffff)
+        binary, _ = self._moves.r2b(runtime)
+        if binary is None:
+            return None
+        binary_int = int(binary)
+        if 0 <= binary_int < self._memory.address_space_size:
+            return binary_int
+        return None
 
     def _opcode_straddles_move_boundary(
         self, addr: int, length: int,
