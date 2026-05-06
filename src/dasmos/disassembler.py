@@ -1143,24 +1143,34 @@ class Disassembler:
         self, addr: int, length: int,
     ) -> bool:
         """True iff a multi-byte opcode at ``[addr, addr+length)``
-        crosses any move's source-range start or end.
+        spans bytes with two or more EFFECTIVE owners after all
+        moves are registered.
 
-        Boundaries are at ``src_binary_addr`` and
-        ``src_binary_addr + length`` for every registered move
-        (excluding the base move). An instruction is "straddling" if
-        a boundary falls strictly between its first and last byte.
-        Pure-internal helper for :meth:`_trace`.
+        Effective ownership comes from
+        :attr:`MoveManager._move_id_for_binary_addr` — the per-byte
+        map that ``add_move`` updates last-wins. So an opcode whose
+        bytes were originally claimed by move A but later stolen
+        wholesale by move B reads as "all bytes owned by B" and is
+        NOT a straddle. A genuine straddle (one byte owned by A,
+        next byte owned by B) still produces two distinct owners.
+
+        Earlier versions of this check iterated every move's
+        DECLARED geometry, which double-counted the original
+        boundary of a since-stolen range and false-positived for
+        opcodes wholly inside a later overlapping move (NFS-3.34's
+        BCS at &9367). The owner-set form matches what the
+        surrounding comment block in :meth:`_trace` already
+        describes — "bytes need to land in different runtime-address
+        spaces" — which is true exactly when the bytes have
+        different owners after last-wins.
         """
         if length < 2:
             return False
-        end = addr + length
-        for mv in self._moves.all_moves[1:]:  # skip base move
-            for boundary in (
-                int(mv.src_binary_addr),
-                int(mv.src_binary_addr) + mv.length,
-            ):
-                if addr < boundary < end:
-                    return True
+        owner_for = self._moves._move_id_for_binary_addr
+        first_owner = owner_for[addr]
+        for i in range(1, length):
+            if owner_for[addr + i] != first_owner:
+                return True
         return False
 
     def _classify_string_runs(self, min_length: int) -> None:
