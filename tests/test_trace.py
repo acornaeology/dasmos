@@ -313,6 +313,168 @@ class TestTraceLoop:
         assert isinstance(rts, Opcode) and rts.operation is Operation.RTS
 
 
+class TestTraceUnderOverlappingMoves:
+    """Tracer behaviour when ``add_move`` regions overlap.
+
+    Each ``add_move`` overwrites :data:`MoveManager._move_id_for_binary_addr`
+    last-wins, so a later move steals bytes from an earlier one. The
+    tracer must classify in terms of EFFECTIVE ownership (the post-
+    last-wins map), not the original declared geometry of every
+    registered move. It must also follow control-flow targets
+    expressed as runtime addresses through the move map back to
+    binary addresses, so calls into / branches into moved regions
+    classify the destination bytes as code.
+
+    These tests pin the four NFS-3.34 ROM symptoms (BCS at &9367,
+    BEQ/BNE at &9508/&950c, STA at &962a) at unit scale.
+    """
+
+    def test_opcode_inside_later_overlapping_move_classifies_as_code(
+        self, tmp_path,
+    ):
+        # Layout (binary):
+        #   0x8000: NOP   (ea)        — owned by move 1 only
+        #   0x8001: BCS+0 (b0 00)     — opcode owned by move 2 (stole
+        #                               bytes 0x8001..0x8002 from move 1)
+        #   0x8003: RTS   (60)        — owned by move 2 (also the
+        #                               taken-branch target: BCS+0
+        #                               targets fall_through = 0x8003)
+        #
+        # Moves:
+        #   move 1: src 0x8000, len 2 → runtime 0x9000 (covers 0x8000-1)
+        #   move 2: src 0x8001, len 3 → runtime 0x9100 (covers 0x8001-3,
+        #                               steals 0x8001 from move 1)
+        # After last-wins: 0x8000→1, 0x8001..0x8003→2.
+        # The BCS at 0x8001 has both opcode + operand bytes (0x8001
+        # and 0x8002) owned by move 2 — it does NOT genuinely
+        # straddle. On master the straddle check iterates ALL moves'
+        # declared geometry, sees move 1's original src+len boundary
+        # at 0x8002, and falsely reports a straddle — so the BCS
+        # falls through as ``equb &b0`` instead of an opcode.
+        # Mirrors NFS-3.34's BCS at &9367 (Bug A).
+        binary = tmp_path / "p.bin"
+        binary.write_bytes(b"\xea\xb0\x00\x60")
+
+        d = Disassembler.create(cpu="6502")
+        d.load(binary, 0x8000)
+        d.add_move(0x9000, 0x8000, 2)
+        d.add_move(0x9100, 0x8001, 3)
+        d.entry(0x8001)
+        ir = d.disassemble()
+
+        bcs = ir.classifications.get_classification(0x8001)
+        assert isinstance(bcs, Opcode), (
+            f"expected BCS opcode at 0x8001, got {bcs!r}"
+        )
+        assert bcs.operation is Operation.BCS
+
+    def test_jsr_into_moved_region_classifies_target(self, tmp_path):
+        # Layout (binary):
+        #   0x8000: JSR $0100 (20 00 01) — calls into moved subroutine
+        #   0x8003: RTS       (60)        — return after JSR
+        #   0x8004..0x8009: filler bytes (leftover-aggregated)
+        #   0x800a: NOP       (ea)        — subroutine, runtime 0x0100
+        #   0x800b: RTS       (60)        — runtime 0x0101
+        #
+        # The JSR target operand reads as &0100 — a RUNTIME address
+        # that has no binary correspondent (zero-page isn't loaded).
+        # Master's tracer queues the operand value as a binary addr
+        # directly: is_loaded(0x0100) is False, the trace path dies,
+        # and the subroutine bytes never classify as code. The
+        # leftover pass marks them ``equb``.
+        # Mirrors NFS-3.34's JSR-into-moved-subroutine pattern that
+        # leaves &9508/&950c/&962a unclassified (Bug B).
+        binary = tmp_path / "p.bin"
+        binary.write_bytes(
+            b"\x20\x00\x01\x60\x00\x00\x00\x00\x00\x00\xea\x60"
+        )
+
+        d = Disassembler.create(cpu="6502")
+        d.load(binary, 0x8000)
+        d.add_move(0x0100, 0x800a, 2)
+        d.entry(0x8000)
+        ir = d.disassemble()
+
+        jsr = ir.classifications.get_classification(0x8000)
+        assert isinstance(jsr, Opcode) and jsr.operation is Operation.JSR
+
+        sub_nop = ir.classifications.get_classification(0x800a)
+        assert isinstance(sub_nop, Opcode), (
+            f"expected NOP at moved-subroutine binary 0x800a, got "
+            f"{sub_nop!r}"
+        )
+        assert sub_nop.operation is Operation.NOP
+        sub_rts = ir.classifications.get_classification(0x800b)
+        assert isinstance(sub_rts, Opcode), (
+            f"expected RTS at moved-subroutine binary 0x800b, got "
+            f"{sub_rts!r}"
+        )
+        assert sub_rts.operation is Operation.RTS
+
+    def test_jsr_inside_moved_region_targeting_other_moved_region(
+        self, tmp_path,
+    ):
+        # Layout (binary):
+        #   0x8000: NOP       (ea)        — outside any move (entry)
+        #   0x8001: JMP $0100 (4c 00 01)  — jumps into move 1's runtime
+        #   0x8004: filler
+        #   0x8005: JSR $0200 (20 00 02)  — JSR INSIDE move 1, calls
+        #                                   into move 2's runtime
+        #   0x8008: RTS       (60)        — inside move 1
+        #   0x8009: filler
+        #   0x800a: NOP       (ea)        — subroutine in move 2,
+        #                                   runtime 0x0200
+        #   0x800b: RTS       (60)
+        #
+        # Moves:
+        #   move 1: src 0x8005, len 4 → runtime 0x0100..0x0103
+        #   move 2: src 0x800a, len 2 → runtime 0x0200..0x0201
+        #
+        # This stresses BOTH:
+        #   - Trace step pushed on the active-move stack matches the
+        #     binary's owning move (so r2b disambiguation prefers
+        #     move 1 if there were ambiguity).
+        #   - The JSR's runtime target &0200 must r2b through move 2
+        #     to binary 0x800a — operand value &0200 is NOT a valid
+        #     binary address.
+        binary = tmp_path / "p.bin"
+        binary.write_bytes(
+            b"\xea"          # 0x8000: NOP
+            b"\x4c\x00\x01"  # 0x8001: JMP &0100  (into move 1)
+            b"\x00"          # 0x8004: filler
+            b"\x20\x00\x02"  # 0x8005: JSR &0200  (into move 2)
+            b"\x60"          # 0x8008: RTS
+            b"\x00"          # 0x8009: filler
+            b"\xea"          # 0x800a: NOP
+            b"\x60"          # 0x800b: RTS
+        )
+
+        d = Disassembler.create(cpu="6502")
+        d.load(binary, 0x8000)
+        d.add_move(0x0100, 0x8005, 4)
+        d.add_move(0x0200, 0x800a, 2)
+        d.entry(0x8000)
+        ir = d.disassemble()
+
+        # The outer JMP into move 1 must reach the JSR at binary 0x8005.
+        jsr = ir.classifications.get_classification(0x8005)
+        assert isinstance(jsr, Opcode), (
+            f"expected JSR at 0x8005 (inside move 1), got {jsr!r}"
+        )
+        assert jsr.operation is Operation.JSR
+
+        # The JSR target inside move 2 must be classified.
+        target_nop = ir.classifications.get_classification(0x800a)
+        assert isinstance(target_nop, Opcode), (
+            f"expected NOP at 0x800a (inside move 2), got {target_nop!r}"
+        )
+        target_rts = ir.classifications.get_classification(0x800b)
+        assert isinstance(target_rts, Opcode), (
+            f"expected RTS at 0x800b (inside move 2), got {target_rts!r}"
+        )
+        assert target_rts.operation is Operation.RTS
+
+
 class TestEntryRegistration:
 
     def test_entry_appends_to_entry_points(self, tmp_path):
