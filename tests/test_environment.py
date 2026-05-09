@@ -663,6 +663,68 @@ class TestAcornSidewaysRom:
         )
         assert "NUL terminator" in nul_inline
 
+    def test_title_without_embedded_nul_renders_as_single_equs(
+        self, tmp_path,
+    ):
+        # NFS-style ROMs have title "NET" (3 bytes) with copyright_offset
+        # = &0C, so the byte at &800C is the copyright leading-NUL and
+        # acts as the title's implicit terminator. The title field
+        # itself contains no &00. The env must NOT split off the last
+        # title byte as "NUL terminator" — that mislabels the 'T' byte
+        # (#12 regression). Classify the whole title as a single
+        # String with no NUL split or inline.
+        from dasmos.core.annotations import Align, Comment
+        from dasmos.core.classification import Byte, String
+        # Hand-built ROM mirroring NFS layout: title "NET" at &8009-B,
+        # copyright_offset = &0C so the implicit terminator is &800C.
+        rom = bytearray()
+        rom += bytes([0x00, 0x00, 0x00])      # &8000: language disabled
+        rom += bytes([0x4c, 0x14, 0x80])      # &8003: service JMP &8014
+        rom += bytes([0x82])                  # &8006: rom_type
+        rom += bytes([0x0C])                  # &8007: copyright_offset
+        rom += bytes([0x10])                  # &8008: binary_version
+        rom += b"NET"                         # &8009-B: title (no NUL!)
+        rom += b"\x00(C)X\x00"                # &800C: leading NUL +
+                                              #        copyright + NUL
+        while len(rom) < 0x14:
+            rom += bytes([0xff])
+        rom += bytes([0xea, 0xea, 0x60])      # service handler
+        while len(rom) < 0x100:
+            rom += bytes([0xff])
+        d = self._make_loaded_disassembler(tmp_path, bytes(rom))
+        d.use_environment("acorn_sideways_rom")
+        ir = d.disassemble()
+        # Title is a single String covering all 3 bytes, NOT split.
+        title_class = ir.classifications.get_classification(0x8009)
+        assert isinstance(title_class, String)
+        assert title_class.length() == 3
+        # &800B (the 'T') must NOT be a separate Byte classification.
+        # It sits inside the title String above, so the store returns
+        # the INSIDE_A_CLASSIFICATION sentinel rather than a fresh
+        # classification object.
+        from dasmos.core.disassembly import INSIDE_A_CLASSIFICATION
+        assert (
+            ir.classifications.get_classification(0x800b)
+            is INSIDE_A_CLASSIFICATION
+        )
+        # &800B must NOT carry a "NUL terminator" inline — the 'T'
+        # byte is text, not a NUL.
+        inlines = [
+            a.text for a in ir.annotations.get_for_align(0x800b, Align.INLINE)
+            if isinstance(a, Comment)
+        ]
+        assert not any("NUL terminator" in t for t in inlines)
+        # The actual copyright leading-NUL at &800C still gets its
+        # own Byte + "NUL preceding copyright string" inline as
+        # before — that field IS terminated correctly.
+        cp_class = ir.classifications.get_classification(0x800c)
+        assert isinstance(cp_class, Byte) and cp_class.length() == 1
+        cp_inline = next(
+            a.text for a in ir.annotations.get_for_align(0x800c, Align.INLINE)
+            if isinstance(a, Comment)
+        )
+        assert "NUL preceding copyright" in cp_inline
+
     def test_copyright_offset_inline_resolves_address(self, tmp_path):
         from dasmos.core.annotations import Align, Comment
         d = self._make_loaded_disassembler(tmp_path, self._build_rom())

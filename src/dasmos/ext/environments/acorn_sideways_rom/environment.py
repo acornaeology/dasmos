@@ -264,13 +264,15 @@ class AcornSidewaysRomEnvironment(Environment):
         # Copyright field starts at &8000 + copyright_offset, with a
         # leading NUL byte (per Acorn convention — the copyright
         # offset POINTS AT this NUL), then the (C)-prefixed text,
-        # then a trailing NUL. Split into three classifications so
-        # both NULs are visible bytes the listing comments on,
-        # rather than buried inside one big EQUS:
-        #
-        #   .copyright          equb &00         ; preceding NUL
-        #   .copyright_string   equs "(C)..."
-        #                       equb &00         ; terminating NUL
+        # then optionally a trailing NUL. Split into three
+        # classifications so the leading NUL is a visible byte the
+        # listing comments on, then the text under its own
+        # ``copyright_string`` label, then (when present) the
+        # trailing NUL via ``_classify_nul_terminated_string`` —
+        # which predicates on the byte value, so ROMs whose
+        # copyright text runs straight into the next field without
+        # a trailing NUL (rare but valid) don't get a wrong
+        # "NUL terminator" inline on their last text byte.
         d.label(copyright_addr, "copyright")
         d.byte(copyright_addr, 1)
         if not d.is_auto_suppressed_at(copyright_addr):
@@ -286,17 +288,9 @@ class AcornSidewaysRomEnvironment(Environment):
             d, copyright_text_start, load_end,
         )
         d.label(copyright_text_start, "copyright_string")
-        text_length = copyright_terminator - copyright_text_start
-        if text_length > 0:
-            d.string(copyright_text_start, text_length)
-        d.byte(copyright_terminator, 1)
-        if not d.is_auto_suppressed_at(copyright_terminator):
-            d.comment(
-                copyright_terminator,
-                "NUL terminator",
-                align=Align.INLINE,
-                auto_generated=True,
-            )
+        self._classify_nul_terminated_string(
+            d, copyright_text_start, copyright_terminator,
+        )
 
         # Tube relocation address: present iff rom_type bit 5 is set.
         # Lives in the 4 bytes immediately after the copyright NUL.
@@ -367,15 +361,35 @@ class AcornSidewaysRomEnvironment(Environment):
 
     @staticmethod
     def _classify_nul_terminated_string(d, start: int, terminator: int) -> None:
-        """Classify a NUL-terminated string region, splitting the
-        terminator into its own ``equb &00`` so the NUL is a visible
-        byte the listing comments on rather than the last character of
-        an EQUS.
+        """Classify a NUL-terminated string region.
+
+        When the byte at ``terminator`` really is ``&00``, split it off
+        into its own ``equb &00`` with an inline "NUL terminator" note
+        so the NUL is a visible byte the listing comments on rather
+        than the last character of an EQUS.
+
+        When it isn't (the field has no embedded NUL — its last byte
+        is text or padding shared with the next field, e.g. NFS-style
+        titles whose terminator IS the next field's leading byte),
+        classify the whole region as a single ``equs`` with no NUL
+        split or "NUL terminator" inline. Predicating on the byte
+        value avoids the #12 regression where every NFS title
+        (``"NET"`` followed directly by the copyright leading-NUL)
+        had its trailing ``T`` byte mislabelled as a NUL terminator.
 
         ``start`` is the first text byte (or the NUL itself for an
-        empty string); ``terminator`` is the address of the NUL.
-        Emits an inline "NUL terminator" note on the NUL byte.
+        empty string); ``terminator`` is the address of either the
+        real NUL or, when no NUL is embedded, the field's last byte.
         """
+        is_real_nul = (
+            d.memory.is_loaded(terminator)
+            and d.memory.get_u8(terminator) == 0
+        )
+        if not is_real_nul:
+            full_length = terminator - start + 1
+            if full_length > 0:
+                d.string(start, full_length)
+            return
         text_length = terminator - start
         if text_length > 0:
             d.string(start, text_length)
