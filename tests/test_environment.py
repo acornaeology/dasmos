@@ -343,6 +343,55 @@ class TestAcornSidewaysRom:
         text = str(d.disassemble().render("beebasm"))
         assert ".copyright" in text
 
+    def test_header_comment_is_auto_generated(self, tmp_path):
+        # The env-attached "Sideways ROM header" comment at &8000 is
+        # address-metadata, not user-authored content. It must carry
+        # auto_generated=True so a driver-supplied banner at the same
+        # address doesn't trigger the duplicate-comment warning.
+        from dasmos.core.annotations import Comment
+        d = self._make_loaded_disassembler(tmp_path, self._build_rom())
+        d.use_environment("acorn_sideways_rom")
+        comments = [
+            e for e in d.annotations.get(0x8000) if isinstance(e, Comment)
+        ]
+        env_headers = [c for c in comments if "Sideways ROM header" in c.text]
+        assert env_headers
+        assert all(c.auto_generated for c in env_headers)
+
+    def test_driver_banner_no_dup_warning_with_env_header(self, tmp_path):
+        # A driver-supplied per-version banner at &8000 stacks
+        # alongside the env's "Sideways ROM header" without firing the
+        # AnnotationStore duplicate-comment warning (the warning
+        # targets driver-authoring bugs, not env-driven layering).
+        import warnings
+        d = self._make_loaded_disassembler(tmp_path, self._build_rom())
+        d.use_environment("acorn_sideways_rom")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            d.comment(0x8000, "NFS ROM 3.65 disassembly")
+
+    def test_driver_can_suppress_env_header_via_suppresses_auto(
+        self, tmp_path,
+    ):
+        # A driver attaching ``suppresses_auto=True`` at &8000
+        # *before* activating the env causes the env to skip its own
+        # header line entirely — the driver's text becomes the sole
+        # comment at that address.
+        from dasmos.core.annotations import Comment
+        d = self._make_loaded_disassembler(tmp_path, self._build_rom())
+        d.comment(
+            0x8000,
+            "NFS ROM 3.65 — full driver banner here",
+            suppresses_auto=True,
+        )
+        d.use_environment("acorn_sideways_rom")
+        comments = [
+            e for e in d.annotations.get(0x8000) if isinstance(e, Comment)
+        ]
+        texts = [c.text for c in comments]
+        assert "NFS ROM 3.65 — full driver banner here" in texts
+        assert not any("Sideways ROM header" in t for t in texts)
+
     def test_layered_with_acorn_mos(self, tmp_path):
         # The two acorn environments compose: the labels from each
         # appear together. Sideways-rom needs activation AFTER load,
