@@ -20,7 +20,6 @@ good real-world binary.
 import hashlib
 import importlib.util
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -37,13 +36,6 @@ ROM_PATH = _FIXTURES / "econet-bridge-variant_1.rom"
 ROM_LOAD_ADDR = 0xE000
 ROM_MD5 = "d5328f517902a4d2659e302acfc0882f"
 ORIGINAL_DRIVER_PATH = _FIXTURES / "disasm_econet_bridge_variant_1.py"
-
-# The reference output produced by running the original (unmodified)
-# disasm driver under the legacy py8dis fork. Vendored here so the
-# parity tests are self-contained. The md5 pin guards against silent
-# fixture rot.
-PY8DIS_REFERENCE_PATH = _FIXTURES / "py8dis_reference_econet-bridge-variant_1.asm"
-PY8DIS_REFERENCE_MD5 = "4c696830830948a22d3a03caa5470f6b"
 
 _PORTER_PATH = Path(__file__).parent.parent / "scripts" / "py8dis2dasmos.py"
 _porter_spec = importlib.util.spec_from_file_location(
@@ -265,132 +257,4 @@ class TestEconetBridgePorterEndToEnd:
         assert hashlib.md5(rebuilt).hexdigest() == ROM_MD5
         assert rebuilt == original, (
             f"byte mismatch: {len(rebuilt)} vs {len(original)} bytes"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Annotation-content parity with the legacy py8dis fork
-# ---------------------------------------------------------------------------
-#
-# Byte-equality is necessary but not sufficient — a renderer that
-# strips every comment would still round-trip cleanly. These tests
-# guard against silent loss of *annotation content* by comparing the
-# dasmos-rendered output against the vendored py8dis reference.
-#
-# The current strategy is a token-level "vocabulary coverage" check:
-# extract every word from `;`-comment text in both files, and assert
-# the dasmos output's vocabulary covers (most of) the reference's.
-# This is robust to wrapping/formatting differences and surfaces
-# *content* drops cleanly.
-#
-# ``MAX_COMMENT_TOKENS_DROPPED`` is a ratchet — start at the current
-# observed gap and lower it as fidelity gaps close (label-definition
-# comments, cross-reference summary lines, etc.). When dasmos is
-# intentionally allowed to diverge, deselect this whole class with
-# ``pytest -m 'not py8dis_parity'`` and eventually delete the marker.
-#
-# History (lower as fidelity gaps close):
-#   458 — 2026-05-02 baseline (initial parity check)
-#   417 — 2026-05-02 after rendering label `description=` as inline
-#         comment on the equate.
-#     9 — 2026-05-02 after adding inline xref summaries
-#         (`; &xxxx referenced N time(s) by &yyyy, …`) and the
-#         end-of-file label-frequency table.
-#     0 — 2026-05-02 after byte-column inline annotation, ``; Memory
-#         locations`` header, ``; Stats:`` block, boundary-label
-#         entries in the frequency table, and the porter passing
-#         ``boundary_label_prefix='pydis_'`` + ``byte_column=True``
-#         to render. Full annotation-content parity.
-#
-# Note: dasmos's vocabulary is now a strict superset (extra tokens
-# come from markdown we don't yet rewrite — see task #26). Once the
-# markdown rewrite lands we'd expect dasmos == py8dis exactly.
-
-MAX_COMMENT_TOKENS_DROPPED = 0
-
-_COMMENT_TOKEN_RE = re.compile(r"[a-z_][a-z_0-9]{3,}")
-
-
-def _comment_text(asm_text: str) -> str:
-    """Extract every ``;``-comment fragment from a beebasm source,
-    normalised: lowercased, backticks (markdown) stripped.
-
-    Splits each line on ``;`` and keeps *every* chunk after the first,
-    so a line like ``cli  ; f85c: 58 X  ; Enable IRQs`` contributes
-    BOTH the byte-column ``f85c: 58 X`` AND the user comment ``Enable
-    IRQs`` to the corpus. Catches addresses/symbols that py8dis writes
-    into its inline byte column.
-    """
-    parts: list[str] = []
-    for line in asm_text.splitlines():
-        chunks = line.split(";")
-        # chunks[0] is the pre-comment opcode/data text — drop it. All
-        # remaining chunks are ``;``-introduced comment territory.
-        parts.extend(chunks[1:])
-    blob = " ".join(parts).replace("`", "").lower()
-    return blob
-
-
-def _comment_tokens(asm_text: str) -> set[str]:
-    return set(_COMMENT_TOKEN_RE.findall(_comment_text(asm_text)))
-
-
-@pytest.mark.beebasm
-@pytest.mark.py8dis_parity
-class TestEconetBridgePy8disParity:
-    """Annotation-content parity with the legacy py8dis-fork output.
-
-    Marked ``py8dis_parity``: deselect with ``pytest -m 'not
-    py8dis_parity'`` once dasmos is intentionally allowed to diverge.
-    """
-
-    def test_reference_fixture_pinned(self):
-        """Guard against silent updates to the vendored reference."""
-        actual = hashlib.md5(PY8DIS_REFERENCE_PATH.read_bytes()).hexdigest()
-        assert actual == PY8DIS_REFERENCE_MD5, (
-            f"py8dis reference output md5 changed ({actual}); "
-            f"either re-vendor and update PY8DIS_REFERENCE_MD5, or "
-            f"investigate why the upstream output is different."
-        )
-
-    def test_comment_vocabulary_covers_py8dis(self, tmp_path):
-        """The dasmos-rendered output's comment vocabulary should
-        cover the py8dis reference's, modulo a small allowed gap that
-        ratchets down as we close fidelity issues. A failure here means
-        either (a) we lost more annotation content (bad — fix the gap),
-        or (b) we closed a gap (good — lower the threshold)."""
-        if _BEEBASM is None:
-            pytest.skip("beebasm not found")
-
-        # Run the porter end-to-end (same pipeline as the round-trip
-        # test) to get the candidate output.
-        original_driver_src = ORIGINAL_DRIVER_PATH.read_text(encoding="utf-8")
-        ported_src = _porter.port(original_driver_src)
-        ported_filepath = tmp_path / "ported_driver.py"
-        ported_filepath.write_text(ported_src, encoding="utf-8")
-        output_dirpath = tmp_path / "out"
-        output_dirpath.mkdir()
-        env = os.environ.copy()
-        env["FANTASM_ROM"] = str(ROM_PATH)
-        env["FANTASM_OUTPUT_DIR"] = str(output_dirpath)
-        result = subprocess.run(
-            [sys.executable, str(ported_filepath)],
-            capture_output=True, text=True, cwd=str(tmp_path), env=env,
-        )
-        assert result.returncode == 0, (
-            f"ported driver failed:\n=== stderr ===\n{result.stderr}"
-        )
-        candidate_filepath = output_dirpath / "econet-bridge-variant_1.asm"
-
-        ref_tokens = _comment_tokens(PY8DIS_REFERENCE_PATH.read_text(encoding="utf-8"))
-        das_tokens = _comment_tokens(candidate_filepath.read_text(encoding="utf-8"))
-
-        missing = ref_tokens - das_tokens
-        sample = sorted(missing)[:25]
-        assert len(missing) <= MAX_COMMENT_TOKENS_DROPPED, (
-            f"dasmos dropped {len(missing)} unique comment tokens "
-            f"present in the py8dis reference (allowed: "
-            f"{MAX_COMMENT_TOKENS_DROPPED}). Sample: {sample}. "
-            f"If you've fixed a fidelity gap, lower "
-            f"MAX_COMMENT_TOKENS_DROPPED to the new observed value."
         )

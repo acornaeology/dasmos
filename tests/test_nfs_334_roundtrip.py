@@ -6,15 +6,18 @@ we already vendor and exercises pre-3.65 driver patterns: a smaller
 feature set, simpler MOS-call usage, and slightly different
 state-machine layout.
 
-Mirrors :mod:`tests.test_adfs_roundtrip` in shape (the lighter
-test variant — no JSON parity ratcheting, since NFS-3.65 already
-covers that oracle role).
+The remaining test class ports the unmodified original py8dis
+driver, runs it, asserts byte-identical reassembly, AND pins the
+literal text of four overlapping-move sites that historically
+rendered as ``equb`` bytes (a regression test for two distinct
+tracer fixes — see ``test_overlapping_move_sites_classify_as_
+instructions``). py8dis-parity tests that used to live alongside
+were removed once the migration completed.
 """
 
 import hashlib
 import importlib.util
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -26,14 +29,10 @@ import pytest
 _FIXTURES = Path(__file__).parent / "fixtures" / "acorn-nfs-3.34"
 ROM_PATH = _FIXTURES / "nfs-3.34.rom"
 ORIGINAL_DRIVER_PATH = _FIXTURES / "disasm_nfs_334.py"
-PY8DIS_REFERENCE_PATH = _FIXTURES / "py8dis_reference_nfs-3.34.asm"
-PY8DIS_REFERENCE_JSON_PATH = _FIXTURES / "py8dis_reference_nfs-3.34.json"
 
 ROM_SIZE = 8192
 ROM_LOAD_ADDR = 0x8000
 ROM_MD5 = "d6761cb566cd87b0c1117b5b600cff16"
-PY8DIS_REFERENCE_MD5 = "6a795e4e186fc7b79facf4b6f06fe1fe"
-PY8DIS_REFERENCE_JSON_MD5 = "9312b5803b49514b9ce21050fdbf9709"
 
 _PORTER_PATH = Path(__file__).parent.parent / "scripts" / "py8dis2dasmos.py"
 _porter_spec = importlib.util.spec_from_file_location(
@@ -118,44 +117,16 @@ class TestNfs334PorterEndToEnd:
         )
 
 
-# ---------------------------------------------------------------------------
-# py8dis annotation-content parity
-# ---------------------------------------------------------------------------
-
-# Initial ratchet measured when the NFS-3.34 fixture was first
-# vendored. Stepped down: 11 → 6 (mid-class annotation fix) → 5
-# (bucket 1 OSBYTE/OSWORD descriptions, 2026-05-06) → 4 (Fix A,
-# overlapping-move straddle false-positive at &9367) → 0 (Fix B,
-# runtime-aware target computation closed the remaining gap;
-# &9508/&950c/&962a now classify as instructions instead of equb).
-MAX_COMMENT_TOKENS_DROPPED = 0
-
-_COMMENT_TOKEN_RE = re.compile(r"[a-z_][a-z_0-9]{3,}")
-
-
-def _comment_text(asm_text: str) -> str:
-    """Keep EVERY ``;``-introduced chunk so the byte-column annotation
-    contributes addresses/symbols to the parity corpus.
-    """
-    parts: list[str] = []
-    for line in asm_text.splitlines():
-        chunks = line.split(";")
-        parts.extend(chunks[1:])
-    return " ".join(parts).replace("`", "").lower()
-
-
-def _comment_tokens(asm_text: str) -> set[str]:
-    return set(_COMMENT_TOKEN_RE.findall(_comment_text(asm_text)))
-
-
 def _run_dasmos_driver(tmp_path) -> Path:
     """Port the NFS 3.34 driver via py8dis2dasmos, run it, return
-    the output dir.
+    the output dir. Used by the overlapping-move regression test
+    in :class:`TestNfs334PorterEndToEnd` to inspect the rendered
+    asm independently of the byte-roundtrip pipeline.
     """
     ported_src = _porter.port(ORIGINAL_DRIVER_PATH.read_text(encoding="utf-8"))
     ported_filepath = tmp_path / "ported_driver.py"
     ported_filepath.write_text(ported_src, encoding="utf-8")
-    output_dirpath = tmp_path / "out"
+    output_dirpath = tmp_path / "out_text"
     output_dirpath.mkdir()
     env = os.environ.copy()
     env["FANTASM_ROM"] = str(ROM_PATH)
@@ -170,76 +141,35 @@ def _run_dasmos_driver(tmp_path) -> Path:
     return output_dirpath
 
 
+# Regression test for two distinct tracer fixes (overlapping-move
+# straddle / runtime-aware target computation). Lives outside the
+# class so the existing porter test stays focused on byte-identity;
+# this test inspects rendered asm text instead.
 @pytest.mark.beebasm
-@pytest.mark.py8dis_parity
-class TestNfs334Py8disParity:
+def test_overlapping_move_sites_classify_as_instructions(tmp_path):
+    """The four NFS-3.34 sites historically rendered as ``equb``
+    bytes (Bug A: declared-geometry straddle false-positive at
+    &9367; Bug B: runtime-vs-binary tracer confusion at the
+    moved-subroutine bytes &9508/&950c/&962a). After the
+    effective-ownership straddle check + runtime-aware target
+    computation, all four classify as proper instructions.
 
-    def test_reference_fixture_pinned(self):
-        actual = hashlib.md5(PY8DIS_REFERENCE_PATH.read_bytes()).hexdigest()
-        assert actual == PY8DIS_REFERENCE_MD5, (
-            f"py8dis reference output md5 changed ({actual}); "
-            f"either re-vendor and update PY8DIS_REFERENCE_MD5, or "
-            f"investigate why the upstream output is different."
-        )
-
-    def test_reference_json_fixture_pinned(self):
-        actual = hashlib.md5(
-            PY8DIS_REFERENCE_JSON_PATH.read_bytes()
-        ).hexdigest()
-        assert actual == PY8DIS_REFERENCE_JSON_MD5, (
-            f"py8dis reference JSON md5 changed ({actual}); re-vendor "
-            f"with the py8dis fork's get_structured() output and "
-            f"update PY8DIS_REFERENCE_JSON_MD5."
-        )
-
-    def test_comment_vocabulary_covers_py8dis(self, tmp_path):
-        if _BEEBASM is None:
-            pytest.skip("beebasm not found")
-
-        output_dirpath = _run_dasmos_driver(tmp_path)
-        candidate_filepath = output_dirpath / "nfs-3.34.asm"
-
-        ref_tokens = _comment_tokens(PY8DIS_REFERENCE_PATH.read_text(encoding="utf-8"))
-        das_tokens = _comment_tokens(candidate_filepath.read_text(encoding="utf-8"))
-
-        missing = ref_tokens - das_tokens
-        sample = sorted(missing)[:25]
-        assert len(missing) <= MAX_COMMENT_TOKENS_DROPPED, (
-            f"dasmos dropped {len(missing)} unique comment tokens "
-            f"present in the py8dis reference (allowed: "
-            f"{MAX_COMMENT_TOKENS_DROPPED}). Sample: {sample}. "
-            f"If you've fixed a fidelity gap, lower "
-            f"MAX_COMMENT_TOKENS_DROPPED to the new observed value."
-        )
-
-    def test_overlapping_move_sites_classify_as_instructions(
-        self, tmp_path,
+    Pinning these literal forms guards against regression of
+    either fix — the round-trip oracle alone wouldn't catch
+    a backslide because ``equb`` and the recovered instruction
+    assemble to the same bytes.
+    """
+    if _BEEBASM is None:
+        pytest.skip("beebasm not found")
+    output_dirpath = _run_dasmos_driver(tmp_path)
+    asm_text = (output_dirpath / "nfs-3.34.asm").read_text(encoding="utf-8")
+    for expected in (
+        "bcs accept_new_claim",
+        "beq string_buf_done",
+        "bne strnh",
+        "sta tube_data_register_4",
     ):
-        """The four NFS-3.34 sites historically rendered as ``equb``
-        bytes (Bug A: declared-geometry straddle false-positive at
-        &9367; Bug B: runtime-vs-binary tracer confusion at the
-        moved-subroutine bytes &9508/&950c/&962a). After the
-        effective-ownership straddle check + runtime-aware target
-        computation, all four classify as proper instructions.
-
-        Pinning these literal forms guards against regression of
-        either fix — the round-trip oracle alone wouldn't catch
-        a backslide because ``equb`` and the recovered instruction
-        assemble to the same bytes.
-        """
-        if _BEEBASM is None:
-            pytest.skip("beebasm not found")
-
-        output_dirpath = _run_dasmos_driver(tmp_path)
-        asm_text = (output_dirpath / "nfs-3.34.asm").read_text(encoding="utf-8")
-
-        for expected in (
-            "bcs accept_new_claim",
-            "beq string_buf_done",
-            "bne strnh",
-            "sta tube_data_register_4",
-        ):
-            assert expected in asm_text, (
-                f"expected `{expected}` in rendered asm — regression of "
-                f"the overlapping-move tracer fix?"
-            )
+        assert expected in asm_text, (
+            f"expected `{expected}` in rendered asm — regression of "
+            f"the overlapping-move tracer fix?"
+        )

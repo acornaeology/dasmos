@@ -7,15 +7,16 @@ class, not just a later version). 16 KB sideways ROM mapped at
 set as the older 4.08.53; together they exercise dasmos against
 the Model-B ANFS code paths distinct from the Master-only 4.21.
 
-Mirrors :mod:`tests.test_anfs_421_roundtrip` (the lighter test
-variant — no JSON parity ratcheting; NFS-3.65 covers that oracle
-role).
+The remaining test class ports the unmodified original py8dis
+driver via ``scripts/py8dis2dasmos.py``, runs it, and asserts the
+beebasm-reassembled output is byte-identical with the original
+ROM. py8dis-parity tests that used to live alongside it were
+removed once the migration completed.
 """
 
 import hashlib
 import importlib.util
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -27,14 +28,10 @@ import pytest
 _FIXTURES = Path(__file__).parent / "fixtures" / "acorn-anfs-4.18"
 ROM_PATH = _FIXTURES / "anfs-4.18.rom"
 ORIGINAL_DRIVER_PATH = _FIXTURES / "disasm_anfs_418.py"
-PY8DIS_REFERENCE_PATH = _FIXTURES / "py8dis_reference_anfs-4.18.asm"
-PY8DIS_REFERENCE_JSON_PATH = _FIXTURES / "py8dis_reference_anfs-4.18.json"
 
 ROM_SIZE = 16384
 ROM_LOAD_ADDR = 0x8000
 ROM_MD5 = "0926bcb6f47458f8c4aed5364ff1122d"
-PY8DIS_REFERENCE_MD5 = "3a60943dc999bac79e8a7c9859cdbf35"
-PY8DIS_REFERENCE_JSON_MD5 = "28f455b5b5186f27bba54d74078127fa"
 
 _PORTER_PATH = Path(__file__).parent.parent / "scripts" / "py8dis2dasmos.py"
 _porter_spec = importlib.util.spec_from_file_location(
@@ -123,107 +120,3 @@ class TestAnfs418PorterEndToEnd:
         )
 
 
-# ---------------------------------------------------------------------------
-# py8dis annotation-content parity
-# ---------------------------------------------------------------------------
-
-# Initial ratchet measured when the ANFS-4.18 fixture was first
-# vendored. Residuals are mostly free-text words from py8dis
-# annotations dasmos doesn't emit (``american``, ``master``,
-# ``internal``, ``terminal``, …) plus a couple of URL fragments
-# py8dis embeds in narrative comments (``beebwiki``, ``https``)
-# and one specific hex address. ``fdc_1770_data`` is a deliberate
-# divergence: py8dis's ``bbc()`` registered the 1770 FDC names
-# defensively even for ROMs that don't touch the FDC, so the
-# label appeared in the reference equate header. ANFS is a pure
-# network filing system — it does NOT touch the FDC — so dasmos
-# correctly omits the name. The token thus appears in the py8dis
-# reference but not in dasmos output, contributing one more to
-# this ratchet.
-# Lowered 14 → 9 on 2026-05-06 when OSBYTE/OSWORD descriptions
-# replaced the mechanical-derivation inline comments (bucket 1 of
-# the comment-vocab parity workstream).
-MAX_COMMENT_TOKENS_DROPPED = 2
-
-_COMMENT_TOKEN_RE = re.compile(r"[a-z_][a-z_0-9]{3,}")
-
-
-def _comment_text(asm_text: str) -> str:
-    """Keep EVERY ``;``-introduced chunk so the byte-column annotation
-    contributes addresses/symbols to the parity corpus.
-    """
-    parts: list[str] = []
-    for line in asm_text.splitlines():
-        chunks = line.split(";")
-        parts.extend(chunks[1:])
-    return " ".join(parts).replace("`", "").lower()
-
-
-def _comment_tokens(asm_text: str) -> set[str]:
-    return set(_COMMENT_TOKEN_RE.findall(_comment_text(asm_text)))
-
-
-def _run_dasmos_driver(tmp_path) -> Path:
-    """Port the ANFS 4.18 driver via py8dis2dasmos, run it, return
-    the output dir.
-    """
-    # ANFS is a pure network filing system — no FDC env needed.
-    ported_src = _porter.port(ORIGINAL_DRIVER_PATH.read_text(encoding="utf-8"))
-    ported_filepath = tmp_path / "ported_driver.py"
-    ported_filepath.write_text(ported_src, encoding="utf-8")
-    output_dirpath = tmp_path / "out"
-    output_dirpath.mkdir()
-    env = os.environ.copy()
-    env["FANTASM_ROM"] = str(ROM_PATH)
-    env["FANTASM_OUTPUT_DIR"] = str(output_dirpath)
-    result = subprocess.run(
-        [sys.executable, str(ported_filepath)],
-        capture_output=True, text=True, cwd=str(tmp_path), env=env,
-    )
-    assert result.returncode == 0, (
-        f"ported driver failed:\n=== stderr ===\n{result.stderr}"
-    )
-    return output_dirpath
-
-
-@pytest.mark.beebasm
-@pytest.mark.py8dis_parity
-class TestAnfs418Py8disParity:
-
-    def test_reference_fixture_pinned(self):
-        actual = hashlib.md5(PY8DIS_REFERENCE_PATH.read_bytes()).hexdigest()
-        assert actual == PY8DIS_REFERENCE_MD5, (
-            f"py8dis reference output md5 changed ({actual}); "
-            f"either re-vendor and update PY8DIS_REFERENCE_MD5, or "
-            f"investigate why the upstream output is different."
-        )
-
-    def test_reference_json_fixture_pinned(self):
-        actual = hashlib.md5(
-            PY8DIS_REFERENCE_JSON_PATH.read_bytes()
-        ).hexdigest()
-        assert actual == PY8DIS_REFERENCE_JSON_MD5, (
-            f"py8dis reference JSON md5 changed ({actual}); re-vendor "
-            f"with the py8dis fork's get_structured() output and "
-            f"update PY8DIS_REFERENCE_JSON_MD5."
-        )
-
-    def test_comment_vocabulary_covers_py8dis(self, tmp_path):
-        if _BEEBASM is None:
-            pytest.skip("beebasm not found")
-
-        output_dirpath = _run_dasmos_driver(tmp_path)
-        candidate_filepath = output_dirpath / "anfs-4.18.asm"
-
-        ref_tokens = _comment_tokens(PY8DIS_REFERENCE_PATH.read_text(encoding="utf-8"))
-        das_tokens = _comment_tokens(candidate_filepath.read_text(encoding="utf-8"))
-
-        missing = ref_tokens - das_tokens
-        sample = sorted(missing)[:25]
-        assert len(missing) <= MAX_COMMENT_TOKENS_DROPPED, (
-            f"dasmos dropped {len(missing)} unique comment tokens "
-            f"present in the py8dis reference (allowed: "
-            f"{MAX_COMMENT_TOKENS_DROPPED}). Sample: {sample}. "
-            f"If you've fixed a fidelity gap, lower "
-            f"MAX_COMMENT_TOKENS_DROPPED to the new observed value."
-        )
