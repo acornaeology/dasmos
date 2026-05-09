@@ -2,7 +2,7 @@
   <img src="https://raw.githubusercontent.com/acornaeology/dasmos/master/docs/_static/dasmos-banner.svg" alt="Dasmos — an extensible tracing disassembler for classic CPUs">
 </p>
 
-An extensible tracing disassembler for classic CPUs, version `1.1.0`.
+An extensible tracing disassembler for classic CPUs, version `1.2.0`.
 
 <p align="center">
   <a href="https://pypi.org/project/dasmos/"><img src="https://img.shields.io/pypi/v/dasmos.svg" alt="PyPI"></a>

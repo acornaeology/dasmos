@@ -4,7 +4,7 @@ The top-level package re-exports the public API. Consumers should import
 from :mod:`dasmos` rather than reaching into sub-modules.
 """
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 from dasmos.core.annotations import Align, Annotation, AnnotationStore, Banner, Comment
 from dasmos.core.format_hint import FormatHint
