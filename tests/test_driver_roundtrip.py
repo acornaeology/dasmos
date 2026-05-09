@@ -702,6 +702,30 @@ class TestAddressingModesViaSource:
         text = roundtrip_via_beebasm(source, 0x8000, configure)
         assert "lda #%10101010" in text
 
+    def test_format_hint_binary_on_byte_data_produces_percent_form(
+        self, roundtrip_via_beebasm,
+    ):
+        # Same hint path as the immediate-operand case above, but
+        # applied to a Byte-classified address. The renderer should
+        # consult format_hints in _render_byte (not just in the
+        # operand path) so bitfield bytes like the sideways-ROM
+        # ``rom_type`` byte at &8006 render as ``equb %10000010``
+        # instead of ``equb &82``.
+        from dasmos.core.format_hint import FormatHint
+        source = """
+            org &8000
+        .start
+            equb &82
+        save "step1.bin", start, P%
+        """
+
+        def configure(d):
+            d.byte(0x8000, 1)
+            d.format_hint(0x8000, FormatHint.BINARY)
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        assert "equb %10000010" in text
+
     def test_format_hint_octal_warns_and_falls_back_in_beebasm(
         self, roundtrip_via_beebasm,
     ):

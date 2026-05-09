@@ -2020,11 +2020,18 @@ class BeebasmRenderer(TextRenderer):
     def _render_byte(self, ir, binary_addr, c: Byte) -> list[str]:
         """Render a Byte block as one or more ``equb`` lines.
 
-        Per-byte expression overrides (registered via ``d.expr(addr,
-        expr)``) substitute for the literal hex when present. Used by
-        the ``acorn_sideways_rom`` environment to render the
-        copyright-offset byte at ``&8007`` as ``equb copyright -
-        rom_header`` instead of its literal value.
+        Per-byte resolution order:
+
+        1. Expression override (``d.expr(addr, expr)``) — used by the
+           ``acorn_sideways_rom`` environment to render the copyright-
+           offset byte at ``&8007`` as
+           ``equb copyright - rom_header``.
+        2. Format hint (``d.format_hint(addr, FormatHint.BINARY)``)
+           — dispatched through the same hint switch as the
+           operand-immediate path, so a byte tagged ``BINARY``
+           renders as ``%10000010`` instead of ``&82``. Used for
+           bitfield bytes like the sideways-ROM ``rom_type`` byte.
+        3. Default — ``hex2`` literal.
         """
         cols = c.cols() or self.default_byte_cols
         n = c.length()
@@ -2036,8 +2043,15 @@ class BeebasmRenderer(TextRenderer):
                 expr = ir.expressions.get_or_none(addr)
                 if expr is not None:
                     parts.append(expr)
+                    continue
+                value = ir.memory.get_u8(addr)
+                hint = ir.format_hints.get_or_none(addr)
+                if hint is not None:
+                    parts.append(
+                        self._render_hinted_immediate(hint, value, addr)
+                    )
                 else:
-                    parts.append(self.hex2(ir.memory.get_u8(addr)))
+                    parts.append(self.hex2(value))
             lines.append(f"    {self.byte_prefix()}{', '.join(parts)}")
         return lines
 
