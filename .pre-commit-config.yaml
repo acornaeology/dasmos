@@ -1,9 +1,9 @@
 repos:
   - repo: local
     hooks:
-      - id: generate-readme-check
-        name: README.md is in sync with the generator
-        entry: uv run python scripts/generate_readme.py --check
+      - id: generate-readme-update
+        name: Regenerate README.md
+        entry: bash -c 'uv run python scripts/generate_readme.py && git add README.md'
         language: system
         pass_filenames: false
         files: |
