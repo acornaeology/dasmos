@@ -343,26 +343,27 @@ class TestAcornSidewaysRom:
         text = str(d.disassemble().render("beebasm"))
         assert ".copyright" in text
 
-    def test_header_comment_is_auto_generated(self, tmp_path):
-        # The env-attached "Sideways ROM header" comment at &8000 is
-        # address-metadata, not user-authored content. It must carry
+    def test_header_annotations_are_auto_generated(self, tmp_path):
+        # All env-attached header annotations at &8000 are address-
+        # metadata, not user-authored content. They must carry
         # auto_generated=True so a driver-supplied banner at the same
-        # address doesn't trigger the duplicate-comment warning.
-        from dasmos.core.annotations import Comment
+        # address doesn't trigger the duplicate warning.
+        from dasmos.core.annotations import Banner, Comment
         d = self._make_loaded_disassembler(tmp_path, self._build_rom())
         d.use_environment("acorn_sideways_rom")
-        comments = [
-            e for e in d.annotations.get(0x8000) if isinstance(e, Comment)
+        bucket = d.annotations.get(0x8000)
+        env_attached = [
+            a for a in bucket if isinstance(a, (Comment, Banner))
         ]
-        env_headers = [c for c in comments if "Sideways ROM header" in c.text]
-        assert env_headers
-        assert all(c.auto_generated for c in env_headers)
+        assert env_attached, "expected env to attach at least one annotation"
+        assert all(getattr(a, "auto_generated", False) for a in env_attached)
 
     def test_driver_banner_no_dup_warning_with_env_header(self, tmp_path):
-        # A driver-supplied per-version banner at &8000 stacks
-        # alongside the env's "Sideways ROM header" without firing the
-        # AnnotationStore duplicate-comment warning (the warning
-        # targets driver-authoring bugs, not env-driven layering).
+        # A driver-supplied per-version comment at &8000 stacks
+        # alongside the env's auto-generated header annotations
+        # without firing the AnnotationStore duplicate-comment warning
+        # (the warning targets driver-authoring bugs, not env-driven
+        # layering).
         import warnings
         d = self._make_loaded_disassembler(tmp_path, self._build_rom())
         d.use_environment("acorn_sideways_rom")
@@ -374,10 +375,11 @@ class TestAcornSidewaysRom:
         self, tmp_path,
     ):
         # A driver attaching ``suppresses_auto=True`` at &8000
-        # *before* activating the env causes the env to skip its own
-        # header line entirely — the driver's text becomes the sole
-        # comment at that address.
-        from dasmos.core.annotations import Comment
+        # *before* activating the env causes the env to skip its
+        # auto-attachments at that address — the driver's text
+        # becomes the sole user-authored comment, and the env's
+        # rom_title comment + language-entry banner are not emitted.
+        from dasmos.core.annotations import Banner, Comment
         d = self._make_loaded_disassembler(tmp_path, self._build_rom())
         d.comment(
             0x8000,
@@ -385,12 +387,235 @@ class TestAcornSidewaysRom:
             suppresses_auto=True,
         )
         d.use_environment("acorn_sideways_rom")
+        bucket = d.annotations.get(0x8000)
+        comments = [a for a in bucket if isinstance(a, Comment)]
+        banners = [a for a in bucket if isinstance(a, Banner)]
+        # Driver comment present.
+        assert any(
+            "NFS ROM 3.65 — full driver banner here" in c.text
+            for c in comments
+        )
+        # No env-attached auto comments or banners.
+        assert not any(getattr(a, "auto_generated", False) for a in comments)
+        assert not banners
+
+    def test_rom_title_kwarg_renders_atx_heading_at_8000(self, tmp_path):
+        from dasmos.core.annotations import Comment
+        d = self._make_loaded_disassembler(tmp_path, self._build_rom())
+        d.use_environment(
+            "acorn_sideways_rom",
+            rom_title="ANFS ROM 4.21 (variant 1)",
+        )
         comments = [
-            e for e in d.annotations.get(0x8000) if isinstance(e, Comment)
+            a for a in d.annotations.get(0x8000) if isinstance(a, Comment)
         ]
-        texts = [c.text for c in comments]
-        assert "NFS ROM 3.65 — full driver banner here" in texts
-        assert not any("Sideways ROM header" in t for t in texts)
+        # ATX heading marker — immune to consumer wrap (#3).
+        assert any(
+            c.text == "# ANFS ROM 4.21 (variant 1)" for c in comments
+        )
+
+    def test_rom_title_fallback_uses_title_bytes_and_version(self, tmp_path):
+        # Without rom_title, the env synthesises one from the title
+        # bytes + binary_version. _build_rom uses title=b"TestROM"
+        # and a binary_version of &10.
+        from dasmos.core.annotations import Comment
+        d = self._make_loaded_disassembler(
+            tmp_path, self._build_rom(title=b"TestROM"),
+        )
+        d.use_environment("acorn_sideways_rom")
+        comments = [
+            a for a in d.annotations.get(0x8000) if isinstance(a, Comment)
+        ]
+        # ATX prefix + title text + version literal somewhere in there.
+        assert any(c.text.startswith("# TestROM") for c in comments)
+
+    def test_language_entry_banner_describes_jmp_mode(self, tmp_path):
+        from dasmos.core.annotations import Align, Banner
+        d = self._make_loaded_disassembler(
+            tmp_path, self._build_rom(language_jmp=True),
+        )
+        d.use_environment("acorn_sideways_rom")
+        banners = [
+            a for a in d.annotations.get_for_align(0x8000, Align.AFTER_LABEL)
+            if isinstance(a, Banner)
+        ]
+        assert banners, "expected language-entry banner at &8000"
+        body = banners[0].description
+        assert "ROM declares itself a language" in body
+        assert "language_handler" in body
+
+    def test_language_entry_banner_describes_service_only_mode(self, tmp_path):
+        # Build a ROM with byte 0 = &00 to exercise the service-only
+        # branch. _build_rom(language_jmp=False) emits NOPs (&EA) —
+        # we want &00, so monkey-patch.
+        from dasmos.core.annotations import Align, Banner
+        rom = bytearray(self._build_rom(language_jmp=False))
+        rom[0] = 0x00
+        rom[1] = 0x00
+        rom[2] = 0x00
+        d = self._make_loaded_disassembler(tmp_path, bytes(rom))
+        d.use_environment("acorn_sideways_rom")
+        banners = [
+            a for a in d.annotations.get_for_align(0x8000, Align.AFTER_LABEL)
+            if isinstance(a, Banner)
+        ]
+        assert banners
+        body = banners[0].description
+        assert "service-only" in body.lower() or "Service-only" in body
+        assert "&00" in body
+
+    def test_service_entry_banner_at_8003(self, tmp_path):
+        from dasmos.core.annotations import Align, Banner
+        d = self._make_loaded_disassembler(tmp_path, self._build_rom())
+        d.use_environment("acorn_sideways_rom")
+        banners = [
+            a for a in d.annotations.get_for_align(0x8003, Align.AFTER_LABEL)
+            if isinstance(a, Banner)
+        ]
+        assert banners
+        body = banners[0].description
+        assert "service-call" in body.lower()
+
+    def test_rom_type_inline_decodes_flags_and_processor(self, tmp_path):
+        # _build_rom sets rom_type = &82 (Service entry + 6502-non-BASIC).
+        from dasmos.core.annotations import Align, Comment
+        d = self._make_loaded_disassembler(tmp_path, self._build_rom())
+        d.use_environment("acorn_sideways_rom")
+        inline = [
+            a for a in d.annotations.get_for_align(0x8006, Align.INLINE)
+            if isinstance(a, Comment)
+        ]
+        assert inline
+        text = inline[0].text
+        assert text.startswith("ROM type: ")
+        assert "Service entry" in text
+        assert "6502 (non-BASIC)" in text
+
+    def test_rom_type_inline_decodes_all_upper_bits(self, tmp_path):
+        # Set every flag bit + a recognised processor (Z80 = &08).
+        from dasmos.core.annotations import Align, Comment
+        rom = bytearray(self._build_rom())
+        rom[6] = 0xf8  # all four flags + Z80
+        d = self._make_loaded_disassembler(tmp_path, bytes(rom))
+        d.use_environment("acorn_sideways_rom")
+        text = next(
+            a.text for a in d.annotations.get_for_align(0x8006, Align.INLINE)
+            if isinstance(a, Comment)
+        )
+        assert "Service entry" in text
+        assert "Language entry" in text
+        assert "Tube relocation address present" in text
+        assert "Electron firmkey support" in text
+        assert "Z80" in text
+
+    def test_rom_type_inline_handles_unknown_processor(self, tmp_path):
+        # Processor encoding &7 isn't in the table — falls back to
+        # the verbatim hex form.
+        from dasmos.core.annotations import Align, Comment
+        rom = bytearray(self._build_rom())
+        rom[6] = 0x07
+        d = self._make_loaded_disassembler(tmp_path, bytes(rom))
+        d.use_environment("acorn_sideways_rom")
+        text = next(
+            a.text for a in d.annotations.get_for_align(0x8006, Align.INLINE)
+            if isinstance(a, Comment)
+        )
+        assert "processor &7" in text
+
+    def test_copyright_offset_inline_resolves_address(self, tmp_path):
+        from dasmos.core.annotations import Align, Comment
+        d = self._make_loaded_disassembler(tmp_path, self._build_rom())
+        d.use_environment("acorn_sideways_rom")
+        inline = next(
+            a.text for a in d.annotations.get_for_align(0x8007, Align.INLINE)
+            if isinstance(a, Comment)
+        )
+        assert "Offset of NUL preceding copyright" in inline
+        assert "copyright at &80" in inline.lower()
+
+    def test_binary_version_inline_emitted(self, tmp_path):
+        from dasmos.core.annotations import Align, Comment
+        d = self._make_loaded_disassembler(tmp_path, self._build_rom())
+        d.use_environment("acorn_sideways_rom")
+        inline = next(
+            a.text for a in d.annotations.get_for_align(0x8008, Align.INLINE)
+            if isinstance(a, Comment)
+        )
+        assert inline.startswith("Binary version:")
+
+    def test_per_field_suppresses_auto_skips_only_that_field(self, tmp_path):
+        # Driver suppresses the rom_type inline at &8006 only;
+        # other auto-annotations (binary_version inline at &8008 etc.)
+        # should still appear.
+        from dasmos.core.annotations import Align, Comment
+        d = self._make_loaded_disassembler(tmp_path, self._build_rom())
+        d.comment(
+            0x8006,
+            "Custom rom_type explanation",
+            align=Align.INLINE,
+            suppresses_auto=True,
+        )
+        d.use_environment("acorn_sideways_rom")
+        rom_type_inline = [
+            a for a in d.annotations.get_for_align(0x8006, Align.INLINE)
+            if isinstance(a, Comment)
+        ]
+        rom_type_texts = [c.text for c in rom_type_inline]
+        # Driver text present; env's "ROM type:" auto-text absent.
+        assert "Custom rom_type explanation" in rom_type_texts
+        assert not any(t.startswith("ROM type: ") for t in rom_type_texts)
+        # binary_version inline at &8008 is unaffected.
+        bv_inline = [
+            a for a in d.annotations.get_for_align(0x8008, Align.INLINE)
+            if isinstance(a, Comment)
+        ]
+        assert any(c.text.startswith("Binary version:") for c in bv_inline)
+
+    def test_tube_reloc_addr_labelled_when_rom_type_bit_5_set(self, tmp_path):
+        # With rom_type bit 5 set, the env should label the 4 bytes
+        # after the copyright NUL as ``tube_reloc_addr`` and attach
+        # an inline note explaining the format.
+        from dasmos.core.annotations import Align, Comment
+        # Build a ROM with rom_type = &A2 (Service + Tube + 6502),
+        # extra padding after copyright to fit the 4-byte field.
+        rom = bytearray(self._build_rom())
+        rom[6] = 0xa2
+        d = self._make_loaded_disassembler(tmp_path, bytes(rom))
+        d.use_environment("acorn_sideways_rom")
+        # tube_reloc_addr label should exist within the ROM range.
+        found = False
+        for addr in range(0x8000, 0x8100):
+            label = d.labels.get_label(addr)
+            if label is not None and "tube_reloc_addr" in label.explicit_name_texts():
+                found = True
+                # Inline note at the same address.
+                inline = [
+                    a for a in d.annotations.get_for_align(addr, Align.INLINE)
+                    if isinstance(a, Comment)
+                ]
+                assert any("Tube relocation address" in c.text for c in inline)
+                break
+        assert found, "tube_reloc_addr label not registered"
+
+    def test_tube_reloc_addr_skipped_when_bit_5_clear(self, tmp_path):
+        # Default _build_rom has rom_type = &82 (no Tube bit) — no
+        # tube_reloc_addr label should appear.
+        d = self._make_loaded_disassembler(tmp_path, self._build_rom())
+        d.use_environment("acorn_sideways_rom")
+        for addr in range(0x8000, 0x8100):
+            label = d.labels.get_label(addr)
+            if label is not None:
+                assert "tube_reloc_addr" not in label.explicit_name_texts()
+
+    def test_use_environment_kwargs_rejected_with_instance(self, tmp_path):
+        # use_environment forwards kwargs to create_environment; only
+        # valid with a string env name. Passing kwargs alongside an
+        # already-constructed Environment instance must raise.
+        from dasmos.environment import create_environment
+        d = self._make_loaded_disassembler(tmp_path, self._build_rom())
+        instance = create_environment("acorn_sideways_rom")
+        with pytest.raises(TypeError, match="forwarded"):
+            d.use_environment(instance, rom_title="x")
 
     def test_layered_with_acorn_mos(self, tmp_path):
         # The two acorn environments compose: the labels from each

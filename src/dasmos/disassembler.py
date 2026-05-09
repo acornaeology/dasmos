@@ -333,12 +333,21 @@ class Disassembler:
 
     # -- driver-script API: environments --------------------------------
 
-    def use_environment(self, env) -> None:
+    def use_environment(self, env, **kwargs) -> None:
         """Activate an environment plug-in on this disassembler.
 
         ``env`` may be a string (the registered name, resolved via
         Stevedore) or an :class:`~dasmos.environment.Environment`
         instance.
+
+        Any extra keyword arguments are forwarded to the Environment
+        subclass constructor — only valid when ``env`` is a string,
+        since pre-constructed instances already have their
+        configuration baked in. Use this for envs that take
+        per-activation parameters, e.g.::
+
+            d.use_environment("acorn_sideways_rom",
+                              rom_title="ANFS ROM 4.21 (variant 1)")
 
         Environments are **composable**: calling ``use_environment``
         more than once layers their effects in order. Activating the
@@ -354,7 +363,13 @@ class Disassembler:
         from dasmos.environment import Environment, create_environment
         self._raise_if_disassembled("use_environment")
         if isinstance(env, str):
-            env = create_environment(env)
+            env = create_environment(env, **kwargs)
+        elif kwargs:
+            raise TypeError(
+                "use_environment kwargs are forwarded to the Environment "
+                "constructor; pass them only with a string env name, not "
+                "a pre-constructed Environment instance"
+            )
         if not isinstance(env, Environment):
             raise TypeError(
                 f"use_environment expected str or Environment, "
@@ -940,6 +955,7 @@ class Disassembler:
         on_entry: dict[str, str] | None = None,
         on_exit: dict[str, str] | None = None,
         align: Align = Align.BEFORE_LABEL,
+        auto_generated: bool = False,
         move: Move | None = None,
     ) -> None:
         """Attach a multi-line decorated comment block at
@@ -950,6 +966,12 @@ class Disassembler:
         the trace engine treating the address as code. See
         ``docs/design/commands-sweep-memo.md`` C2/C3 for the
         rationale.
+
+        ``auto_generated`` marks this banner as env-attached metadata
+        rather than user-authored content (parallel to the same kwarg
+        on :meth:`comment`). Suppresses the duplicate-annotation
+        warning when an env stacks a banner alongside a driver-
+        supplied one at the same address.
 
         For a subroutine that needs both visual separation AND
         entry-point registration, call :meth:`subroutine` with the
@@ -963,6 +985,7 @@ class Disassembler:
                 title=title, description=description,
                 on_entry=on_entry, on_exit=on_exit,
                 align=align,
+                auto_generated=auto_generated,
             ),
         )
 
