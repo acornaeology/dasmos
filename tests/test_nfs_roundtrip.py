@@ -189,23 +189,18 @@ MAX_EXTRA_FALL_THROUGHS = 25
 #   differences.
 # - ``expressions`` (~102): porter writes ``< (…)`` not ``<(…)``,
 #   plus the porter doesn't always emit a label name in expr text.
-# - ``comments_before`` (~85): residual differences in xref ref
-#   ordering and a few py8dis-only annotations.
 # - ``references`` (~80): py8dis preserves trace-insertion order;
 #   dasmos sorts numerically (a deliberate divergence — design
 #   improvement).
+# - ``comments_before``: ratchet removed in #16. Dasmos's per-align
+#   split (comments_before_label / comments_after_label /
+#   comments_before_line / comments_after_line / xref_summaries) no
+#   longer maps cleanly to py8dis's conflated comments_before field.
+#   A faithful comparison would need to reclassify py8dis's strings
+#   back into per-align buckets — heuristic guesswork, and parity
+#   is no longer load-bearing now that py8dis is decoupled.
 MAX_PER_ITEM_OPERAND_MISMATCHES = 2
 MAX_PER_ITEM_TARGET_LABEL_MISMATCHES = 0
-# Bumped 4 → 5 on 2026-05-06: bucket-2 post-call value-tables
-# (OSBYTE 0 → OS-version table, OSARGS 0/0 → FS-number table)
-# attach a Markdown-formatted standalone comment at the byte after
-# the call. py8dis-fork emits a plain indented value-list at the
-# same address; the rendered TEXT differs from dasmos's Markdown
-# pipe-table form, so the comments_before mismatch count goes up
-# at those addresses. Both surfaces describe the same data — the
-# divergence is a deliberate design improvement (Markdown lets the
-# site generator render a real HTML table downstream).
-MAX_PER_ITEM_COMMENTS_BEFORE_MISMATCHES = 5
 # References are compared as SETS (sort-order divergence is
 # deliberate — py8dis emits in trace-insertion order; dasmos picks
 # its own deterministic order). The ratchet bounds items where the
@@ -253,39 +248,6 @@ def _run_dasmos_driver(tmp_path) -> Path:
         f"ported driver failed:\n=== stderr ===\n{result.stderr}"
     )
     return output_dirpath
-
-
-_PY8DIS_BANNER_SEPARATOR = "*" * 87
-
-
-def _strip_py8dis_banner_pairs(comments_before: list[str]) -> list[str]:
-    """Drop the (separator, body) pairs py8dis emits in
-    ``comments_before`` for Banner annotations.
-
-    py8dis duplicates Banner content into the per-item
-    ``comments_before`` list AND into its top-level data-banner /
-    subroutine record. Dasmos surfaces Banner content only in
-    ``banners[]`` / ``subroutines[]`` (#15 — duplication forbidden).
-    To compare ``comments_before`` between the two without the
-    deliberate divergence swamping the ratchet, filter the py8dis
-    side: a 87-asterisk separator entry plus the entry immediately
-    after it (the title + description body) are atomic Banner
-    content; drop both.
-
-    Order preserved; non-banner entries (xref summaries, plain
-    Comment annotations) pass through unchanged.
-    """
-    out: list[str] = []
-    skip_next = False
-    for entry in comments_before:
-        if skip_next:
-            skip_next = False
-            continue
-        if entry == _PY8DIS_BANNER_SEPARATOR:
-            skip_next = True
-            continue
-        out.append(entry)
-    return out
 
 
 def _render_dasmos_json(tmp_path) -> dict:
@@ -495,7 +457,6 @@ class TestNfsPy8disParity:
     @pytest.mark.parametrize("field, ratchet", [
         ("operand", MAX_PER_ITEM_OPERAND_MISMATCHES),
         ("target_label", MAX_PER_ITEM_TARGET_LABEL_MISMATCHES),
-        ("comments_before", MAX_PER_ITEM_COMMENTS_BEFORE_MISMATCHES),
         ("expressions", MAX_PER_ITEM_EXPRESSIONS_MISMATCHES),
     ])
     def test_json_per_item_field_mismatches_ratchet(
@@ -507,16 +468,6 @@ class TestNfsPy8disParity:
 
         See ``MAX_PER_ITEM_*`` constants at the top of this file for
         the residual root causes of each gap.
-
-        For ``comments_before`` specifically: py8dis emits Banner
-        annotations as a (separator, body) pair inside the per-item
-        ``comments_before`` list, alongside the same Banner content
-        that also appears in the top-level ``banners[]`` array. That
-        duplication is forbidden in dasmos (#15) — Banners belong
-        only in ``banners[]``. The mismatch shape is therefore a
-        deliberate divergence; filter the py8dis side before
-        comparison so the ratchet still tracks real gaps without
-        being swamped by the divergence.
         """
         import json as _json
         ref = _json.loads(PY8DIS_REFERENCE_JSON_PATH.read_text(encoding="utf-8"))
@@ -524,22 +475,9 @@ class TestNfsPy8disParity:
         ref_by_addr = {it["addr"]: it for it in ref["items"]}
         das_by_addr = {it["addr"]: it for it in das["items"]}
         shared = set(ref_by_addr) & set(das_by_addr)
-
-        def get_field(item: dict, field_name: str):
-            value = item.get(field_name)
-            if field_name == "comments_before":
-                # Filter banner pairs from py8dis's side (deliberate
-                # divergence — see docstring). Normalise None to []
-                # afterwards so an address where py8dis emits only a
-                # banner (which filters to []) compares equal to one
-                # where dasmos omits the field entirely (None).
-                value = _strip_py8dis_banner_pairs(value or [])
-            return value
-
         mismatches = sum(
             1 for addr in shared
-            if get_field(ref_by_addr[addr], field)
-            != get_field(das_by_addr[addr], field)
+            if ref_by_addr[addr].get(field) != das_by_addr[addr].get(field)
         )
         assert mismatches <= ratchet, (
             f"dasmos per-item mismatches on '{field}': {mismatches} "

@@ -598,9 +598,10 @@ class TestSubroutinesSection:
     def test_banner_does_not_duplicate_into_per_item_comments(self, tmp_path):
         # A Banner annotation belongs only in the top-level ``banners[]``
         # array (or in ``subroutines[]`` for sub entries). It must NOT
-        # also appear as a stringified separator+body in the per-item
-        # ``comments_before`` / ``comment_inline`` / ``comments_after``
-        # fields — otherwise consumers have to de-dupe by address (#15).
+        # also appear as a stringified separator+body in any of the
+        # per-item ``comments_*_label`` / ``comments_*_line`` /
+        # ``comment_inline`` fields — otherwise consumers have to
+        # de-dupe by address (#15).
         from dasmos.core.annotations import Align
         bin_path = tmp_path / "p.bin"
         bin_path.write_bytes(bytes([0x00, 0x00, 0x00, 0x00]))
@@ -608,9 +609,6 @@ class TestSubroutinesSection:
         d.load(bin_path, 0x8000)
         d.label(0x8000, "table_x")
         d.byte(0x8000, 4)
-        # Attach a Banner at every align that the JSON renderer reads
-        # from per-item comment buckets, to confirm the skip is
-        # comprehensive.
         d.banner(0x8000, title="Before-label", description="x",
                  align=Align.BEFORE_LABEL)
         d.banner(0x8000, title="After-label", description="x",
@@ -620,33 +618,24 @@ class TestSubroutinesSection:
         d.banner(0x8000, title="After-line", description="x",
                  align=Align.AFTER_LINE)
         out = d.disassemble().render(JsonRenderer())
-        # All the banners surface in banners[] (first-banner-per-address
-        # rule means just the first one wins for now — the goal of this
-        # test is the *absence* of duplication on the item).
         item = next(it for it in out.data["items"] if it["addr"] == 0x8000)
-        # No banner content leaks into the per-item comment fields.
-        before_text = "\n".join(item.get("comments_before", []))
-        after_text = "\n".join(item.get("comments_after", []))
+        all_comment_text = "\n".join(
+            "\n".join(item.get(field, []))
+            for field in (
+                "comments_before_label", "comments_after_label",
+                "comments_before_line", "comments_after_line",
+            )
+        )
         for marker in ("Before-label", "After-label", "Before-line", "After-line"):
-            assert marker not in before_text, (
-                f"banner content {marker!r} leaked into comments_before"
+            assert marker not in all_comment_text, (
+                f"banner content {marker!r} leaked into per-item comments"
             )
-            assert marker not in after_text, (
-                f"banner content {marker!r} leaked into comments_after"
-            )
-        # And no separator-of-asterisks string either (the previous
-        # behaviour prepended ``"*" * 87`` to banner content).
-        assert "*" * 50 not in before_text
-        assert "*" * 50 not in after_text
+        assert "*" * 50 not in all_comment_text
 
-    def test_comment_at_after_label_still_appears_in_comments_after(
-        self, tmp_path,
-    ):
-        # The skip is Banner-specific. Plain Comment annotations at
-        # AFTER_LABEL / AFTER_LINE / BEFORE_LABEL / BEFORE_LINE must
-        # still surface in the corresponding per-item comment fields,
-        # so the negative assertion above can't accidentally regress
-        # other annotation types.
+    def test_comments_split_by_align_into_distinct_fields(self, tmp_path):
+        # The 5-way Align enum maps to per-align JSON fields (#16).
+        # Each plain Comment lands in exactly the field matching its
+        # align, with no conflation between label and line buckets.
         from dasmos.core.annotations import Align
         bin_path = tmp_path / "p.bin"
         bin_path.write_bytes(bytes([0x60]))
@@ -657,14 +646,94 @@ class TestSubroutinesSection:
         d.comment(0x8000, "After-label note", align=Align.AFTER_LABEL)
         d.comment(0x8000, "Before-line note", align=Align.BEFORE_LINE)
         d.comment(0x8000, "After-line note", align=Align.AFTER_LINE)
+        d.comment(0x8000, "Inline note", align=Align.INLINE)
         out = d.disassemble().render(JsonRenderer())
         item = next(it for it in out.data["items"] if it["addr"] == 0x8000)
-        before_text = "\n".join(item.get("comments_before", []))
-        after_text = "\n".join(item.get("comments_after", []))
-        assert "Before-label note" in before_text
-        assert "Before-line note" in before_text
-        assert "After-label note" in after_text
-        assert "After-line note" in after_text
+        assert item["comments_before_label"] == ["Before-label note"]
+        assert item["comments_after_label"] == ["After-label note"]
+        assert item["comments_before_line"] == ["Before-line note"]
+        assert item["comments_after_line"] == ["After-line note"]
+        assert item["comment_inline"] == "Inline note"
+        # Old union field names are gone (clean break per #16).
+        assert "comments_before" not in item
+        assert "comments_after" not in item
+
+    def test_per_align_fields_omitted_when_empty(self, tmp_path):
+        # Per the schema-thrift convention used elsewhere in the
+        # JSON output, empty per-align buckets are omitted entirely
+        # rather than emitted as ``[]``.
+        from dasmos.core.annotations import Align
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0x60]))
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.entry(0x8000, name="start")
+        d.comment(0x8000, "Only after-label", align=Align.AFTER_LABEL)
+        out = d.disassemble().render(JsonRenderer())
+        item = next(it for it in out.data["items"] if it["addr"] == 0x8000)
+        assert item["comments_after_label"] == ["Only after-label"]
+        for absent in (
+            "comments_before_label", "comments_before_line",
+            "comments_after_line", "comment_inline",
+        ):
+            assert absent not in item, f"{absent} should be omitted"
+
+    def test_xref_summaries_field_separate_from_user_comments(self, tmp_path):
+        # Xref summary text is auto-generated metadata (#16) and lives
+        # in its own ``xref_summaries`` field rather than mixed into
+        # the user-comment buckets the way it used to be in
+        # ``comments_before``.
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0x20, 0x05, 0x80, 0xea, 0x60, 0x60]))
+        # JSR &8005 from &8000; RTS at &8005. The labelled target
+        # gets an xref summary citing the JSR.
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.entry(0x8000, name="start")
+        d.label(0x8005, "target")
+        out = d.disassemble().render(JsonRenderer())
+        target_item = next(it for it in out.data["items"] if it["addr"] == 0x8005)
+        assert "xref_summaries" in target_item
+        assert any(
+            "referenced" in s and "&8005" in s
+            for s in target_item["xref_summaries"]
+        )
+        # Xref text doesn't leak into user-comment fields.
+        for field in (
+            "comments_before_label", "comments_after_label",
+            "comments_before_line", "comments_after_line",
+        ):
+            for entry in target_item.get(field, []):
+                assert "referenced" not in entry, (
+                    f"xref text leaked into {field}: {entry!r}"
+                )
+
+    def test_banner_record_carries_align_field(self, tmp_path):
+        # banners[] records expose the banner's align so consumers
+        # can render at the correct visual position (#16). Lowercase
+        # enum value matching the format_hints convention.
+        from dasmos.core.annotations import Align
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0x00] * 4))
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.label(0x8000, "table_x")
+        d.banner(0x8000, title="Header card", description="...",
+                 align=Align.AFTER_LABEL)
+        out = d.disassemble().render(JsonRenderer())
+        entry = next(b for b in out.data["banners"] if b["addr"] == 0x8000)
+        assert entry["align"] == "after_label"
+
+    def test_banner_record_align_default_is_before_label(self, tmp_path):
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0x00] * 4))
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.label(0x8000, "table_x")
+        d.banner(0x8000, title="Default-align banner", description="...")
+        out = d.disassemble().render(JsonRenderer())
+        entry = next(b for b in out.data["banners"] if b["addr"] == 0x8000)
+        assert entry["align"] == "before_label"
 
     def test_relocated_sub_keeps_binary_addr(self, tmp_path):
         # When a subroutine is in a relocated region, the binary
@@ -774,7 +843,7 @@ class TestSetextHeadingNormalisation:
         d.comment(0x8000, "ANFS ROM 4.21\n=============\n\nbody.")
         out = d.disassemble().render(JsonRenderer())
         item = next(it for it in out.data["items"] if it["addr"] == 0x8000)
-        joined = "\n".join(item.get("comments_before", []))
+        joined = "\n".join(item.get("comments_before_label", []))
         assert "# ANFS ROM 4.21" in joined
         assert "=============" not in joined
 
@@ -819,5 +888,5 @@ class TestSetextHeadingNormalisation:
         out = d.disassemble().render(JsonRenderer())
         item = next(it for it in out.data["items"] if it["addr"] == 0x8000)
         assert "Just a single line of prose." in item.get(
-            "comments_before", [],
+            "comments_before_label", [],
         )

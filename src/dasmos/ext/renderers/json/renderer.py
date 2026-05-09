@@ -7,8 +7,10 @@ Emits a JSON-serialisable dictionary:
     {
       "meta": {"load_addr": int, "end_addr": int},
       "constants": [{"name": str, "value": int, "comment": str?}, ...],
-      "subroutines": [{"addr": int, "name": str?, ..., "fall_through": True?}],
-      "banners": [{"addr": int, "title": str?, "description": str?, ...}],
+      "subroutines": [{"addr": int, "name": str?, ..., "fall_through": True?,
+                       "align": "before_label"|...?}],
+      "banners": [{"addr": int, "title": str?, "description": str?,
+                   "align": "before_label"|"after_label"|"before_line"|"after_line", ...}],
       "external_labels": {"name": int, ...},
       "memory_map": [{"addr": int, "name": str, "length": int?, ...}],
       "items": [
@@ -18,13 +20,22 @@ Emits a JSON-serialisable dictionary:
           "binary_addr": int?,     # only if differs from runtime_addr
           "labels": [str, ...]?,
           "sub_labels": {addr: [str, ...]}?,
-          "comments_before": [str, ...]?,
-          "comment_inline": str?,
-          "comments_after": [str, ...]?,
+          # Per-align comment buckets — full Align distinction
+          # preserved (#16). Each list is per-byte-offset order.
+          "comments_before_label": [str, ...]?,
+          "comments_after_label":  [str, ...]?,
+          "comments_before_line":  [str, ...]?,
+          "comments_after_line":   [str, ...]?,
+          "comment_inline":        str?,
+          # Auto-generated cross-reference summary (one entry per
+          # labelled byte address with incoming references), kept
+          # separate from user comments (#16).
+          "xref_summaries": [str, ...]?,
           "references": [int, ...]?,
           "type": "code"|"string"|"word"|"fill"|"byte",
           # type-specific: mnemonic/operand/target/target_label,
-          #                values/expressions, value/length, string
+          #                values/expressions, value/length, string,
+          #                format_hints, format_hint
         }
       ]
     }
@@ -265,6 +276,10 @@ class JsonRenderer(Renderer[StructuredOutput]):
                         reg: markdown_normalize_headings(text)
                         for reg, text in ann.on_exit.items()
                     }
+                # Surface the banner's align so consumers can render
+                # at the correct visual position (#16). Lowercase
+                # enum value matching the format_hints convention.
+                entry["align"] = ann.align.value
                 result.append(entry)
                 # First banner per address wins; ignore extras.
                 break
@@ -386,23 +401,31 @@ class JsonRenderer(Renderer[StructuredOutput]):
         if sub_labels:
             entry["sub_labels"] = sub_labels
 
-        # ``comments_before`` is emitted in PER-BYTE-OFFSET order:
-        # for each byte position within the classification, output
-        # the annotations at that position, THEN the xref summary
-        # for that position. This interleaves the xref for a sub-
-        # label (e.g. ``language_handler_lo`` at offset 1 of a JMP)
-        # with any annotations attached to the same offset, rather
-        # than bulk-appending xrefs at the end.
-        cb = self._build_comments_before(ir, binary_addr, length)
-        if cb:
-            entry["comments_before"] = cb
-        # INLINE / AFTER annotations are bulk-aggregated since they
-        # don't interleave with xref summaries.
-        ci, ca = self._gather_inline_after(ir, binary_addr, length)
+        # Per-item comment fields preserve dasmos's full 5-way
+        # ``Align`` distinction (#16). Each align bucket gets its own
+        # field; consumers read the right one and render at the
+        # corresponding visual position. ``comment_inline`` stays
+        # singular (always one trailing comment per line in beebasm).
+        # The xref summary (auto-generated, not user-authored) lives
+        # in its own ``xref_summaries`` field rather than being mixed
+        # into a comment list.
+        cb_label, ca_label, cb_line, ca_line = self._build_comments_split(
+            ir, binary_addr, length,
+        )
+        if cb_label:
+            entry["comments_before_label"] = cb_label
+        if ca_label:
+            entry["comments_after_label"] = ca_label
+        if cb_line:
+            entry["comments_before_line"] = cb_line
+        if ca_line:
+            entry["comments_after_line"] = ca_line
+        ci = self._gather_inline(ir, binary_addr, length)
         if ci:
             entry["comment_inline"] = ci
-        if ca:
-            entry["comments_after"] = ca
+        xrefs = self._build_xref_summaries(ir, binary_addr, length)
+        if xrefs:
+            entry["xref_summaries"] = xrefs
 
         # Cross-references — runtime addrs that reference this label.
         if label is not None and label.references:
@@ -762,47 +785,64 @@ class JsonRenderer(Renderer[StructuredOutput]):
                 out.append(None)
         return out if has_any else None
 
-    def _build_comments_before(
+    def _build_comments_split(
         self, ir, binary_addr: int, length: int,
-    ) -> list[str]:
-        """Build the ``comments_before`` list, interleaving the
-        xref summary for each byte offset with the annotations
-        attached at that offset.
+    ) -> tuple[list[str], list[str], list[str], list[str]]:
+        """Build the four per-align comment lists for an item:
+        ``(before_label, after_label, before_line, after_line)``.
 
-        For each byte position within the classification:
+        Each list is collected in PER-BYTE-OFFSET order: for each
+        byte position within the classification, walk the matching
+        align bucket. This preserves the cross-byte interleaving
+        consumers may need to render mid-instruction labels' comments
+        in the right local order.
 
-        1. ``BEFORE_LABEL`` annotations (banner separator + title +
-           description, freeform comments registered with the
-           default alignment).
-        2. The xref summary for that byte (when the address has
-           incoming references — this is the
-           ``&xxxx referenced N times by …`` line).
-        3. ``BEFORE_LINE`` annotations (line-aligned comments).
+        Banners are skipped at the leaf (per #15 — they belong only
+        in the top-level ``banners[]`` / ``subroutines[]`` records).
+        Auto-generated xref summaries are not included here either —
+        those live in the dedicated ``xref_summaries`` field.
         """
-        out: list[str] = []
+        before_label: list[str] = []
+        after_label: list[str] = []
+        before_line: list[str] = []
+        after_line: list[str] = []
         for i in range(length):
             byte_addr = binary_addr + i
             for ann in ir.annotations.get_for_align(byte_addr, Align.BEFORE_LABEL):
-                out.extend(self._annotation_texts(ann))
-            xref = self._format_xref_summary_text(ir, byte_addr, 1)
+                before_label.extend(self._annotation_texts(ann))
+            for ann in ir.annotations.get_for_align(byte_addr, Align.AFTER_LABEL):
+                after_label.extend(self._annotation_texts(ann))
+            for ann in ir.annotations.get_for_align(byte_addr, Align.BEFORE_LINE):
+                before_line.extend(self._annotation_texts(ann))
+            for ann in ir.annotations.get_for_align(byte_addr, Align.AFTER_LINE):
+                after_line.extend(self._annotation_texts(ann))
+        return before_label, after_label, before_line, after_line
+
+    def _build_xref_summaries(
+        self, ir, binary_addr: int, length: int,
+    ) -> list[str]:
+        """Auto-generated cross-reference summary text per labelled
+        byte within the item — separate field from user comments
+        (#16). One entry per byte address that has incoming
+        references; format is ``"&XXXX referenced N times by &YY, …"``
+        as built by :meth:`_format_xref_summary_text`.
+        """
+        out: list[str] = []
+        for i in range(length):
+            xref = self._format_xref_summary_text(ir, binary_addr + i, 1)
             if xref is not None:
                 out.append(xref)
-            for ann in ir.annotations.get_for_align(byte_addr, Align.BEFORE_LINE):
-                out.extend(self._annotation_texts(ann))
         return out
 
-    def _gather_inline_after(
+    def _gather_inline(
         self, ir, binary_addr: int, length: int,
-    ) -> tuple[str | None, list[str]]:
-        """Bulk-aggregate the inline + after-{label,line} buckets.
-
-        These don't interleave with xref summaries (xrefs appear
-        BEFORE the item, not after), so the simpler bulk collection
-        is correct for them. INLINE entries flatten to a single
-        space-joined string; AFTER_* entries become a flat list.
+    ) -> str | None:
+        """Bulk-aggregate the INLINE bucket. Multiple inline
+        annotations across the item's bytes flatten to a single
+        space-joined string (asm convention: at most one inline
+        comment per line, but env analysers may stack them).
         """
         inline: str | None = None
-        after: list[str] = []
         for i in range(length):
             byte_addr = binary_addr + i
             for ann in ir.annotations.get_for_align(byte_addr, Align.INLINE):
@@ -810,11 +850,7 @@ class JsonRenderer(Renderer[StructuredOutput]):
                 if not text:
                     continue
                 inline = text if inline is None else f"{inline} {text}"
-            for ann in ir.annotations.get_for_align(byte_addr, Align.AFTER_LABEL):
-                after.extend(self._annotation_texts(ann))
-            for ann in ir.annotations.get_for_align(byte_addr, Align.AFTER_LINE):
-                after.extend(self._annotation_texts(ann))
-        return inline, after
+        return inline
 
     def _annotation_texts(self, ann) -> list[str]:
         """Render an annotation as one or more comments_before /
