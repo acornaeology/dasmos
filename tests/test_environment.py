@@ -533,7 +533,7 @@ class TestAcornSidewaysRom:
 
     def test_rom_type_inline_is_short_label(self, tmp_path):
         # The byte's inline is just "ROM type" — per-bit decode lives
-        # in the AFTER_LINE banner below (per #11 §5).
+        # in the AFTER_LABEL banner above the equb (#13).
         from dasmos.core.annotations import Align, Comment
         d = self._make_loaded_disassembler(tmp_path, self._build_rom())
         d.use_environment("acorn_sideways_rom")
@@ -553,18 +553,25 @@ class TestAcornSidewaysRom:
         ir = d.disassemble()
         assert ir.format_hints.get_or_none(0x8006) is FormatHint.BINARY
 
-    def test_rom_type_after_line_banner_carries_bit_table(self, tmp_path):
+    def test_rom_type_banner_attaches_after_label_with_title(self, tmp_path):
         # _build_rom sets rom_type = &82 (Service entry + 6502-non-BASIC).
-        # The AFTER_LINE banner below the equb decodes each bit as a
-        # Markdown table row.
+        # The bit-decode banner attaches at AFTER_LABEL (between the
+        # ``.rom_type`` label and the equb) so reading-order documents
+        # the bits BEFORE their value, and so the JSON path serialises
+        # it as a real banner record (which downstream consumers
+        # render as a sub-header card with full Markdown processing)
+        # rather than a comments_after row treated as plain text (#13).
+        # The short title parallels the language-/service-entry banners
+        # so the website TOC surfaces all three header sections.
         from dasmos.core.annotations import Align, Banner
         d = self._make_loaded_disassembler(tmp_path, self._build_rom())
         d.use_environment("acorn_sideways_rom")
         banners = [
-            a for a in d.annotations.get_for_align(0x8006, Align.AFTER_LINE)
+            a for a in d.annotations.get_for_align(0x8006, Align.AFTER_LABEL)
             if isinstance(a, Banner)
         ]
         assert banners
+        assert banners[0].title == "ROM type byte"
         body = banners[0].description
         # Pipe-table header.
         assert "| Bit" in body
@@ -577,6 +584,13 @@ class TestAcornSidewaysRom:
         assert "Service entry present" in body
         assert "6502 (non-BASIC)" in body
         assert "0010" in body  # processor sub-field rendered in binary
+        # No competing AFTER_LINE banner left over from the previous
+        # alignment (#13 explicitly moved the bit decode out of
+        # comments_after so the JSON consumer can promote it).
+        assert not [
+            a for a in d.annotations.get_for_align(0x8006, Align.AFTER_LINE)
+            if isinstance(a, Banner)
+        ]
 
     def test_rom_type_table_decodes_all_flags_set(self, tmp_path):
         from dasmos.core.annotations import Align, Banner
@@ -585,7 +599,7 @@ class TestAcornSidewaysRom:
         d = self._make_loaded_disassembler(tmp_path, bytes(rom))
         d.use_environment("acorn_sideways_rom")
         body = next(
-            a.description for a in d.annotations.get_for_align(0x8006, Align.AFTER_LINE)
+            a.description for a in d.annotations.get_for_align(0x8006, Align.AFTER_LABEL)
             if isinstance(a, Banner)
         )
         assert "Service entry present" in body
@@ -603,7 +617,7 @@ class TestAcornSidewaysRom:
         d = self._make_loaded_disassembler(tmp_path, bytes(rom))
         d.use_environment("acorn_sideways_rom")
         body = next(
-            a.description for a in d.annotations.get_for_align(0x8006, Align.AFTER_LINE)
+            a.description for a in d.annotations.get_for_align(0x8006, Align.AFTER_LABEL)
             if isinstance(a, Banner)
         )
         assert "processor &7" in body

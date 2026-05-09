@@ -202,9 +202,18 @@ class AcornSidewaysRomEnvironment(Environment):
 
         # rom_type byte is structurally a bitfield — render in binary
         # via the BINARY format hint (``%10000010``) and emit a
-        # Markdown table below the equb naming each bit. Reads as a
-        # per-bit commentary anchored on the byte's actual structure
-        # rather than a paragraph of prose.
+        # Markdown table naming each bit. The banner attaches as
+        # ``Align.AFTER_LABEL`` so it sits BETWEEN the ``.rom_type``
+        # label and the ``equb`` line — semantically the table
+        # documents what the bits about to be emitted *mean*, so
+        # reading-order makes sense ahead of the value. The alignment
+        # also matters in the JSON path: ``AFTER_LABEL`` Banners
+        # serialise as a banner record (which downstream consumers
+        # render as a sub-header card with full Markdown processing),
+        # whereas ``AFTER_LINE`` would land as a ``comments_after``
+        # row treated as plain text. The short title parallels the
+        # language-/service-entry slot banners so the website TOC
+        # surfaces all three header sections uniformly.
         if not d.is_auto_suppressed_at(0x8006):
             d.format_hint(0x8006, FormatHint.BINARY)
             d.comment(
@@ -213,8 +222,9 @@ class AcornSidewaysRomEnvironment(Environment):
             )
             d.banner(
                 0x8006,
+                title="ROM type byte",
                 description=self._rom_type_table(rom_type_byte),
-                align=Align.AFTER_LINE,
+                align=Align.AFTER_LABEL,
                 auto_generated=True,
             )
 
