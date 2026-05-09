@@ -149,9 +149,9 @@ class Label:
         """The explicit-name strings, de-duplicated but in registration
         order. Use this when rendering the visible label sequence at
         an address — alphabetical sorting reorders aliases against
-        author intent (e.g. ``rom_header`` registered before
-        ``language_entry`` should appear first, even though
-        ``language_entry`` < ``rom_header`` alphabetically).
+        author intent (the structural / first-registered name should
+        win the operand-resolution tie-break and lead the per-line
+        label sequence).
 
         Order across move buckets is dict-iteration order on
         ``explicit_names`` (CPython preserves insertion order on

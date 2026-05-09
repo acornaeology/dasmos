@@ -702,8 +702,8 @@ class BeebasmRenderer(TextRenderer):
                 lines.append(xref)
             # Insertion order, not alphabetical — preserves the label
             # author's intended sequence at addresses with multiple
-            # names (e.g. rom_header registered before language_entry
-            # should render in that order, even though l < r).
+            # names. The first-registered name is the structural one
+            # and should lead.
             names = label.explicit_names_in_insertion_order()
             for name in names:
                 lines.append(self.inline_label(name))
@@ -1894,8 +1894,8 @@ class BeebasmRenderer(TextRenderer):
             # have no business naming this operand. Auto-generated
             # names land in the same ``explicit_names`` collection so
             # they flow through this path naturally. Insertion order
-            # picks the structural / first-registered name (e.g.
-            # ``rom_header`` over its alias ``language_entry``).
+            # picks the structural / first-registered name when an
+            # address has multiple aliases.
             names = label.explicit_names_in_insertion_order()
             if names:
                 if not self._label_address_is_in_range(ir, addr):
@@ -2025,7 +2025,7 @@ class BeebasmRenderer(TextRenderer):
         1. Expression override (``d.expr(addr, expr)``) — used by the
            ``acorn_sideways_rom`` environment to render the copyright-
            offset byte at ``&8007`` as
-           ``equb copyright - rom_header``.
+           ``equb copyright - language_entry``.
         2. Format hint (``d.format_hint(addr, FormatHint.BINARY)``)
            — dispatched through the same hint switch as the
            operand-immediate path, so a byte tagged ``BINARY``

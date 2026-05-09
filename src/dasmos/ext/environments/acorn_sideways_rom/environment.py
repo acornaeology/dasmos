@@ -83,7 +83,6 @@ class AcornSidewaysRomEnvironment(Environment):
 
     Recognises the standard sideways-ROM header at &8000:
 
-    - ``rom_header``     (&8000)  — start of the header
     - ``language_entry`` (&8000)  — JMP to the language handler (if
                                     present); else 3 raw bytes
     - ``service_entry``  (&8003)  — JMP to the service handler (if
@@ -92,7 +91,7 @@ class AcornSidewaysRomEnvironment(Environment):
     - ``copyright_offset`` (&8007) — offset into the ROM at which the
                                      copyright string starts
                                      (rendered as ``copyright -
-                                     rom_header``)
+                                     language_entry``)
     - ``binary_version`` (&8008)  — 1-byte binary version
     - ``title``          (&8009)  — NUL-terminated ASCII title
     - ``version``        (after title, if there's room)
@@ -131,7 +130,6 @@ class AcornSidewaysRomEnvironment(Environment):
                 "acorn_sideways_rom needs ROM bytes loaded at &8000 "
                 "— activate this environment AFTER d.load(...)"
             )
-        d.label(0x8000, "rom_header")
         # Read the header bytes upfront — every annotation derives
         # from them.
         rom_type_byte = d.memory.get_u8(0x8006)
@@ -156,13 +154,12 @@ class AcornSidewaysRomEnvironment(Environment):
                 0x8000, f"# {title_text}", auto_generated=True,
             )
 
-        # Language-entry slot banner (AFTER_LABEL): mode-aware
-        # description selecting JMP / &00 / non-standard from the
-        # first byte of the slot. The "Sideways ROM header" prefix in
-        # the title doubles as the structural marker that py8dis
-        # emits as a bare comment at &8000 — keeps comment-vocabulary
-        # parity with the upstream reference output and reads as the
-        # natural section header for the whole header block.
+        # Language-entry slot section banner (#17 §2): BEFORE_LABEL
+        # so the heading sits ABOVE ``.language_entry`` and reads as
+        # a section introducer, not as content sandwiched between
+        # the label and the bytes. Title carries the "Sideways ROM
+        # header" prefix as the structural marker for the whole
+        # header block.
         if not d.is_auto_suppressed_at(0x8000):
             d.banner(
                 0x8000,
@@ -170,18 +167,24 @@ class AcornSidewaysRomEnvironment(Environment):
                 description=self._language_entry_description(
                     d.memory.get_u8(0x8000),
                 ),
-                align=Align.AFTER_LABEL,
+                align=Align.BEFORE_LABEL,
                 auto_generated=True,
             )
 
         # Language and service entries: each is either a ``JMP abs``
         # (a real entry point) or 3 bytes of something else (some
         # ROMs use a placeholder if they don't implement that side).
+        # ``_check_entry`` registers ``language_entry`` / ``service_entry``
+        # at &8000 / &8003 — these are the canonical structural names
+        # for those addresses (#17 §1 dropped the redundant
+        # ``rom_header`` label that used to sit at &8000 alongside
+        # ``language_entry``).
         self._check_entry(d, 0x8000, "language")
         self._check_entry(d, 0x8003, "service")
 
-        # Service-entry slot banner. Always JMP in practice, but the
-        # banner explains the dispatch contract regardless.
+        # Service-entry slot section banner (#17 §3): same shape as
+        # the language-entry one — BEFORE_LABEL, sits ABOVE
+        # ``.service_entry``.
         if not d.is_auto_suppressed_at(0x8003):
             d.banner(
                 0x8003,
@@ -189,7 +192,31 @@ class AcornSidewaysRomEnvironment(Environment):
                 description=self._service_entry_description(
                     d.memory.get_u8(0x8003),
                 ),
-                align=Align.AFTER_LABEL,
+                align=Align.BEFORE_LABEL,
+                auto_generated=True,
+            )
+
+        # ROM-identification section banner (#17 §4): the fields from
+        # ``rom_type`` onwards (``rom_type``, ``copyright_offset``,
+        # ``binary_version``, ``title``, ``version``, ``copyright``)
+        # are descriptive metadata, conceptually a separate section
+        # from the entry-point JMPs above. A BEFORE_LABEL banner at
+        # &8006 gives the same structural separation the entry-slot
+        # banners give. Per-field annotations attached individually
+        # below are unaffected.
+        if not d.is_auto_suppressed_at(0x8006):
+            d.banner(
+                0x8006,
+                title="ROM identification",
+                description=(
+                    "Six descriptive fields that follow the entry-point "
+                    "JMPs: ROM type flag byte, copyright-string offset, "
+                    "binary version, title string, optional version "
+                    "string, and copyright string. The MOS uses these "
+                    "for identification, dispatch-table lookup, and the "
+                    "``(C)``-prefix validity check."
+                ),
+                align=Align.BEFORE_LABEL,
                 auto_generated=True,
             )
 
@@ -229,11 +256,14 @@ class AcornSidewaysRomEnvironment(Environment):
             )
 
         # Render the copyright_offset byte as the symbolic expression
-        # ``copyright - rom_header`` rather than its literal hex
+        # ``copyright - language_entry`` rather than its literal hex
         # value. Reads more honestly: the byte's purpose is to point
         # at the copyright string; matching the symbolic form is the
-        # whole reason for naming both ends.
-        d.expr(0x8007, "copyright - rom_header")
+        # whole reason for naming both ends. The base is
+        # ``language_entry`` (the canonical structural name at &8000)
+        # rather than the ``rom_header`` alias that #17 §1 dropped —
+        # both addresses are the same.
+        d.expr(0x8007, "copyright - language_entry")
         if not d.is_auto_suppressed_at(0x8007):
             d.comment(
                 0x8007,

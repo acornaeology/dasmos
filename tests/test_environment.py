@@ -273,10 +273,10 @@ class TestAcornSidewaysRom:
             tmp_path, self._build_rom(language_jmp=True),
         )
         d.use_environment("acorn_sideways_rom")
-        # rom_header at &8000.
-        assert "rom_header" in d.labels.get_label(0x8000).explicit_name_texts()
-        # language_entry at &8000 (alias of rom_header).
+        # language_entry at &8000 — sole structural label at the
+        # header (the redundant ``rom_header`` alias was dropped in #17 §1).
         assert "language_entry" in d.labels.get_label(0x8000).explicit_name_texts()
+        assert "rom_header" not in d.labels.get_label(0x8000).explicit_name_texts()
         # JMP at &8000 → handler at &80F0.
         assert "language_handler" in d.labels.get_label(0x80f0).explicit_name_texts()
 
@@ -316,13 +316,12 @@ class TestAcornSidewaysRom:
         self, tmp_path,
     ):
         # The byte at &8007 carries an expression override
-        # (``copyright - rom_header``); the renderer should emit
-        # that expression instead of the literal hex value.
+        # (``copyright - language_entry``, per #17 §1); the renderer
+        # should emit that expression instead of the literal hex value.
         d = self._make_loaded_disassembler(tmp_path, self._build_rom())
         d.use_environment("acorn_sideways_rom")
         text = str(d.disassemble().render("beebasm"))
-        # The whole expression appears in the output (somewhere).
-        assert "copyright - rom_header" in text
+        assert "copyright - language_entry" in text
 
     def test_title_string_classification(self, tmp_path):
         title = b"MyROM"
@@ -430,13 +429,16 @@ class TestAcornSidewaysRom:
         assert any(c.text.startswith("# TestROM") for c in comments)
 
     def test_language_entry_banner_describes_jmp_mode(self, tmp_path):
+        # Banner attaches at BEFORE_LABEL (#17 §2) so the heading
+        # sits ABOVE the ``.language_entry`` label rather than
+        # between the label and the data line.
         from dasmos.core.annotations import Align, Banner
         d = self._make_loaded_disassembler(
             tmp_path, self._build_rom(language_jmp=True),
         )
         d.use_environment("acorn_sideways_rom")
         banners = [
-            a for a in d.annotations.get_for_align(0x8000, Align.AFTER_LABEL)
+            a for a in d.annotations.get_for_align(0x8000, Align.BEFORE_LABEL)
             if isinstance(a, Banner)
         ]
         assert banners, "expected language-entry banner at &8000"
@@ -457,7 +459,7 @@ class TestAcornSidewaysRom:
         d = self._make_loaded_disassembler(tmp_path, bytes(rom))
         d.use_environment("acorn_sideways_rom")
         banners = [
-            a for a in d.annotations.get_for_align(0x8000, Align.AFTER_LABEL)
+            a for a in d.annotations.get_for_align(0x8000, Align.BEFORE_LABEL)
             if isinstance(a, Banner)
         ]
         assert banners
@@ -472,7 +474,7 @@ class TestAcornSidewaysRom:
         d = self._make_loaded_disassembler(tmp_path, self._build_rom())
         d.use_environment("acorn_sideways_rom")
         banner = next(
-            a for a in d.annotations.get_for_align(0x8000, Align.AFTER_LABEL)
+            a for a in d.annotations.get_for_align(0x8000, Align.BEFORE_LABEL)
             if isinstance(a, Banner)
         )
         body = banner.description
@@ -514,15 +516,46 @@ class TestAcornSidewaysRom:
         assert "rom_type bit 6 clear" in sentinel_inline
         assert "unused padding" in padding_inline
 
-    def test_service_entry_banner_at_8003(self, tmp_path):
-        # JMP-mode service entry: banner gives the dispatch contract
-        # without restating "byte 0 is &4C" (which would just echo
-        # the next disassembly line).
+    def test_rom_identification_section_banner_at_8006(self, tmp_path):
+        # New BEFORE_LABEL banner introduces the descriptive-fields
+        # section (rom_type / copyright_offset / binary_version /
+        # title / version / copyright) — gives the same structural
+        # separation the entry-slot banners give for the JMPs above
+        # (#17 §4). Title is "ROM identification" — chosen to read
+        # cleanly in the website TOC alongside the existing slot
+        # banners.
         from dasmos.core.annotations import Align, Banner
         d = self._make_loaded_disassembler(tmp_path, self._build_rom())
         d.use_environment("acorn_sideways_rom")
         banners = [
-            a for a in d.annotations.get_for_align(0x8003, Align.AFTER_LABEL)
+            a for a in d.annotations.get_for_align(0x8006, Align.BEFORE_LABEL)
+            if isinstance(a, Banner)
+        ]
+        assert banners, "expected ROM-identification section banner at &8006"
+        assert banners[0].title == "ROM identification"
+        body = banners[0].description
+        # Banner introduces the six fields by name.
+        assert "ROM type flag byte" in body
+        assert "copyright" in body
+        # The pre-existing rom_type bit-decode banner (#13) still
+        # attaches at AFTER_LABEL on the same address — both
+        # coexist (one at BEFORE_LABEL, one at AFTER_LABEL).
+        after_label = [
+            a for a in d.annotations.get_for_align(0x8006, Align.AFTER_LABEL)
+            if isinstance(a, Banner)
+        ]
+        assert after_label and after_label[0].title == "ROM type byte"
+
+    def test_service_entry_banner_at_8003(self, tmp_path):
+        # JMP-mode service entry: banner gives the dispatch contract
+        # without restating "byte 0 is &4C" (which would just echo
+        # the next disassembly line). Banner attaches at BEFORE_LABEL
+        # (#17 §3) so it sits ABOVE ``.service_entry``.
+        from dasmos.core.annotations import Align, Banner
+        d = self._make_loaded_disassembler(tmp_path, self._build_rom())
+        d.use_environment("acorn_sideways_rom")
+        banners = [
+            a for a in d.annotations.get_for_align(0x8003, Align.BEFORE_LABEL)
             if isinstance(a, Banner)
         ]
         assert banners
@@ -844,7 +877,7 @@ class TestAcornSidewaysRom:
         # acorn_mos contribution.
         assert "oswrch" in d.labels.get_label(0xffee).explicit_name_texts()
         # acorn_sideways_rom contribution.
-        assert "rom_header" in d.labels.get_label(0x8000).explicit_name_texts()
+        assert "language_entry" in d.labels.get_label(0x8000).explicit_name_texts()
 
 
 class TestAcornModelBHardwareEnvironment:
