@@ -242,9 +242,11 @@ class JsonRenderer(Renderer[StructuredOutput]):
                 # first explicit name as the banner's ``name``. Matches
                 # py8dis's data_banner shape, where the second
                 # positional arg becomes the entry's ``name``.
+                # Insertion order picks the structural / first-
+                # registered name (matches the asm renderer choice).
                 label = ir.labels.get_label(runtime_addr)
                 if label is not None:
-                    names = sorted(label.explicit_name_texts())
+                    names = label.explicit_names_in_insertion_order()
                     if names:
                         entry["name"] = names[0]
                 if ann.title:
@@ -313,7 +315,7 @@ class JsonRenderer(Renderer[StructuredOutput]):
             )
             if not has_metadata:
                 continue
-            names = sorted(label.explicit_name_texts())
+            names = label.explicit_names_in_insertion_order()
             if not names:
                 continue
             entry: dict[str, Any] = {
@@ -363,10 +365,11 @@ class JsonRenderer(Renderer[StructuredOutput]):
         if binary_addr != runtime_addr:
             entry["binary_addr"] = binary_addr
 
-        # Labels at the runtime address.
+        # Labels at the runtime address. Insertion order so the JSON
+        # ``labels`` array matches the asm renderer's display sequence.
         label = ir.labels.get_label(runtime_addr)
         if label is not None:
-            names = sorted(label.explicit_name_texts())
+            names = label.explicit_names_in_insertion_order()
             if names:
                 entry["labels"] = names
 
@@ -377,7 +380,7 @@ class JsonRenderer(Renderer[StructuredOutput]):
             inner_label = ir.labels.get_label(inner_runtime)
             if inner_label is None:
                 continue
-            inner_names = sorted(inner_label.explicit_name_texts())
+            inner_names = inner_label.explicit_names_in_insertion_order()
             if inner_names:
                 sub_labels[inner_runtime] = inner_names
         if sub_labels:

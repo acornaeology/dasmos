@@ -700,7 +700,11 @@ class BeebasmRenderer(TextRenderer):
             xref = self._format_inline_xref_summary(label, runtime_addr)
             if xref is not None:
                 lines.append(xref)
-            names = sorted(label.explicit_name_texts())
+            # Insertion order, not alphabetical — preserves the label
+            # author's intended sequence at addresses with multiple
+            # names (e.g. rom_header registered before language_entry
+            # should render in that order, even though l < r).
+            names = label.explicit_names_in_insertion_order()
             for name in names:
                 lines.append(self.inline_label(name))
             if names:
@@ -714,7 +718,7 @@ class BeebasmRenderer(TextRenderer):
             # against the inline anchor's PC, which IS at the base's
             # runtime. (Example: ``tube_cmd_lo = tube_dispatch_cmd+1``
             # inside move 1 of NFS-3.65.)
-            base_names = sorted(label.explicit_name_texts())
+            base_names = label.explicit_names_in_insertion_order()
             if base_names:
                 base_name = base_names[0]
                 for off in range(1, classification.length()):
@@ -760,7 +764,7 @@ class BeebasmRenderer(TextRenderer):
                         inner_binary, Align.BEFORE_LINE,
                     ):
                         lines.extend(self._render_annotation(ann))
-                    for inner_name in sorted(inner_label.explicit_name_texts()):
+                    for inner_name in inner_label.explicit_names_in_insertion_order():
                         lines.append(f"{inner_name} = {base_name}+{off}")
                     self._inline_emitted_runtime_addrs.add(inner_runtime)
 
@@ -1004,7 +1008,7 @@ class BeebasmRenderer(TextRenderer):
         label = ir.labels.get_label(runtime_addr)
         if label is None:
             return None
-        names = sorted(label.explicit_name_texts())
+        names = label.explicit_names_in_insertion_order()
         return names[0] if names else None
 
     def _emit_move_enter(
@@ -1889,8 +1893,10 @@ class BeebasmRenderer(TextRenderer):
             # exclude local labels here — those are out of scope and
             # have no business naming this operand. Auto-generated
             # names land in the same ``explicit_names`` collection so
-            # they flow through this path naturally.
-            names = sorted(label.explicit_name_texts())
+            # they flow through this path naturally. Insertion order
+            # picks the structural / first-registered name (e.g.
+            # ``rom_header`` over its alias ``language_entry``).
+            names = label.explicit_names_in_insertion_order()
             if names:
                 if not self._label_address_is_in_range(ir, addr):
                     self._used_external_labels.add(addr)

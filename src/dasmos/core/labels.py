@@ -145,6 +145,27 @@ class Label:
             for name in name_list
         }
 
+    def explicit_names_in_insertion_order(self) -> list[str]:
+        """The explicit-name strings, de-duplicated but in registration
+        order. Use this when rendering the visible label sequence at
+        an address — alphabetical sorting reorders aliases against
+        author intent (e.g. ``rom_header`` registered before
+        ``language_entry`` should appear first, even though
+        ``language_entry`` < ``rom_header`` alphabetically).
+
+        Order across move buckets is dict-iteration order on
+        ``explicit_names`` (CPython preserves insertion order on
+        dicts), then list-order within each bucket.
+        """
+        out: list[str] = []
+        seen: set[str] = set()
+        for name_list in self.explicit_names.values():
+            for name in name_list:
+                if name.text not in seen:
+                    seen.add(name.text)
+                    out.append(name.text)
+        return out
+
     def local_label_names(self) -> set[str]:
         """The local-label names only (across all move_ids and all
         scopes).
