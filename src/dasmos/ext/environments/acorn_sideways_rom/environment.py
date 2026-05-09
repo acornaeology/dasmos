@@ -483,8 +483,8 @@ class AcornSidewaysRomEnvironment(Environment):
             "\n"
             "| A | Meaning                                              |\n"
             "|---|------------------------------------------------------|\n"
-            "| 1 | Normal startup                                       |\n"
             "| 0 | No language available — MOS calling Tube ROM         |\n"
+            "| 1 | Normal startup                                       |\n"
             "| 2 | Request next byte of softkey expansion (Electron)    |\n"
             "| 3 | Request length of softkey expansion (Electron)       |"
         )
