@@ -867,6 +867,7 @@ class Disassembler:
         align: Align = Align.BEFORE_LABEL,
         word_wrap: bool = True,
         indent: int = 0,
+        auto_generated: bool = False,
         suppresses_auto: bool = False,
         move: Move | None = None,
     ) -> None:
@@ -879,12 +880,22 @@ class Disassembler:
         (``AFTER_LABEL``, ``BEFORE_LINE``, ``AFTER_LINE``) cover
         less-common arrangements.
 
+        ``auto_generated`` marks this comment as env-attached metadata
+        rather than user-authored content. Suppresses the duplicate-
+        comment warning when stacking with a driver-supplied comment
+        at the same address (the warning targets driver authoring
+        bugs, not env-driven layering). Envs attaching address
+        metadata in ``setup()`` (e.g. ``"Sideways ROM header"`` at
+        &8000) should set this.
+
         ``suppresses_auto`` marks this comment as authoritative: env
-        analysers (e.g. the OSBYTE/OSARGS post-call hooks in
-        ``acorn_mos``) skip attaching their auto-generated annotation
-        at this address when any annotation present has this flag set.
-        Use it when the driver already documents the call's outcome
-        and the env-supplied table/description would be redundant.
+        analysers and ``setup()`` methods skip attaching their auto-
+        generated annotation at this address when any annotation
+        present has this flag set. Use it when the driver already
+        documents the address authoritatively and the env-supplied
+        text would be redundant. **Order matters for env setup:**
+        attach the suppressing comment *before* ``use_environment(...)``
+        so the env's setup sees the flag.
 
         The runtime address is resolved to a binary address via the
         active-move stack on the move manager, or via the explicit
@@ -899,9 +910,26 @@ class Disassembler:
                 align=align,
                 word_wrap=word_wrap,
                 indent=indent,
+                auto_generated=auto_generated,
                 suppresses_auto=suppresses_auto,
             ),
         )
+
+    def is_auto_suppressed_at(
+        self, runtime_addr, *, move: Move | None = None,
+    ) -> bool:
+        """Return True if any annotation at ``runtime_addr`` carries
+        ``suppresses_auto=True``.
+
+        Env ``setup()`` methods call this before attaching their own
+        auto-comments so a driver-supplied authoritative comment can
+        crowd out the env default. Wraps
+        :meth:`AnnotationStore.is_auto_suppressed_at` with the same
+        runtime→binary address resolution as :meth:`comment` and
+        :meth:`label`, so envs can pass the natural runtime address.
+        """
+        binary_addr = self._resolve_to_binary_addr(runtime_addr, move)
+        return self._annotations.is_auto_suppressed_at(binary_addr)
 
     def banner(
         self,

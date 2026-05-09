@@ -83,12 +83,16 @@ class AcornSidewaysRomEnvironment(Environment):
                 "— activate this environment AFTER d.load(...)"
             )
         d.label(0x8000, "rom_header")
-        d.comment(
-            0x8000, "Sideways ROM header",
-            # The header comment is metadata about the address, not
-            # something the user wrote — render it as a regular
-            # comment (above the label).
-        )
+        # Address-metadata comment, not user-authored content.
+        # ``auto_generated=True`` keeps the dup-warning silent when a
+        # driver attaches its own per-version banner at the same
+        # address, and lets a driver fully replace this line by
+        # attaching ``d.comment(0x8000, ..., suppresses_auto=True)``
+        # *before* activating this env (see disassembler.comment docs).
+        if not d.is_auto_suppressed_at(0x8000):
+            d.comment(
+                0x8000, "Sideways ROM header", auto_generated=True,
+            )
         # Language and service entries: each is either a ``JMP abs``
         # (a real entry point) or 3 bytes of something else (some
         # ROMs use a placeholder if they don't implement that side).

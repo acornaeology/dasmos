@@ -541,7 +541,12 @@ def _attach_post_call_descriptions(
     if not parts:
         return
     runtime_addr = int(disassembler.moves.b2r(BinaryAddr(next_addr)))
-    disassembler.comment(runtime_addr, " / ".join(parts), align=Align.INLINE)
+    disassembler.comment(
+        runtime_addr,
+        " / ".join(parts),
+        align=Align.INLINE,
+        auto_generated=True,
+    )
 
 
 def _maybe_register_xy_address(disassembler, state) -> None:
