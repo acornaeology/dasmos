@@ -33,6 +33,7 @@ they compose freely.
 from typing import TYPE_CHECKING
 
 from dasmos.core.annotations import Align
+from dasmos.core.format_hint import FormatHint
 from dasmos.environment import Environment
 from dasmos.exceptions import DasmosError
 
@@ -199,13 +200,21 @@ class AcornSidewaysRomEnvironment(Environment):
         d.label(0x8008, "binary_version")
         d.label(0x8009, "title")
 
-        # Inline decode of the rom_type bit field — the most
-        # information-dense byte in the header.
+        # rom_type byte is structurally a bitfield — render in binary
+        # via the BINARY format hint (``%10000010``) and emit a
+        # Markdown table below the equb naming each bit. Reads as a
+        # per-bit commentary anchored on the byte's actual structure
+        # rather than a paragraph of prose.
         if not d.is_auto_suppressed_at(0x8006):
+            d.format_hint(0x8006, FormatHint.BINARY)
             d.comment(
+                0x8006, "ROM type",
+                align=Align.INLINE, auto_generated=True,
+            )
+            d.banner(
                 0x8006,
-                self._rom_type_inline(rom_type_byte),
-                align=Align.INLINE,
+                description=self._rom_type_table(rom_type_byte),
+                align=Align.AFTER_LINE,
                 auto_generated=True,
             )
 
@@ -236,11 +245,11 @@ class AcornSidewaysRomEnvironment(Environment):
 
         # Title is NUL-terminated; scan for the terminator. Bound the
         # scan by the copyright offset so a missing terminator
-        # doesn't run off into the rest of the ROM.
+        # doesn't run off into the rest of the ROM. Split the
+        # terminator into its own ``equb &00`` so the NUL is visible
+        # in the listing rather than buried inside an EQUS.
         title_terminator = self._find_nul(d, 0x8009, copyright_addr)
-        title_length = title_terminator - 0x8009 + 1  # include the NUL
-        if title_length > 0:
-            d.string(0x8009, title_length)
+        self._classify_nul_terminated_string(d, 0x8009, title_terminator)
         # If there's room between the title's NUL and the copyright
         # string, treat the gap as a NUL-terminated version string.
         version_start = title_terminator + 1
@@ -249,22 +258,45 @@ class AcornSidewaysRomEnvironment(Environment):
             version_terminator = self._find_nul(
                 d, version_start, copyright_addr,
             )
-            d.string(
-                version_start, version_terminator - version_start + 1,
+            self._classify_nul_terminated_string(
+                d, version_start, version_terminator,
             )
-        # Copyright string starts at &8000 + copyright_offset, with a
-        # leading NUL byte (per Acorn convention) followed by the
-        # actual NUL-terminated text.
+        # Copyright field starts at &8000 + copyright_offset, with a
+        # leading NUL byte (per Acorn convention — the copyright
+        # offset POINTS AT this NUL), then the (C)-prefixed text,
+        # then a trailing NUL. Split into three classifications so
+        # both NULs are visible bytes the listing comments on,
+        # rather than buried inside one big EQUS:
+        #
+        #   .copyright          equb &00         ; preceding NUL
+        #   .copyright_string   equs "(C)..."
+        #                       equb &00         ; terminating NUL
         d.label(copyright_addr, "copyright")
+        d.byte(copyright_addr, 1)
+        if not d.is_auto_suppressed_at(copyright_addr):
+            d.comment(
+                copyright_addr,
+                "NUL preceding copyright string",
+                align=Align.INLINE,
+                auto_generated=True,
+            )
         copyright_text_start = copyright_addr + 1
         load_end = self._load_end_after(d, copyright_text_start)
         copyright_terminator = self._find_nul(
             d, copyright_text_start, load_end,
         )
-        d.string(
-            copyright_addr,
-            copyright_terminator - copyright_addr + 1,
-        )
+        d.label(copyright_text_start, "copyright_string")
+        text_length = copyright_terminator - copyright_text_start
+        if text_length > 0:
+            d.string(copyright_text_start, text_length)
+        d.byte(copyright_terminator, 1)
+        if not d.is_auto_suppressed_at(copyright_terminator):
+            d.comment(
+                copyright_terminator,
+                "NUL terminator",
+                align=Align.INLINE,
+                auto_generated=True,
+            )
 
         # Tube relocation address: present iff rom_type bit 5 is set.
         # Lives in the 4 bytes immediately after the copyright NUL.
@@ -291,14 +323,70 @@ class AcornSidewaysRomEnvironment(Environment):
     def _check_entry(d, addr: int, entry_type: str) -> None:
         """If the byte at ``addr`` is ``JMP abs``, register an entry
         point and label both the entry and its handler. Otherwise
-        classify the 3 header bytes as a Byte block."""
+        classify the 3 header bytes — splitting the &00 sentinel
+        case into per-byte classifications so the listing reads each
+        byte's role inline rather than burying it in a paragraph.
+
+        Three observed shapes:
+
+        - byte 0 = ``&4C`` (``JMP abs``) — register entry + handler.
+        - byte 0 = ``&00`` (no-language sentinel) — emit as
+          ``equb &00`` (sentinel) + ``equb &00, &00`` (padding) with
+          per-byte inline notes.
+        - anything else — single 3-byte ``equb`` block (the slot is
+          non-standard; whatever's there is opaque, no per-byte
+          structure to surface).
+        """
         d.label(addr, f"{entry_type}_entry")
-        if d.memory.get_u8(addr) == _JMP_ABS_OPCODE:
+        byte0 = d.memory.get_u8(addr)
+        if byte0 == _JMP_ABS_OPCODE:
             d.entry(addr)
             target = d.memory.get_u16_le(addr + 1)
             d.label(target, f"{entry_type}_handler")
+        elif byte0 == 0x00:
+            d.byte(addr, 1)
+            d.byte(addr + 1, 2)
+            if not d.is_auto_suppressed_at(addr):
+                d.comment(
+                    addr,
+                    f"no-{entry_type} sentinel "
+                    f"(rom_type bit "
+                    f"{6 if entry_type == 'language' else 7} clear)",
+                    align=Align.INLINE,
+                    auto_generated=True,
+                )
+            if not d.is_auto_suppressed_at(addr + 1):
+                d.comment(
+                    addr + 1,
+                    "unused padding",
+                    align=Align.INLINE,
+                    auto_generated=True,
+                )
         else:
             d.byte(addr, 3)
+
+    @staticmethod
+    def _classify_nul_terminated_string(d, start: int, terminator: int) -> None:
+        """Classify a NUL-terminated string region, splitting the
+        terminator into its own ``equb &00`` so the NUL is a visible
+        byte the listing comments on rather than the last character of
+        an EQUS.
+
+        ``start`` is the first text byte (or the NUL itself for an
+        empty string); ``terminator`` is the address of the NUL.
+        Emits an inline "NUL terminator" note on the NUL byte.
+        """
+        text_length = terminator - start
+        if text_length > 0:
+            d.string(start, text_length)
+        d.byte(terminator, 1)
+        if not d.is_auto_suppressed_at(terminator):
+            d.comment(
+                terminator,
+                "NUL terminator",
+                align=Align.INLINE,
+                auto_generated=True,
+            )
 
     @staticmethod
     def _find_nul(d, start: int, hard_limit: int) -> int:
@@ -359,18 +447,22 @@ class AcornSidewaysRomEnvironment(Environment):
 
         - ``&4C`` (``JMP abs``) — ROM declares itself a language;
           MOS dispatches ``JMP &8000`` on language startup with a
-          reason code in A.
-        - ``&00`` — service-only ROM; byte 0 set to &00 per the
-          Acorn header standard ("JMP language_entry, set to 0 if not
-          a language") to inhibit the MOS dispatch path.
-        - anything else — non-standard placeholder; MOS would still
-          dispatch ``JMP &8000`` on language startup so the bytes
-          must remain non-executable in any normal use of the ROM.
+          reason code in A. Reason codes rendered as a Markdown
+          table for clarity.
+        - ``&00`` — service-only ROM; per-byte detail lives on the
+          bytes themselves (sentinel + padding inlines).
+        - anything else — non-standard placeholder.
         """
-        intro = (
-            "MOS dispatches ``JMP &8000`` on language startup with a "
-            "reason code in A (1 = normal start, 0 = no language "
-            "available, 2/3 = Electron softkey query)."
+        intro = "MOS dispatches ``JMP &8000`` on language startup."
+        reason_table = (
+            "Reason code in A on entry:\n"
+            "\n"
+            "| A | Meaning                                              |\n"
+            "|---|------------------------------------------------------|\n"
+            "| 1 | Normal startup                                       |\n"
+            "| 0 | No language available — MOS calling Tube ROM         |\n"
+            "| 2 | Request next byte of softkey expansion (Electron)    |\n"
+            "| 3 | Request length of softkey expansion (Electron)       |"
         )
         if byte0 == _JMP_ABS_OPCODE:
             mode = (
@@ -380,9 +472,8 @@ class AcornSidewaysRomEnvironment(Environment):
             )
         elif byte0 == 0x00:
             mode = (
-                "Byte 0 is ``&00`` (service-only ROM, ``rom_type`` bit 6 "
-                "clear) — set to inhibit the MOS dispatch path per the "
-                "Acorn header standard. Bytes 1-2 are unused padding."
+                "Service-only ROM (``rom_type`` bit 6 clear). Per-byte "
+                "detail is inline."
             )
         else:
             mode = (
@@ -390,7 +481,7 @@ class AcornSidewaysRomEnvironment(Environment):
                 f"MOS would still execute ``JMP &8000`` on language "
                 f"startup so this ROM relies on never being asked."
             )
-        return f"{intro}\n\n{mode}"
+        return f"{intro}\n\n{mode}\n\n{reason_table}"
 
     @staticmethod
     def _service_entry_description(byte0: int) -> str:
@@ -405,37 +496,55 @@ class AcornSidewaysRomEnvironment(Environment):
             "other events. The reason code arrives in A."
         )
         if byte0 == _JMP_ABS_OPCODE:
-            mode = (
-                "Byte 0 is ``&4C`` (``JMP abs``) — slot dispatches to "
-                "``service_handler``."
-            )
-        else:
-            mode = (
-                f"Byte 0 is ``&{byte0:02x}`` (non-standard); a ROM that "
-                f"never wants to handle service calls would set "
-                f"``rom_type`` bit 7 clear and use a placeholder here."
-            )
+            # JMP-mode is the universal case; no need to restate
+            # what the next disassembly line shows.
+            return intro
+        mode = (
+            f"Byte 0 is ``&{byte0:02x}`` (non-standard); a ROM that "
+            f"never wants to handle service calls would set "
+            f"``rom_type`` bit 7 clear and use a placeholder here."
+        )
         return f"{intro}\n\n{mode}"
 
     @staticmethod
-    def _rom_type_inline(rom_type: int) -> str:
-        """Inline-decoded text for the ``rom_type`` byte at &8006.
+    def _rom_type_table(rom_type: int) -> str:
+        """Markdown bit-table for the ``rom_type`` byte at &8006.
 
-        Lists the upper-bit flags that are set, then names the
-        processor selected by the bottom four bits. Reads e.g.
-        ``ROM type: Service entry; Language entry; 6502 (non-BASIC)``.
-        Unknown processor encodings render as ``processor &X``.
+        Renders as a 3-column table (Bit / Value / Meaning) listing
+        each flag bit's state plus the processor selected by the
+        bottom four bits. The table sits in an ``AFTER_LINE`` banner
+        below the ``equb`` so the byte's bitfield structure is
+        visible alongside the per-bit decode.
         """
-        flags: list[str] = []
-        if rom_type & _ROM_TYPE_SERVICE_ENTRY:
-            flags.append("Service entry")
-        if rom_type & _ROM_TYPE_LANGUAGE_ENTRY:
-            flags.append("Language entry")
-        if rom_type & _ROM_TYPE_TUBE_RELOC:
-            flags.append("Tube relocation address present")
-        if rom_type & _ROM_TYPE_ELECTRON_FIRMKEY:
-            flags.append("Electron firmkey support")
+        rows: list[tuple[str, str, str]] = []
+        for bit, mask, present, absent in [
+            (7, _ROM_TYPE_SERVICE_ENTRY,
+             "Service entry present", "No service entry"),
+            (6, _ROM_TYPE_LANGUAGE_ENTRY,
+             "Language entry present", "No language entry"),
+            (5, _ROM_TYPE_TUBE_RELOC,
+             "Tube relocation address present", "No Tube relocation"),
+            (4, _ROM_TYPE_ELECTRON_FIRMKEY,
+             "Electron firmkey support", "No Electron firmkey"),
+        ]:
+            value = "1" if rom_type & mask else "0"
+            meaning = present if rom_type & mask else absent
+            rows.append((str(bit), value, meaning))
         proc_code = rom_type & _ROM_TYPE_PROCESSOR_MASK
         proc_name = _PROCESSOR_TYPES.get(proc_code, f"processor &{proc_code:x}")
-        flags.append(proc_name)
-        return "ROM type: " + "; ".join(flags)
+        rows.append(("3-0", f"{proc_code:04b}", f"Processor: {proc_name}"))
+        bit_w = max(len(r[0]) for r in rows)
+        val_w = max(len(r[1]) for r in rows)
+        meaning_w = max(len(r[2]) for r in rows)
+        lines = [
+            f"| {'Bit'.ljust(bit_w)} | {'Value'.ljust(val_w)} | "
+            f"{'Meaning'.ljust(meaning_w)} |",
+            f"|{'-' * (bit_w + 2)}|{'-' * (val_w + 2)}|"
+            f"{'-' * (meaning_w + 2)}|",
+        ]
+        for bit, value, meaning in rows:
+            lines.append(
+                f"| {bit.ljust(bit_w)} | {value.ljust(val_w)} | "
+                f"{meaning.ljust(meaning_w)} |"
+            )
+        return "\n".join(lines)

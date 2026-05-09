@@ -446,8 +446,9 @@ class TestAcornSidewaysRom:
 
     def test_language_entry_banner_describes_service_only_mode(self, tmp_path):
         # Build a ROM with byte 0 = &00 to exercise the service-only
-        # branch. _build_rom(language_jmp=False) emits NOPs (&EA) —
-        # we want &00, so monkey-patch.
+        # branch. Per-byte detail (&00 sentinel + padding) lives on
+        # the inline comments of those bytes; the banner just notes
+        # service-only mode.
         from dasmos.core.annotations import Align, Banner
         rom = bytearray(self._build_rom(language_jmp=False))
         rom[0] = 0x00
@@ -462,9 +463,61 @@ class TestAcornSidewaysRom:
         assert banners
         body = banners[0].description
         assert "service-only" in body.lower() or "Service-only" in body
-        assert "&00" in body
+
+    def test_language_entry_banner_carries_reason_code_table(self, tmp_path):
+        # The reason-code A=0/1/2/3 mapping renders as a GFM table in
+        # the banner description so downstream consumers see structured
+        # rows (per #11 §1).
+        from dasmos.core.annotations import Align, Banner
+        d = self._make_loaded_disassembler(tmp_path, self._build_rom())
+        d.use_environment("acorn_sideways_rom")
+        banner = next(
+            a for a in d.annotations.get_for_align(0x8000, Align.AFTER_LABEL)
+            if isinstance(a, Banner)
+        )
+        body = banner.description
+        # Pipe-table header + at least one of each row.
+        assert "| A |" in body
+        assert "| Meaning" in body
+        assert "Normal startup" in body
+        assert "No language available" in body
+        assert "softkey expansion" in body
+
+    def test_disabled_language_slot_split_into_sentinel_and_padding(
+        self, tmp_path,
+    ):
+        # When byte 0 = &00, _check_entry splits the 3-byte slot into
+        # a 1-byte equb (sentinel) + 2-byte equb (padding) with
+        # per-byte inline comments rather than a single 3-byte block.
+        from dasmos.core.annotations import Align, Comment
+        from dasmos.core.classification import Byte
+        rom = bytearray(self._build_rom(language_jmp=False))
+        rom[0:3] = [0x00, 0x00, 0x00]
+        d = self._make_loaded_disassembler(tmp_path, bytes(rom))
+        d.use_environment("acorn_sideways_rom")
+        ir = d.disassemble()
+        # &8000 is now Byte(1), &8001 is Byte(2).
+        c8000 = ir.classifications.get_classification(0x8000)
+        c8001 = ir.classifications.get_classification(0x8001)
+        assert isinstance(c8000, Byte) and c8000.length() == 1
+        assert isinstance(c8001, Byte) and c8001.length() == 2
+        # Per-byte inlines.
+        sentinel_inline = next(
+            a.text for a in ir.annotations.get_for_align(0x8000, Align.INLINE)
+            if isinstance(a, Comment)
+        )
+        padding_inline = next(
+            a.text for a in ir.annotations.get_for_align(0x8001, Align.INLINE)
+            if isinstance(a, Comment)
+        )
+        assert "no-language sentinel" in sentinel_inline
+        assert "rom_type bit 6 clear" in sentinel_inline
+        assert "unused padding" in padding_inline
 
     def test_service_entry_banner_at_8003(self, tmp_path):
+        # JMP-mode service entry: banner gives the dispatch contract
+        # without restating "byte 0 is &4C" (which would just echo
+        # the next disassembly line).
         from dasmos.core.annotations import Align, Banner
         d = self._make_loaded_disassembler(tmp_path, self._build_rom())
         d.use_environment("acorn_sideways_rom")
@@ -475,9 +528,12 @@ class TestAcornSidewaysRom:
         assert banners
         body = banners[0].description
         assert "service-call" in body.lower()
+        # §4: redundant "Byte 0 is &4C" line dropped from JMP-mode.
+        assert "Byte 0 is" not in body
 
-    def test_rom_type_inline_decodes_flags_and_processor(self, tmp_path):
-        # _build_rom sets rom_type = &82 (Service entry + 6502-non-BASIC).
+    def test_rom_type_inline_is_short_label(self, tmp_path):
+        # The byte's inline is just "ROM type" — per-bit decode lives
+        # in the AFTER_LINE banner below (per #11 §5).
         from dasmos.core.annotations import Align, Comment
         d = self._make_loaded_disassembler(tmp_path, self._build_rom())
         d.use_environment("acorn_sideways_rom")
@@ -486,41 +542,126 @@ class TestAcornSidewaysRom:
             if isinstance(a, Comment)
         ]
         assert inline
-        text = inline[0].text
-        assert text.startswith("ROM type: ")
-        assert "Service entry" in text
-        assert "6502 (non-BASIC)" in text
+        assert inline[0].text == "ROM type"
 
-    def test_rom_type_inline_decodes_all_upper_bits(self, tmp_path):
-        # Set every flag bit + a recognised processor (Z80 = &08).
-        from dasmos.core.annotations import Align, Comment
+    def test_rom_type_byte_carries_binary_format_hint(self, tmp_path):
+        # rom_type byte at &8006 gets FormatHint.BINARY so it renders
+        # as %10000010 instead of &82 (per #11 §5).
+        from dasmos.core.format_hint import FormatHint
+        d = self._make_loaded_disassembler(tmp_path, self._build_rom())
+        d.use_environment("acorn_sideways_rom")
+        ir = d.disassemble()
+        assert ir.format_hints.get_or_none(0x8006) is FormatHint.BINARY
+
+    def test_rom_type_after_line_banner_carries_bit_table(self, tmp_path):
+        # _build_rom sets rom_type = &82 (Service entry + 6502-non-BASIC).
+        # The AFTER_LINE banner below the equb decodes each bit as a
+        # Markdown table row.
+        from dasmos.core.annotations import Align, Banner
+        d = self._make_loaded_disassembler(tmp_path, self._build_rom())
+        d.use_environment("acorn_sideways_rom")
+        banners = [
+            a for a in d.annotations.get_for_align(0x8006, Align.AFTER_LINE)
+            if isinstance(a, Banner)
+        ]
+        assert banners
+        body = banners[0].description
+        # Pipe-table header.
+        assert "| Bit" in body
+        assert "| Value" in body
+        assert "| Meaning" in body
+        # Each bit row appears with its value (1/0 for &82's pattern).
+        assert "| 7" in body and "| 1" in body
+        assert "| 6" in body and "| 0" in body
+        # Service entry present + 6502 (non-BASIC) processor.
+        assert "Service entry present" in body
+        assert "6502 (non-BASIC)" in body
+        assert "0010" in body  # processor sub-field rendered in binary
+
+    def test_rom_type_table_decodes_all_flags_set(self, tmp_path):
+        from dasmos.core.annotations import Align, Banner
         rom = bytearray(self._build_rom())
         rom[6] = 0xf8  # all four flags + Z80
         d = self._make_loaded_disassembler(tmp_path, bytes(rom))
         d.use_environment("acorn_sideways_rom")
-        text = next(
-            a.text for a in d.annotations.get_for_align(0x8006, Align.INLINE)
-            if isinstance(a, Comment)
+        body = next(
+            a.description for a in d.annotations.get_for_align(0x8006, Align.AFTER_LINE)
+            if isinstance(a, Banner)
         )
-        assert "Service entry" in text
-        assert "Language entry" in text
-        assert "Tube relocation address present" in text
-        assert "Electron firmkey support" in text
-        assert "Z80" in text
+        assert "Service entry present" in body
+        assert "Language entry present" in body
+        assert "Tube relocation address present" in body
+        assert "Electron firmkey support" in body
+        assert "Z80" in body
 
-    def test_rom_type_inline_handles_unknown_processor(self, tmp_path):
+    def test_rom_type_table_handles_unknown_processor(self, tmp_path):
         # Processor encoding &7 isn't in the table — falls back to
-        # the verbatim hex form.
-        from dasmos.core.annotations import Align, Comment
+        # ``processor &7``.
+        from dasmos.core.annotations import Align, Banner
         rom = bytearray(self._build_rom())
         rom[6] = 0x07
         d = self._make_loaded_disassembler(tmp_path, bytes(rom))
         d.use_environment("acorn_sideways_rom")
-        text = next(
-            a.text for a in d.annotations.get_for_align(0x8006, Align.INLINE)
+        body = next(
+            a.description for a in d.annotations.get_for_align(0x8006, Align.AFTER_LINE)
+            if isinstance(a, Banner)
+        )
+        assert "processor &7" in body
+
+    def test_copyright_split_into_three_byte_classifications(self, tmp_path):
+        # The copyright field at copyright_addr now classifies as:
+        # Byte(1) leading NUL + String(text) + Byte(1) trailing NUL,
+        # with copyright_string label at copyright+1.
+        from dasmos.core.annotations import Align, Comment
+        from dasmos.core.classification import Byte, String
+        d = self._make_loaded_disassembler(
+            tmp_path, self._build_rom(copyright=b"(C) 2026"),
+        )
+        d.use_environment("acorn_sideways_rom")
+        ir = d.disassemble()
+        copyright_label = next(
+            (addr for addr in range(0x8000, 0x8100)
+             if (lbl := ir.labels.get_label(addr)) is not None
+             and "copyright" in lbl.explicit_name_texts())
+        )
+        # Leading NUL = Byte(1).
+        leading = ir.classifications.get_classification(copyright_label)
+        assert isinstance(leading, Byte) and leading.length() == 1
+        # copyright_string label at copyright+1.
+        text_label = ir.labels.get_label(copyright_label + 1)
+        assert text_label is not None
+        assert "copyright_string" in text_label.explicit_name_texts()
+        # The text bytes classify as a String.
+        text_class = ir.classifications.get_classification(copyright_label + 1)
+        assert isinstance(text_class, String)
+        # Inline notes on both NULs.
+        leading_inline = next(
+            a.text for a in ir.annotations.get_for_align(copyright_label, Align.INLINE)
             if isinstance(a, Comment)
         )
-        assert "processor &7" in text
+        assert "NUL preceding copyright" in leading_inline
+
+    def test_title_split_off_trailing_nul(self, tmp_path):
+        # Title now classifies as String(text-only) + Byte(1) NUL,
+        # with an inline "NUL terminator" on the NUL byte.
+        from dasmos.core.annotations import Align, Comment
+        from dasmos.core.classification import Byte, String
+        d = self._make_loaded_disassembler(
+            tmp_path, self._build_rom(title=b"TestROM"),
+        )
+        d.use_environment("acorn_sideways_rom")
+        ir = d.disassemble()
+        title_class = ir.classifications.get_classification(0x8009)
+        assert isinstance(title_class, String)
+        # The byte right after the title text is the NUL.
+        nul_addr = 0x8009 + len(b"TestROM")
+        nul_class = ir.classifications.get_classification(nul_addr)
+        assert isinstance(nul_class, Byte) and nul_class.length() == 1
+        nul_inline = next(
+            a.text for a in ir.annotations.get_for_align(nul_addr, Align.INLINE)
+            if isinstance(a, Comment)
+        )
+        assert "NUL terminator" in nul_inline
 
     def test_copyright_offset_inline_resolves_address(self, tmp_path):
         from dasmos.core.annotations import Align, Comment
