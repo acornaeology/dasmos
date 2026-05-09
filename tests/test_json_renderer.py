@@ -300,6 +300,92 @@ class TestItemEmission:
         assert s_item["string"] == "hi!"
 
 
+class TestByteWordFormatHints:
+    """``format_hints`` parallel array on ``byte`` and ``word`` items.
+
+    The opcode item's singular ``format_hint`` (operand byte) has
+    been there since FormatHint was added; byte/word items only got
+    the parallel-array form once the JSON path started carrying the
+    hint set the beebasm renderer already understood (#14).
+    """
+
+    def test_byte_with_binary_hint_surfaces_in_format_hints(self, tmp_path):
+        # The acorn_sideways_rom rom_type byte at &8006 is the
+        # canonical case: d.format_hint(addr, FormatHint.BINARY) on
+        # a single-byte d.byte() classification. The JSON consumer
+        # picks up the hint and renders the bit-pattern form.
+        from dasmos.core.format_hint import FormatHint
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0x82]))
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.byte(0x8000, 1)
+        d.format_hint(0x8000, FormatHint.BINARY)
+        items = d.disassemble().render(JsonRenderer()).data["items"]
+        assert items[0]["type"] == "byte"
+        assert items[0]["values"] == [0x82]
+        assert items[0]["format_hints"] == ["binary"]
+
+    def test_byte_block_with_mixed_hints_uses_null_padding(self, tmp_path):
+        # Heterogeneous hints across a multi-byte block: only the
+        # bytes with hints set carry a string, others are None. Same
+        # padding convention as the existing ``expressions`` array.
+        from dasmos.core.format_hint import FormatHint
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0x01, 0x02, 0x82, 0x04]))
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.byte(0x8000, 4)
+        d.format_hint(0x8002, FormatHint.BINARY)
+        items = d.disassemble().render(JsonRenderer()).data["items"]
+        assert items[0]["values"] == [1, 2, 0x82, 4]
+        assert items[0]["format_hints"] == [None, None, "binary", None]
+
+    def test_byte_without_any_hint_omits_field(self, tmp_path):
+        # No hints anywhere → field omitted entirely (schema-thrift
+        # convention used elsewhere in the JSON output).
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0x82]))
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.byte(0x8000, 1)
+        items = d.disassemble().render(JsonRenderer()).data["items"]
+        assert items[0]["type"] == "byte"
+        assert "format_hints" not in items[0]
+
+    def test_word_with_decimal_hint_per_word(self, tmp_path):
+        # Word items group every two bytes into one value; format_hints
+        # is parallel to ``values`` (one entry per word, not per byte).
+        from dasmos.core.format_hint import FormatHint
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0x10, 0x27, 0x20, 0x4e]))  # 10000, 20000
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.word(0x8000, 4)
+        d.format_hint(0x8000, FormatHint.DECIMAL)
+        d.format_hint(0x8002, FormatHint.HEX)
+        items = d.disassemble().render(JsonRenderer()).data["items"]
+        assert items[0]["type"] == "word"
+        assert items[0]["values"] == [10000, 20000]
+        assert items[0]["format_hints"] == ["decimal", "hex"]
+
+    def test_format_hints_coexists_with_expressions(self, tmp_path):
+        # Both fields can appear on the same item; they're independent
+        # parallel arrays.
+        from dasmos.core.format_hint import FormatHint
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0x82, 0x10]))
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.byte(0x8000, 2)
+        d.format_hint(0x8000, FormatHint.BINARY)
+        d.expr(0x8001, "version")
+        items = d.disassemble().render(JsonRenderer()).data["items"]
+        assert items[0]["values"] == [0x82, 0x10]
+        assert items[0]["format_hints"] == ["binary", None]
+        assert items[0]["expressions"] == [None, "version"]
+
+
 class TestExternalLabels:
     """External labels (out-of-load-range) appear as a name → address
     mapping. py8dis schema is ``dict[str, int]``.

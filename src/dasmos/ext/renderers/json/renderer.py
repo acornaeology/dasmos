@@ -430,6 +430,9 @@ class JsonRenderer(Renderer[StructuredOutput]):
             exprs = self._collect_expressions(ir, binary_addr, length, 2)
             if exprs:
                 entry["expressions"] = exprs
+            hints = self._collect_format_hints(ir, binary_addr, length, 2)
+            if hints:
+                entry["format_hints"] = hints
         elif isinstance(c, Fill):
             entry["type"] = "fill"
             entry["value"] = c.value()
@@ -440,6 +443,9 @@ class JsonRenderer(Renderer[StructuredOutput]):
             exprs = self._collect_expressions(ir, binary_addr, length, 1)
             if exprs:
                 entry["expressions"] = exprs
+            hints = self._collect_format_hints(ir, binary_addr, length, 1)
+            if hints:
+                entry["format_hints"] = hints
 
         return entry
 
@@ -726,6 +732,34 @@ class JsonRenderer(Renderer[StructuredOutput]):
             if e is not None:
                 has_any = True
             out.append(e)
+        return out if has_any else None
+
+    def _collect_format_hints(
+        self, ir, binary_addr: int, length: int, element_size: int,
+    ) -> list[str | None] | None:
+        """List of FormatHint values parallel to the item's values,
+        with ``None`` where no hint is set. Returns ``None`` when no
+        element has a hint — the caller omits the ``format_hints``
+        key entirely in that case.
+
+        Each populated entry is the hint's ``.value`` string —
+        ``"binary"``, ``"hex"``, ``"decimal"``, ``"char"``,
+        ``"inkey"``, or ``"octal"`` — so consumers can render the
+        author-intended representation without re-deriving from the
+        raw integer. The beebasm renderer uses the same hints in
+        :meth:`BeebasmRenderer._render_byte` and
+        ``_render_hinted_immediate``; surfacing them in JSON keeps
+        the two output paths in lockstep.
+        """
+        out: list[str | None] = []
+        has_any = False
+        for i in range(0, length, element_size):
+            hint = ir.format_hints.get_or_none(binary_addr + i)
+            if hint is not None:
+                has_any = True
+                out.append(hint.value)
+            else:
+                out.append(None)
         return out if has_any else None
 
     def _build_comments_before(
