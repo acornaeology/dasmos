@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any
 from dasmos.core.annotations import Align, Annotation, Banner, Comment
 from dasmos.core.classification import Byte, Fill, String, Word
 from dasmos.core.format_hint import FormatHint
+from dasmos.core.markdown_asm import markdown_normalize_headings
 from dasmos.core.memory import BinaryAddr, RuntimeAddr
 from dasmos.cpu import Opcode, OperandKind
 from dasmos.output import StructuredOutput
@@ -96,7 +97,7 @@ class JsonRenderer(Renderer[StructuredOutput]):
         for c in ir.constants:
             entry: dict[str, Any] = {"name": c.name, "value": c.value}
             if c.comment:
-                entry["comment"] = c.comment
+                entry["comment"] = markdown_normalize_headings(c.comment)
             out.append(entry)
         return out
 
@@ -167,13 +168,21 @@ class JsonRenderer(Renderer[StructuredOutput]):
             if sub.name:
                 entry["name"] = sub.name
             if sub.title:
-                entry["title"] = sub.title
+                entry["title"] = markdown_normalize_headings(sub.title)
             if sub.description:
-                entry["description"] = sub.description
+                entry["description"] = markdown_normalize_headings(
+                    sub.description,
+                )
             if sub.on_entry:
-                entry["on_entry"] = dict(sub.on_entry)
+                entry["on_entry"] = {
+                    reg: markdown_normalize_headings(text)
+                    for reg, text in sub.on_entry.items()
+                }
             if sub.on_exit:
-                entry["on_exit"] = dict(sub.on_exit)
+                entry["on_exit"] = {
+                    reg: markdown_normalize_headings(text)
+                    for reg, text in sub.on_exit.items()
+                }
 
             ra = int(sub.runtime_addr)
             ba = sub.binary_addr
@@ -239,13 +248,21 @@ class JsonRenderer(Renderer[StructuredOutput]):
                     if names:
                         entry["name"] = names[0]
                 if ann.title:
-                    entry["title"] = ann.title
+                    entry["title"] = markdown_normalize_headings(ann.title)
                 if ann.description:
-                    entry["description"] = ann.description
+                    entry["description"] = markdown_normalize_headings(
+                        ann.description,
+                    )
                 if ann.on_entry:
-                    entry["on_entry"] = dict(ann.on_entry)
+                    entry["on_entry"] = {
+                        reg: markdown_normalize_headings(text)
+                        for reg, text in ann.on_entry.items()
+                    }
                 if ann.on_exit:
-                    entry["on_exit"] = dict(ann.on_exit)
+                    entry["on_exit"] = {
+                        reg: markdown_normalize_headings(text)
+                        for reg, text in ann.on_exit.items()
+                    }
                 result.append(entry)
                 # First banner per address wins; ignore extras.
                 break
@@ -786,9 +803,9 @@ class JsonRenderer(Renderer[StructuredOutput]):
             out = [self._BANNER_SEPARATOR]
             parts = []
             if ann.title:
-                parts.append(ann.title)
+                parts.append(markdown_normalize_headings(ann.title))
             if ann.description:
-                parts.append(ann.description)
+                parts.append(markdown_normalize_headings(ann.description))
             if ann.on_entry:
                 parts.append(self._format_register_block("On Entry", ann.on_entry))
             if ann.on_exit:
@@ -797,9 +814,9 @@ class JsonRenderer(Renderer[StructuredOutput]):
                 out.append("\n\n".join(parts))
             return out
         if isinstance(ann, Comment):
-            return [ann.text]
+            return [markdown_normalize_headings(ann.text)]
         if isinstance(ann, Annotation):
-            return [ann.text]
+            return [markdown_normalize_headings(ann.text)]
         return []
 
     @staticmethod
@@ -812,7 +829,7 @@ class JsonRenderer(Renderer[StructuredOutput]):
         """
         lines = [f"{label}:"]
         for reg, desc in mapping.items():
-            lines.append(f"    {reg.upper()}: {desc}")
+            lines.append(f"    {reg.upper()}: {markdown_normalize_headings(desc)}")
         return "\n".join(lines)
 
     @staticmethod
@@ -821,16 +838,16 @@ class JsonRenderer(Renderer[StructuredOutput]):
         # path which doesn't accept multi-line entries (used by
         # ``_gather_annotations`` for INLINE bucket).
         if isinstance(ann, Comment):
-            return ann.text
+            return markdown_normalize_headings(ann.text)
         if isinstance(ann, Banner):
             parts = []
             if ann.title:
-                parts.append(ann.title)
+                parts.append(markdown_normalize_headings(ann.title))
             if ann.description:
-                parts.append(ann.description)
+                parts.append(markdown_normalize_headings(ann.description))
             return " ".join(parts)
         if isinstance(ann, Annotation):
-            return ann.text
+            return markdown_normalize_headings(ann.text)
         return ""
 
     @staticmethod

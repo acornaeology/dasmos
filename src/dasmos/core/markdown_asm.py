@@ -113,6 +113,78 @@ def strip_address_uri_links(text: str) -> str:
     return _ADDRESS_URI_LINK_RE.sub(rewrite, text)
 
 
+def markdown_normalize_headings(text: str) -> str:
+    """Rewrite Setext-style headings in ``text`` as ATX (``# Title``).
+
+    Driver scripts often write banner-style titles using Setext
+    headings (``Title\\n====``). Downstream consumers of the JSON
+    renderer wrap the source markdown to their own column width;
+    when the underline rule is wider than that width, it breaks
+    across two lines and renders as two visually broken rules. ATX
+    headings are immune to that trap because their marker is a
+    single ``#``.
+
+    The asm path strips heading markers entirely via
+    :func:`markdown_to_asm_text`, so this function is a JSON-side
+    convenience: text it returns goes into ``comment`` /
+    ``description`` JSON fields where downstream renderers can
+    re-format the markdown without the wrap risk.
+
+    Non-heading markdown is unaffected — the function early-returns
+    when no Setext-rule characters are present, and otherwise
+    re-emits the document unchanged apart from the rewritten
+    headings. Nested Setext headings (e.g. inside a list item) are
+    handled too.
+    """
+    if "===" not in text and "---" not in text:
+        return text
+    import mistletoe
+    from mistletoe.markdown_renderer import MarkdownRenderer
+    with MarkdownRenderer() as renderer:
+        doc = mistletoe.Document(text)
+        if not _has_setext_heading(doc):
+            return text
+        _rewrite_setext_to_atx(doc)
+        return renderer.render(doc)
+
+
+def _has_setext_heading(token) -> bool:
+    """Recursive check: True if any descendant is a SetextHeading."""
+    from mistletoe.block_token import BlockToken, SetextHeading
+    children = getattr(token, "_children", None)
+    if children is None:
+        return False
+    for child in children:
+        if isinstance(child, SetextHeading):
+            return True
+        if isinstance(child, BlockToken) and _has_setext_heading(child):
+            return True
+    return False
+
+
+def _rewrite_setext_to_atx(token) -> None:
+    """Mutate ``token``'s descendants in place: each SetextHeading
+    becomes a level-matched ATX :class:`Heading`. Preserves the
+    children, level, line number, and parent linkage so
+    MarkdownRenderer re-emits as ``#`` / ``##``.
+    """
+    from mistletoe.block_token import BlockToken, Heading, SetextHeading
+    children = getattr(token, "_children", None)
+    if children is None:
+        return
+    for index, child in enumerate(list(children)):
+        if isinstance(child, SetextHeading):
+            atx = Heading.__new__(Heading)
+            atx.level = child.level
+            atx.closing_sequence = ""
+            atx._children = child._children
+            atx.line_number = child.line_number
+            atx._parent = child._parent
+            children[index] = atx
+        elif isinstance(child, BlockToken):
+            _rewrite_setext_to_atx(child)
+
+
 def markdown_to_asm_text(
     text: str,
     *,

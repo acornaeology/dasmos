@@ -599,3 +599,68 @@ class TestMemoryMapMetadata:
         out = d.disassemble().render(JsonRenderer())
         mm = out.data["memory_map"]
         assert all(e["name"] != "in_rom" for e in mm), mm
+
+
+class TestSetextHeadingNormalisation:
+    """Driver-supplied Setext-style headings (``Title\\n====``) get
+    normalised to ATX (``# Title``) in the JSON output so the rule
+    can't wrap mid-line on downstream consumers (issue #3). The asm
+    path strips heading markers entirely; this normalisation is a
+    JSON-side concern.
+    """
+
+    def test_setext_in_comment_becomes_atx(self, tmp_path):
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0x60]))
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.comment(0x8000, "ANFS ROM 4.21\n=============\n\nbody.")
+        out = d.disassemble().render(JsonRenderer())
+        item = next(it for it in out.data["items"] if it["addr"] == 0x8000)
+        joined = "\n".join(item.get("comments_before", []))
+        assert "# ANFS ROM 4.21" in joined
+        assert "=============" not in joined
+
+    def test_setext_in_subroutine_description_becomes_atx(self, tmp_path):
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0x60]))
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.subroutine(
+            0x8000, "main",
+            description="Section\n=======\n\nDetail prose.",
+        )
+        out = d.disassemble().render(JsonRenderer())
+        sub = next(s for s in out.data["subroutines"] if s.get("name") == "main")
+        assert "# Section" in sub["description"]
+        assert "=======" not in sub["description"]
+
+    def test_setext_in_banner_description_becomes_atx(self, tmp_path):
+        from dasmos.core.annotations import Align
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0x60]))
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.banner(
+            0x8000,
+            title="Region",
+            description="Heading\n=======\n\nbody.",
+        )
+        out = d.disassemble().render(JsonRenderer())
+        banner = next(b for b in out.data["banners"] if b.get("title") == "Region")
+        assert "# Heading" in banner["description"]
+        assert "=======" not in banner["description"]
+
+    def test_non_heading_markdown_unchanged_in_json(self, tmp_path):
+        # Plain prose without setext rule chars must round-trip
+        # byte-identical (fast-path early return).
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0x60]))
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.comment(0x8000, "Just a single line of prose.")
+        out = d.disassemble().render(JsonRenderer())
+        item = next(it for it in out.data["items"] if it["addr"] == 0x8000)
+        assert "Just a single line of prose." in item.get(
+            "comments_before", [],
+        )

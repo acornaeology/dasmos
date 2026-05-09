@@ -18,6 +18,7 @@ the custom ``[label](address:HEX[?hex])`` URI scheme.
 import pytest
 
 from dasmos.core.markdown_asm import (
+    markdown_normalize_headings,
     markdown_to_asm_text,
     strip_address_uri_links,
 )
@@ -221,3 +222,72 @@ class TestHtmlEntityUnescape:
     def test_unicode_arrow_passes_through_untouched(self):
         # Already-Unicode arrows must NOT be double-processed.
         assert markdown_to_asm_text("A → B", inline=True) == "A → B"
+
+
+class TestMarkdownNormalizeHeadings:
+    """Setext-heading normaliser used by the JSON renderer to keep
+    ``Title\\n====`` rules from wrapping mid-rule on downstream
+    consumers (issue #3). Rewrites Setext headings as ATX so the
+    marker is a single ``#`` immune to wrap.
+    """
+
+    def test_setext_level_1_becomes_atx_level_1(self):
+        out = markdown_normalize_headings("Title\n=====\n\nbody\n")
+        assert out.startswith("# Title")
+        assert "===" not in out
+
+    def test_setext_level_2_becomes_atx_level_2(self):
+        out = markdown_normalize_headings("Subtitle\n--------\n\nbody\n")
+        assert out.startswith("## Subtitle")
+        assert "---\n" not in out  # no rule line either
+
+    def test_long_setext_underline_no_longer_present(self):
+        # Reproducer for the wrap bug: a 73-char title with a flat-62
+        # rule (the magic-number workaround in driver scripts) becomes
+        # an ATX heading where rule width is irrelevant.
+        title = "ANFS ROM 4.21 variant 1 disassembly (Acorn Advanced Network Filing)"
+        rule = "=" * 62
+        out = markdown_normalize_headings(f"{title}\n{rule}\n")
+        assert out.startswith(f"# {title}")
+        assert rule not in out
+
+    def test_no_headings_passes_through_byte_identical(self):
+        # Fast-path early-return when no Setext rule chars are present.
+        text = "Just plain prose.\n\nAnother paragraph.\n"
+        assert markdown_normalize_headings(text) == text
+
+    def test_atx_heading_unchanged(self):
+        # Already-ATX content goes through the parse path (because
+        # `---` could appear in code fences etc.) but the rendered
+        # heading stays ATX.
+        out = markdown_normalize_headings("# Already ATX\n\nbody\n")
+        assert out.startswith("# Already ATX")
+
+    def test_thematic_break_round_trips(self):
+        # A `----` thematic break is NOT a Setext heading underline
+        # (no preceding paragraph). Must survive the round-trip.
+        text = "Para 1.\n\n----\n\nPara 2.\n"
+        out = markdown_normalize_headings(text)
+        assert "----" in out
+        assert "Para 1." in out and "Para 2." in out
+
+    def test_setext_inside_list_item(self):
+        # CommonMark allows Setext headings nested inside list items;
+        # the recursive walker must catch them.
+        text = "- item\n\n  Inner heading\n  =============\n\n  body\n"
+        out = markdown_normalize_headings(text)
+        assert "# Inner heading" in out
+        assert "=============" not in out
+
+    def test_emphasis_in_heading_preserved(self):
+        # Inline children of the heading carry through.
+        out = markdown_normalize_headings("Title with *emphasis*\n=====\n")
+        assert "# Title with *emphasis*" in out
+
+    def test_no_setext_chars_at_all_short_circuits(self):
+        # Sanity: a string that doesn't contain `===` or `---` at all
+        # never triggers mistletoe parsing — verified indirectly by
+        # the byte-identical return.
+        text = "single short paragraph"
+        assert markdown_normalize_headings(text) is text or \
+               markdown_normalize_headings(text) == text
