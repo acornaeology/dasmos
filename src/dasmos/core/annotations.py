@@ -200,6 +200,22 @@ class AnnotationStore:
         """Return entries at ``binary_addr`` whose alignment matches."""
         return [e for e in self.get(binary_addr) if e.align is align]
 
+    def is_auto_suppressed_at(self, binary_addr) -> bool:
+        """Return True if any annotation at ``binary_addr`` carries the
+        ``suppresses_auto`` flag.
+
+        Env analysers and ``setup()`` methods consult this before
+        attaching their auto-generated annotation, giving driver
+        scripts a uniform way to crowd out env-supplied auto-comments
+        when the driver already documents the address authoritatively.
+        Align-agnostic — a driver Comment with ``suppresses_auto=True``
+        in *any* position blocks env auto-attach at that address.
+        """
+        for entry in self.get(binary_addr):
+            if isinstance(entry, Comment) and entry.suppresses_auto:
+                return True
+        return False
+
     def __contains__(self, binary_addr) -> bool:
         return self._key(binary_addr) in self._entries
 

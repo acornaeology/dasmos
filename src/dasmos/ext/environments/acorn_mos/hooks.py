@@ -264,22 +264,6 @@ OSWORD_INLINE = _build_inline_table(
 )
 
 
-def _auto_suppressed_at(disassembler: "Disassembler", binary_addr: int) -> bool:
-    """Return True if any annotation at ``binary_addr`` carries the
-    ``suppresses_auto`` flag, instructing env analysers to skip
-    attaching their auto-generated annotation here. Driver-authored
-    crowd-out for env auto-comments — uniform across every align
-    bucket so a driver Comment with ``suppresses_auto=True`` (in any
-    position) blocks env auto-attach at the same address.
-    """
-    from dasmos.core.annotations import Comment
-    for align in Align:
-        for ann in disassembler.annotations.get_for_align(binary_addr, align):
-            if isinstance(ann, Comment) and ann.suppresses_auto:
-                return True
-    return False
-
-
 def _attach_inline_jsr_comment(
     disassembler: "Disassembler",
     jsr_binary_addr: int,
@@ -304,7 +288,7 @@ def _attach_inline_jsr_comment(
     to flag authoring bugs where one driver call overwrites another)
     suppresses for this case — analyser stacking is intentional.
     """
-    if _auto_suppressed_at(disassembler, jsr_binary_addr):
+    if disassembler.annotations.is_auto_suppressed_at(jsr_binary_addr):
         return
     runtime_addr = int(disassembler.moves.b2r(BinaryAddr(jsr_binary_addr)))
     from dasmos.core.annotations import Comment
@@ -477,7 +461,7 @@ def _attach_post_call_table(
     from dasmos.cpu import Opcode
     if not isinstance(classification, Opcode):
         return
-    if _auto_suppressed_at(disassembler, jsr_binary_addr):
+    if disassembler.annotations.is_auto_suppressed_at(jsr_binary_addr):
         return
     existing = disassembler.annotations.get_for_align(
         jsr_binary_addr, Align.BEFORE_LINE,
@@ -535,8 +519,8 @@ def _attach_post_call_descriptions(
     # comment would land).
     next_addr = jsr_binary_addr + classification.length()
     if (
-        _auto_suppressed_at(disassembler, jsr_binary_addr)
-        or _auto_suppressed_at(disassembler, next_addr)
+        disassembler.annotations.is_auto_suppressed_at(jsr_binary_addr)
+        or disassembler.annotations.is_auto_suppressed_at(next_addr)
     ):
         return
     # Skip if any inline comment is already there (driver-provided
