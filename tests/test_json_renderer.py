@@ -595,6 +595,77 @@ class TestSubroutinesSection:
         out = d.disassemble().render(JsonRenderer())
         assert out.data["banners"] == []
 
+    def test_banner_does_not_duplicate_into_per_item_comments(self, tmp_path):
+        # A Banner annotation belongs only in the top-level ``banners[]``
+        # array (or in ``subroutines[]`` for sub entries). It must NOT
+        # also appear as a stringified separator+body in the per-item
+        # ``comments_before`` / ``comment_inline`` / ``comments_after``
+        # fields — otherwise consumers have to de-dupe by address (#15).
+        from dasmos.core.annotations import Align
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0x00, 0x00, 0x00, 0x00]))
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.label(0x8000, "table_x")
+        d.byte(0x8000, 4)
+        # Attach a Banner at every align that the JSON renderer reads
+        # from per-item comment buckets, to confirm the skip is
+        # comprehensive.
+        d.banner(0x8000, title="Before-label", description="x",
+                 align=Align.BEFORE_LABEL)
+        d.banner(0x8000, title="After-label", description="x",
+                 align=Align.AFTER_LABEL)
+        d.banner(0x8000, title="Before-line", description="x",
+                 align=Align.BEFORE_LINE)
+        d.banner(0x8000, title="After-line", description="x",
+                 align=Align.AFTER_LINE)
+        out = d.disassemble().render(JsonRenderer())
+        # All the banners surface in banners[] (first-banner-per-address
+        # rule means just the first one wins for now — the goal of this
+        # test is the *absence* of duplication on the item).
+        item = next(it for it in out.data["items"] if it["addr"] == 0x8000)
+        # No banner content leaks into the per-item comment fields.
+        before_text = "\n".join(item.get("comments_before", []))
+        after_text = "\n".join(item.get("comments_after", []))
+        for marker in ("Before-label", "After-label", "Before-line", "After-line"):
+            assert marker not in before_text, (
+                f"banner content {marker!r} leaked into comments_before"
+            )
+            assert marker not in after_text, (
+                f"banner content {marker!r} leaked into comments_after"
+            )
+        # And no separator-of-asterisks string either (the previous
+        # behaviour prepended ``"*" * 87`` to banner content).
+        assert "*" * 50 not in before_text
+        assert "*" * 50 not in after_text
+
+    def test_comment_at_after_label_still_appears_in_comments_after(
+        self, tmp_path,
+    ):
+        # The skip is Banner-specific. Plain Comment annotations at
+        # AFTER_LABEL / AFTER_LINE / BEFORE_LABEL / BEFORE_LINE must
+        # still surface in the corresponding per-item comment fields,
+        # so the negative assertion above can't accidentally regress
+        # other annotation types.
+        from dasmos.core.annotations import Align
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0x60]))
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.entry(0x8000, name="start")
+        d.comment(0x8000, "Before-label note", align=Align.BEFORE_LABEL)
+        d.comment(0x8000, "After-label note", align=Align.AFTER_LABEL)
+        d.comment(0x8000, "Before-line note", align=Align.BEFORE_LINE)
+        d.comment(0x8000, "After-line note", align=Align.AFTER_LINE)
+        out = d.disassemble().render(JsonRenderer())
+        item = next(it for it in out.data["items"] if it["addr"] == 0x8000)
+        before_text = "\n".join(item.get("comments_before", []))
+        after_text = "\n".join(item.get("comments_after", []))
+        assert "Before-label note" in before_text
+        assert "Before-line note" in before_text
+        assert "After-label note" in after_text
+        assert "After-line note" in after_text
+
     def test_relocated_sub_keeps_binary_addr(self, tmp_path):
         # When a subroutine is in a relocated region, the binary
         # address differs from the runtime address and BOTH must be

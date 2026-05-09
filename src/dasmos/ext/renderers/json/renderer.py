@@ -816,40 +816,22 @@ class JsonRenderer(Renderer[StructuredOutput]):
                 after.extend(self._annotation_texts(ann))
         return inline, after
 
-    # Banner separator (87 ``*`` characters) — emitted as a
-    # comments_before entry preceding the title/description.
-    _BANNER_SEPARATOR = "*" * 87
-
     def _annotation_texts(self, ann) -> list[str]:
-        """Render an annotation as one or more comments_before entries.
+        """Render an annotation as one or more comments_before /
+        comments_after entries.
 
-        A Banner becomes [separator, body], where body joins:
-
-        - The title (if any).
-        - The description (if any).
-        - The ``On Entry:`` block (if ``on_entry`` non-empty),
-          one ``    <REG>: <desc>`` line per entry.
-        - The ``On Exit:`` block (if ``on_exit`` non-empty), same
-          format.
-
-        Each section is separated by ``\\n\\n`` so the rendering is
-        emitted as a single comments_before entry. Comments and bare
-        Annotations each become a single entry.
+        Banners are deliberately skipped — they surface in the
+        top-level :meth:`_build_banners` array (or in the
+        ``subroutines[]`` array via
+        :meth:`_build_subroutines_with_fall_through` for subroutine
+        entries). Including them here too produced the duplication
+        in #15 where the same Banner appeared as a structured record
+        AND as a stringified separator+body in ``comments_*``,
+        forcing downstream consumers to de-dupe by address. Comments
+        and bare Annotations each become a single entry.
         """
         if isinstance(ann, Banner):
-            out = [self._BANNER_SEPARATOR]
-            parts = []
-            if ann.title:
-                parts.append(markdown_normalize_headings(ann.title))
-            if ann.description:
-                parts.append(markdown_normalize_headings(ann.description))
-            if ann.on_entry:
-                parts.append(self._format_register_block("On Entry", ann.on_entry))
-            if ann.on_exit:
-                parts.append(self._format_register_block("On Exit", ann.on_exit))
-            if parts:
-                out.append("\n\n".join(parts))
-            return out
+            return []
         if isinstance(ann, Comment):
             return [markdown_normalize_headings(ann.text)]
         if isinstance(ann, Annotation):
@@ -873,16 +855,14 @@ class JsonRenderer(Renderer[StructuredOutput]):
     def _annotation_text(ann) -> str:
         # Legacy single-text accessor, kept only for the inline
         # path which doesn't accept multi-line entries (used by
-        # ``_gather_annotations`` for INLINE bucket).
+        # ``_gather_annotations`` for INLINE bucket). Banners are
+        # skipped for the same reason as in ``_annotation_texts``
+        # (#15) — they belong in the top-level ``banners[]`` array,
+        # not in per-item comment fields.
         if isinstance(ann, Comment):
             return markdown_normalize_headings(ann.text)
         if isinstance(ann, Banner):
-            parts = []
-            if ann.title:
-                parts.append(markdown_normalize_headings(ann.title))
-            if ann.description:
-                parts.append(markdown_normalize_headings(ann.description))
-            return " ".join(parts)
+            return ""
         if isinstance(ann, Annotation):
             return markdown_normalize_headings(ann.text)
         return ""
