@@ -630,7 +630,7 @@ OSBYTE_POST_CALL_TABLES: dict[int, dict[str, tuple[str, dict[int, str]]]] = {
     # entry). Sets X = OS-version id.
     0x00: {
         "x": (
-            "X is the OS version number",
+            "On return, X is the OS version number",
             {
                 0: "OS 1.00 (Early BBC B or Electron OS 1.00)",
                 1: "OS 1.20 or American OS",
@@ -677,7 +677,7 @@ OSARGS_POST_CALL_TABLES: dict[
 ] = {
     (0x00, 0x00): {
         "a": (
-            "A is the filing system number",
+            "On return, A is the filing system number",
             {
                 0: "no filing system selected",
                 1: "1200 baud CFS",

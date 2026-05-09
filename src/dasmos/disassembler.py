@@ -867,6 +867,7 @@ class Disassembler:
         align: Align = Align.BEFORE_LABEL,
         word_wrap: bool = True,
         indent: int = 0,
+        suppresses_auto: bool = False,
         move: Move | None = None,
     ) -> None:
         """Attach a comment at ``runtime_addr``.
@@ -878,6 +879,13 @@ class Disassembler:
         (``AFTER_LABEL``, ``BEFORE_LINE``, ``AFTER_LINE``) cover
         less-common arrangements.
 
+        ``suppresses_auto`` marks this comment as authoritative: env
+        analysers (e.g. the OSBYTE/OSARGS post-call hooks in
+        ``acorn_mos``) skip attaching their auto-generated annotation
+        at this address when any annotation present has this flag set.
+        Use it when the driver already documents the call's outcome
+        and the env-supplied table/description would be redundant.
+
         The runtime address is resolved to a binary address via the
         active-move stack on the move manager, or via the explicit
         ``move_id`` if given.
@@ -886,7 +894,13 @@ class Disassembler:
         binary_addr = self._resolve_to_binary_addr(runtime_addr, move)
         self._annotations.add(
             binary_addr,
-            Comment(text=text, align=align, word_wrap=word_wrap, indent=indent),
+            Comment(
+                text=text,
+                align=align,
+                word_wrap=word_wrap,
+                indent=indent,
+                suppresses_auto=suppresses_auto,
+            ),
         )
 
     def banner(

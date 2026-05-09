@@ -962,8 +962,10 @@ class TestAcornMosInlineAutoComments:
         # LDA #&00 ; LDX #&01 ; JSR osbyte ; STX foo ; RTS — OSBYTE
         # &00 reads the OS version into X. The post-call table
         # documents every possible X-value (OS 1.00 / 1.20 /
-        # 2.00 / 3.2 / 4.0 / 5.0). Renders as a Markdown table at
-        # the byte after the JSR — the STX consumer.
+        # 2.00 / 3.2 / 4.0 / 5.0). Renders as a Markdown table
+        # attached as a preamble (BEFORE_LINE) at the JSR site so
+        # the call and its return-value mapping read together as one
+        # top-down block.
         d = self._make(
             tmp_path,
             # LDA #&00      a9 00
@@ -975,10 +977,10 @@ class TestAcornMosInlineAutoComments:
                    0x8e, 0x00, 0x20, 0x60]),
         )
         ir = d.disassemble()
-        # The standalone-comment lookup goes by binary address (the
-        # STX is at 0x1007 = 0x1004 JSR + 3 bytes).
+        # The post-call table now anchors at the JSR site itself
+        # (0x1004) with Align.BEFORE_LINE — preamble to the call.
         from dasmos.core.annotations import Align, Comment
-        bucket = ir.annotations.get_for_align(0x1007, Align.BEFORE_LABEL)
+        bucket = ir.annotations.get_for_align(0x1004, Align.BEFORE_LINE)
         comments = [a for a in bucket if isinstance(a, Comment)]
         assert comments, "expected a post-call value-table comment"
         # The Markdown table includes every X-value description.
@@ -986,7 +988,7 @@ class TestAcornMosInlineAutoComments:
         assert "American" in joined
         assert "Master 128" in joined
         assert "Master Compact" in joined
-        assert "X is the OS version number" in joined
+        assert "On return, X is the OS version number" in joined
         # Markdown header row present.
         assert "| X | Meaning |" in joined
 
@@ -1007,7 +1009,8 @@ class TestAcornMosInlineAutoComments:
     def test_osargs_a0_y0_emits_fs_number_table(self, tmp_path):
         # LDA #&00 ; LDY #&00 ; JSR osargs ; STA foo ; RTS — A=0
         # Y=0 returns the filing-system number in A. Post-call table
-        # is the FS-number list.
+        # is the FS-number list, attached as a preamble (BEFORE_LINE)
+        # at the JSR site.
         d = self._make(
             tmp_path,
             bytes([0xa9, 0x00, 0xa0, 0x00, 0x20, 0xda, 0xff,
@@ -1016,15 +1019,75 @@ class TestAcornMosInlineAutoComments:
         d.label(0xffda, "osargs")
         ir = d.disassemble()
         from dasmos.core.annotations import Align, Comment
-        bucket = ir.annotations.get_for_align(0x1007, Align.BEFORE_LABEL)
+        bucket = ir.annotations.get_for_align(0x1004, Align.BEFORE_LINE)
         comments = [a for a in bucket if isinstance(a, Comment)]
         assert comments
         joined = "\n".join(c.text for c in comments)
+        assert "On return, A is the filing system number" in joined
         assert "Network filing system" in joined
         assert "Teletext filing system" in joined
         assert "IEEE filing system" in joined
         assert "Videodisc filing system" in joined
         assert "1200 baud" in joined
+
+    def test_post_call_table_suppressed_by_driver_authoritative_comment(
+        self, tmp_path,
+    ):
+        # When the driver attaches a Comment at the JSR site with
+        # suppresses_auto=True, the env's auto post-call table must
+        # not be emitted — the driver is asserting authority over
+        # this call's documentation.
+        from dasmos.core.annotations import Align, Comment
+        d = self._make(
+            tmp_path,
+            bytes([0xa9, 0x00, 0xa2, 0x01, 0x20, 0xf4, 0xff,
+                   0x8e, 0x00, 0x20, 0x60]),
+        )
+        # Driver's authoritative note crowds out the auto-generated
+        # OS-version table. The note can sit at any align — the
+        # suppression check is align-agnostic at the JSR address.
+        d.comment(
+            0x1004,
+            "version handled inline below",
+            align=Align.BEFORE_LINE,
+            suppresses_auto=True,
+        )
+        ir = d.disassemble()
+        bucket = ir.annotations.get_for_align(0x1004, Align.BEFORE_LINE)
+        comments = [a for a in bucket if isinstance(a, Comment)]
+        texts = [c.text for c in comments]
+        # Driver comment present, env auto-table absent.
+        assert "version handled inline below" in texts
+        assert not any(
+            "On return, X is the OS version number" in t for t in texts
+        )
+
+    def test_post_call_descriptions_suppressed_by_driver_at_jsr(
+        self, tmp_path,
+    ):
+        # OSBYTE &7F (read EOF) ships an inline post-call description
+        # ("X=0 means EOF reached, X=&FF means data remaining")
+        # attached to the consumer instruction. The driver suppresses
+        # it by putting suppresses_auto=True at the JSR address.
+        from dasmos.core.annotations import Align, Comment
+        d = self._make(
+            tmp_path,
+            # LDA #&7f ; LDY #&05 ; JSR osbyte ; STX foo ; RTS
+            bytes([0xa9, 0x7f, 0xa0, 0x05, 0x20, 0xf4, 0xff,
+                   0x8e, 0x00, 0x20, 0x60]),
+        )
+        d.comment(
+            0x1004,
+            "EOF check inlined",
+            align=Align.BEFORE_LINE,
+            suppresses_auto=True,
+        )
+        ir = d.disassemble()
+        # Auto inline description would normally land at 0x1007 (the
+        # STX consumer); with the driver's crowd-out it must not.
+        bucket = ir.annotations.get_for_align(0x1007, Align.INLINE)
+        texts = [a.text for a in bucket if isinstance(a, Comment)]
+        assert not any("EOF reached" in t for t in texts)
 
     def test_analyser_inline_stacks_alongside_driver_inline(self, tmp_path):
         # The OSARGS analyser's "Write sequential file pointer ..."

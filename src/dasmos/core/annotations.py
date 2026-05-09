@@ -73,6 +73,7 @@ class Comment:
     word_wrap: bool = True
     indent: int = 0
     auto_generated: bool = False
+    suppresses_auto: bool = False
     priority: Optional[int] = None
 
 

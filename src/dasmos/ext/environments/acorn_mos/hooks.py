@@ -264,6 +264,22 @@ OSWORD_INLINE = _build_inline_table(
 )
 
 
+def _auto_suppressed_at(disassembler: "Disassembler", binary_addr: int) -> bool:
+    """Return True if any annotation at ``binary_addr`` carries the
+    ``suppresses_auto`` flag, instructing env analysers to skip
+    attaching their auto-generated annotation here. Driver-authored
+    crowd-out for env auto-comments — uniform across every align
+    bucket so a driver Comment with ``suppresses_auto=True`` (in any
+    position) blocks env auto-attach at the same address.
+    """
+    from dasmos.core.annotations import Comment
+    for align in Align:
+        for ann in disassembler.annotations.get_for_align(binary_addr, align):
+            if isinstance(ann, Comment) and ann.suppresses_auto:
+                return True
+    return False
+
+
 def _attach_inline_jsr_comment(
     disassembler: "Disassembler",
     jsr_binary_addr: int,
@@ -279,14 +295,17 @@ def _attach_inline_jsr_comment(
     auto-comment appends specifics (``Write sequential file
     pointer``) to land on one line.
 
-    Skips only when an annotation with the EXACT same text already
-    exists, so re-running the analyser is idempotent.
+    Skips when an annotation with the EXACT same text already exists
+    (idempotent re-runs) or when any annotation at the address sets
+    ``suppresses_auto=True`` (driver crowd-out).
 
     Marks the new comment ``auto_generated=True`` so the
     duplicate-comment warning in :class:`AnnotationStore` (intended
     to flag authoring bugs where one driver call overwrites another)
     suppresses for this case — analyser stacking is intentional.
     """
+    if _auto_suppressed_at(disassembler, jsr_binary_addr):
+        return
     runtime_addr = int(disassembler.moves.b2r(BinaryAddr(jsr_binary_addr)))
     from dasmos.core.annotations import Comment
     existing = disassembler.annotations.get_for_align(
@@ -438,40 +457,45 @@ def _attach_post_call_table(
     jsr_binary_addr: int,
     table_specs: dict[str, tuple[str, dict[int, str]]],
 ) -> None:
-    """Emit one or more value-table comments at the byte after the
+    """Emit one or more value-table comments as a preamble to the
     JSR/JMP. Each spec maps a register letter to ``(intro, values)``;
-    each becomes a separate standalone (BEFORE_LABEL) Markdown-table
-    comment. Driver-supplied annotations at the destination are
-    respected: this won't overwrite an existing comment, but stacks
-    alongside it.
+    each becomes a separate standalone Markdown-table comment attached
+    at the JSR site with ``Align.BEFORE_LINE`` (between any label and
+    the call opcode), so the table reads as a top-down preamble:
+    setup → "here's what comes back" → call → consumer.
+
+    Driver-supplied annotations at the JSR site are respected. If any
+    annotation at the JSR address has ``suppresses_auto=True``, the
+    auto-table is skipped entirely (driver overrides win); otherwise
+    duplicates of the exact same text are short-circuited so re-runs
+    are idempotent.
     """
+    from dasmos.core.annotations import Comment
     classification = disassembler.classifications.get_classification(
         jsr_binary_addr,
     )
     from dasmos.cpu import Opcode
     if not isinstance(classification, Opcode):
         return
-    next_addr = jsr_binary_addr + classification.length()
-    runtime_addr = int(disassembler.moves.b2r(BinaryAddr(next_addr)))
+    if _auto_suppressed_at(disassembler, jsr_binary_addr):
+        return
+    existing = disassembler.annotations.get_for_align(
+        jsr_binary_addr, Align.BEFORE_LINE,
+    )
+    existing_texts = {
+        a.text for a in existing if isinstance(a, Comment)
+    }
     for register, (intro, values) in sorted(table_specs.items()):
         if not values:
             continue
         text = _format_value_table(register, intro, values)
-        # Skip if a comment with the same text already exists at this
-        # address — guards against re-runs (e.g. multiple JSR sites
-        # to the same target attaching the same table at the same
-        # next-instruction address). The duplicate-comment warning
-        # in AnnotationStore covers exact duplicates differently;
-        # this earlier short-circuit avoids the warning entirely.
-        existing = disassembler.annotations.get_for_align(
-            next_addr, Align.BEFORE_LABEL,
-        )
-        from dasmos.core.annotations import Comment
-        if any(
-            isinstance(a, Comment) and a.text == text for a in existing
-        ):
+        if text in existing_texts:
             continue
-        disassembler.comment(runtime_addr, text)
+        disassembler.annotations.add(
+            BinaryAddr(jsr_binary_addr),
+            Comment(text=text, align=Align.BEFORE_LINE, auto_generated=True),
+        )
+        existing_texts.add(text)
 
 
 def _attach_post_call_descriptions(
@@ -505,7 +529,16 @@ def _attach_post_call_descriptions(
     from dasmos.cpu import Opcode
     if not isinstance(classification, Opcode):
         return
+    # Driver crowd-out: skip when a `suppresses_auto=True` annotation
+    # exists at either the JSR site (where the driver thinks about
+    # the call) or the consumer-instruction site (where this auto
+    # comment would land).
     next_addr = jsr_binary_addr + classification.length()
+    if (
+        _auto_suppressed_at(disassembler, jsr_binary_addr)
+        or _auto_suppressed_at(disassembler, next_addr)
+    ):
+        return
     # Skip if any inline comment is already there (driver-provided
     # comments win).
     existing = disassembler.annotations.get_for_align(
