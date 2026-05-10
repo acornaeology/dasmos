@@ -9,6 +9,12 @@ Emits a JSON-serialisable dictionary:
       "constants": [{"name": str, "value": int, "comment": str?}, ...],
       "subroutines": [{"addr": int, "name": str?, ..., "fall_through": True?,
                        "align": "before_label"|...?}],
+      # banners[] carries each Banner annotation as its own record;
+      # multiple records may share an addr when the driver / env
+      # attaches more than one banner at the same address with
+      # different alignments (e.g. acorn_sideways_rom emits a
+      # before_label section header AND an after_label bit-decode
+      # banner at &8006).
       "banners": [{"addr": int, "title": str?, "description": str?,
                    "align": "before_label"|"after_label"|"before_line"|"after_line", ...}],
       "external_labels": {"name": int, ...},
@@ -281,8 +287,12 @@ class JsonRenderer(Renderer[StructuredOutput]):
                 # enum value matching the format_hints convention.
                 entry["align"] = ann.align.value
                 result.append(entry)
-                # First banner per address wins; ignore extras.
-                break
+                # All banners at the address are emitted (#18); each
+                # carries its own align field so consumers can place
+                # them around the labelled byte without losing the
+                # ones at non-default alignments. The asm renderer
+                # already emits all of them; the JSON path used to
+                # ``break`` here and lose every banner past the first.
         return result
 
     def _build_external_labels(self, ir) -> dict[str, int]:

@@ -601,7 +601,10 @@ class TestSubroutinesSection:
         # also appear as a stringified separator+body in any of the
         # per-item ``comments_*_label`` / ``comments_*_line`` /
         # ``comment_inline`` fields — otherwise consumers have to
-        # de-dupe by address (#15).
+        # de-dupe by address (#15). All four banners surface in
+        # ``banners[]`` per #18 (the previous "first wins" behaviour
+        # silently dropped three of them); the goal of THIS test is
+        # just the *absence* of duplication on the item.
         from dasmos.core.annotations import Align
         bin_path = tmp_path / "p.bin"
         bin_path.write_bytes(bytes([0x00, 0x00, 0x00, 0x00]))
@@ -631,6 +634,69 @@ class TestSubroutinesSection:
                 f"banner content {marker!r} leaked into per-item comments"
             )
         assert "*" * 50 not in all_comment_text
+
+    def test_multiple_banners_at_same_address_all_surface_in_banners(
+        self, tmp_path,
+    ):
+        # Multiple Banner annotations at the same address (each at a
+        # distinct align) must ALL appear in ``banners[]`` — the
+        # previous "first wins" rule silently dropped every banner
+        # past the first, breaking the acorn_sideways_rom case where
+        # an env attaches both a BEFORE_LABEL section header and an
+        # AFTER_LABEL bit-decode banner at &8006 (#18).
+        from dasmos.core.annotations import Align
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0x00] * 4))
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.label(0x8000, "rom_type")
+        d.banner(
+            0x8000, title="ROM identification",
+            description="Six descriptive fields ...",
+            align=Align.BEFORE_LABEL,
+        )
+        d.banner(
+            0x8000, title="ROM type byte",
+            description="| Bit | Value | Meaning |\n|-|-|-|\n| 7 | 1 | x |",
+            align=Align.AFTER_LABEL,
+        )
+        out = d.disassemble().render(JsonRenderer())
+        at_addr = [b for b in out.data["banners"] if b["addr"] == 0x8000]
+        assert len(at_addr) == 2, at_addr
+        # Insertion order preserved.
+        titles = [b["title"] for b in at_addr]
+        assert titles == ["ROM identification", "ROM type byte"]
+        # Each carries its own align field.
+        aligns = [b["align"] for b in at_addr]
+        assert aligns == ["before_label", "after_label"]
+
+    def test_all_four_aligns_at_same_address_each_surface(self, tmp_path):
+        # Stress test: a banner at every BEFORE / AFTER alignment on
+        # the same address. All four must appear in ``banners[]``.
+        from dasmos.core.annotations import Align
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0x00] * 4))
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.label(0x8000, "addr")
+        for align, title in [
+            (Align.BEFORE_LABEL, "before-label"),
+            (Align.AFTER_LABEL, "after-label"),
+            (Align.BEFORE_LINE, "before-line"),
+            (Align.AFTER_LINE, "after-line"),
+        ]:
+            d.banner(0x8000, title=title, description="x", align=align)
+        out = d.disassemble().render(JsonRenderer())
+        at_addr = [b for b in out.data["banners"] if b["addr"] == 0x8000]
+        assert len(at_addr) == 4
+        assert {b["align"] for b in at_addr} == {
+            "before_label", "after_label",
+            "before_line", "after_line",
+        }
+        # All share the same name (the address's primary label) —
+        # the issue notes ``name`` is per-address, not per-banner,
+        # so it's safe to repeat.
+        assert all(b.get("name") == "addr" for b in at_addr)
 
     def test_comments_split_by_align_into_distinct_fields(self, tmp_path):
         # The 5-way Align enum maps to per-align JSON fields (#16).
