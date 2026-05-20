@@ -196,6 +196,88 @@ class TestAcornMosCoverage:
         assert named_addrs == 3 + 27 + 21
 
 
+class TestAcornMosOsbyteNameDeprecation:
+    """The long-form OSBYTE names (``osbyte_read_write_*``,
+    ``osbyte_select_main_or_shadow_memory_for_*`` …) were shortened
+    in dasmos 1.7.0 per issue #23. Drivers that still spell the old
+    names through ``d.constant()`` get a :class:`DeprecationWarning`
+    pointing at the new short name; the constant still registers
+    under the old name so rendered output remains valid.
+    """
+
+    def setup_method(self):
+        self.d = Disassembler.create(
+            cpu="6502", environments=["acorn_mos"],
+        )
+
+    def test_old_long_name_emits_deprecation_warning(self):
+        # OSBYTE &FF was ``osbyte_read_write_startup_options`` →
+        # ``osbyte_startup_options``. A driver still using the old
+        # name should be warned and pointed at the new one.
+        import warnings
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self.d.constant(0xFF, "osbyte_read_write_startup_options")
+        deprecations = [
+            w for w in caught if issubclass(w.category, DeprecationWarning)
+        ]
+        assert len(deprecations) == 1
+        msg = str(deprecations[0].message)
+        assert "osbyte_read_write_startup_options" in msg
+        assert "osbyte_startup_options" in msg
+
+    def test_new_short_name_is_silent(self):
+        import warnings
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self.d.constant(0xFF, "osbyte_startup_options")
+        deprecations = [
+            w for w in caught if issubclass(w.category, DeprecationWarning)
+        ]
+        assert deprecations == []
+
+    def test_unrelated_name_is_silent(self):
+        import warnings
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self.d.constant(0x42, "completely_unrelated_constant")
+        deprecations = [
+            w for w in caught if issubclass(w.category, DeprecationWarning)
+        ]
+        assert deprecations == []
+
+    def test_deprecated_constant_still_registers_under_old_name(self):
+        # The compatibility contract: drivers using the old name keep
+        # getting valid output. The warning is the only behavioural
+        # change.
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            self.d.constant(0xFF, "osbyte_read_write_startup_options")
+        names = [c.name for c in self.d._constants]
+        assert "osbyte_read_write_startup_options" in names
+
+    def test_deprecated_aliases_table_targets_exist_in_enum(self):
+        # Consistency check: every replacement name in the alias
+        # table must actually be present as a current value in
+        # OSBYTE_ENUM — otherwise the warning would steer drivers
+        # toward a name dasmos no longer recognises.
+        from dasmos.ext.environments.acorn_mos.enums import (
+            OSBYTE_DEPRECATED_NAMES,
+            OSBYTE_ENUM,
+        )
+        current_names = set(OSBYTE_ENUM.values())
+        for old, new in OSBYTE_DEPRECATED_NAMES.items():
+            assert new in current_names, (
+                f"deprecated {old!r} points at {new!r}, which is not "
+                f"a current OSBYTE_ENUM value"
+            )
+            assert old not in current_names, (
+                f"{old!r} is in both OSBYTE_DEPRECATED_NAMES (as "
+                f"deprecated) AND OSBYTE_ENUM (as current); pick one"
+            )
+
+
 class TestAcornSidewaysRom:
     """Sideways ROM environment: header layout + entry-point detection
     + copyright/title strings. Inspects loaded memory at &8000 so
@@ -1644,7 +1726,7 @@ class TestAcornMosInlineAutoComments:
             bytes([0xa9, 0xb0, 0x20, 0xf4, 0xff, 0x60]),
         )
         ir = d.disassemble()
-        # &b0 → osbyte_read_write_cfs_timeout → "read write cfs timeout"
+        # &b0 → osbyte_cfs_timeout → "cfs timeout"
         comment = self._inline_comment_at(ir, 0x1002)
         assert comment is not None and comment.startswith("osbyte:")
 

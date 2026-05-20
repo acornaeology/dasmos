@@ -27,6 +27,7 @@ Per ``docs/design/decisions.md``:
 
 from __future__ import annotations
 
+import warnings
 from collections import deque
 from contextlib import nullcontext
 from dataclasses import dataclass, field
@@ -181,6 +182,13 @@ class Disassembler:
         # unchanged from the legacy ``constant() → optional_label``
         # porter rename.
         self._constants: list[Constant] = []
+        # Deprecated → replacement constant-name aliases registered by
+        # environments via :meth:`register_deprecated_constant_name`.
+        # When a driver calls :meth:`constant` with a key in this dict,
+        # :meth:`constant` emits a ``DeprecationWarning`` pointing at
+        # the new short name. The output still works (no substitution);
+        # the alias is slated for removal a minor cycle later.
+        self._deprecated_constant_names: dict[str, str] = {}
         # Subroutine metadata registered via :meth:`subroutine` —
         # name, banner content, fall-through computed at render time.
         self._subroutines: list[SubroutineEntry] = []
@@ -446,11 +454,38 @@ class Disassembler:
 
         The ``BeebasmRenderer`` emits constants as equates in their
         own block alongside the label-equate table.
+
+        If ``name`` matches a deprecated alias registered by an active
+        environment (see :meth:`register_deprecated_constant_name`),
+        a :class:`DeprecationWarning` is emitted pointing at the new
+        replacement name. The constant is still recorded under the
+        old name so the rendered output keeps working — the warning
+        is the only signal that drivers should update.
         """
         self._raise_if_disassembled("constant")
+        replacement = self._deprecated_constant_names.get(name)
+        if replacement is not None:
+            warnings.warn(
+                f"Constant name {name!r} is deprecated; "
+                f"use {replacement!r} instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         self._constants.append(
             Constant(name=name, value=int(value), comment=comment),
         )
+
+    def register_deprecated_constant_name(
+        self, old_name: str, new_name: str,
+    ) -> None:
+        """Register a deprecated → replacement alias for a constant
+        name. Subsequent :meth:`constant` calls with ``old_name``
+        emit a :class:`DeprecationWarning` citing ``new_name``.
+
+        Environments use this to retire historical long-form names
+        without breaking driver scripts that still spell them out.
+        """
+        self._deprecated_constant_names[old_name] = new_name
 
     def local_label(self, runtime_addr, name: str, start_addr, end_addr, **kwargs):
         """Define a label scoped to ``[start_addr, end_addr)``."""

@@ -128,6 +128,13 @@ class AcornMosEnvironment(Environment):
         super().__init__(name=name, **kwargs)
 
     def setup(self, disassembler: "Disassembler") -> None:
+        from dasmos.ext.environments.acorn_mos.enums import (
+            OSBYTE_DEPRECATED_NAMES,
+        )
+        for old_name, new_name in OSBYTE_DEPRECATED_NAMES.items():
+            disassembler.register_deprecated_constant_name(
+                old_name, new_name,
+            )
         for addr, name in _WORKSPACE_LABELS.items():
             disassembler.optional_label(addr, name)
         for addr, name in _MOS_VECTORS:
