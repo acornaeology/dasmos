@@ -106,7 +106,7 @@ dev = [
 ]
 
 [tool.bumpversion]
-current_version = "1.6.1"
+current_version = "1.7.0"
 parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"
 serialize = ["{major}.{minor}.{patch}"]
 tag = true
