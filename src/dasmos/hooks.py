@@ -38,41 +38,104 @@ if TYPE_CHECKING:
     from dasmos.disassembler import Disassembler
 
 
-def stringhi_hook(d: "Disassembler", jsr_binary_addr: int) -> int:
-    """Classify the bytes after a JSR as a string terminated by the
-    first byte with bit 7 set; trace continues at the terminator.
+def _scan_to_bit7_terminator(
+    d: "Disassembler", string_start: int,
+) -> tuple[int, bool]:
+    """Walk forward from ``string_start`` to the first byte with bit 7
+    set (the string terminator).
 
-    The terminator byte is *not* included in the string classification
-    — it falls through to the trace loop as an opcode (typically a
-    1-byte NOP whose bit-7-set encoding makes it both a valid string
-    terminator and a no-op instruction).
-
-    Suitable for the Acorn / BBC ``print_embedded_text`` idiom (called
-    via ``JSR &FE98`` in the 6502 Tube Client ROM).
+    Returns ``(stop_addr, terminated)`` where ``terminated`` is True iff
+    the walk stopped on a real bit-7 terminator, and False if it ran off
+    the loaded range or hit the address-space limit (an unterminated
+    string). The walk is bounded by the address-space size as a safety
+    net.
     """
-    string_start = jsr_binary_addr + 3
     addr = string_start
-    # Walk forward until we hit a byte with bit 7 set (the terminator)
-    # or run off the loaded range. Bounded by the address space size as
-    # a safety net.
     limit = d.cpu.address_space_size
     while addr < limit:
         if not d.memory.is_loaded(addr):
-            break
+            return addr, False
         if d.memory.get_u8(addr) & 0x80:
-            break
+            return addr, True
         addr += 1
-    length = addr - string_start
+    return addr, False
+
+
+def _classify_string(d: "Disassembler", string_start: int, length: int) -> None:
+    """Classify ``length`` bytes from ``string_start`` (binary addr) as
+    a String, converting to the runtime address the public API expects.
+
+    With no active move, b2r is the identity, but threading it through
+    keeps the hook correct under relocation too.
+    """
+    from dasmos.core.memory import BinaryAddr
+    runtime_start = int(d.moves.b2r(BinaryAddr(string_start)))
+    d.string(runtime_start, length)
+
+
+def stringhi_hook(d: "Disassembler", jsr_binary_addr: int) -> int:
+    """Classify the bytes after a JSR as a string terminated by the
+    first byte with bit 7 set; trace continues **at** the terminator.
+
+    This is the *terminator-as-NOP* convention: the bit-7 terminator is
+    a separate trailing byte that the print routine returns to, so it is
+    *not* included in the string classification — it falls through to the
+    trace loop as an opcode (typically a 1-byte NOP whose bit-7-set
+    encoding makes it both a valid string terminator and a no-op).
+
+    Suitable for the Acorn / BBC ``print_embedded_text`` idiom (called
+    via ``JSR &FE98`` in the 6502 Tube Client ROM).
+
+    Contrast :func:`stringhi_skip_hook`, which treats the terminator as
+    the final character of the string and resumes *after* it. The two
+    conventions are indistinguishable from the bytes alone, and picking
+    the wrong one is *silent* — round-trip verification still passes
+    because no bytes change; only the instruction boundaries shift. Pick
+    by reading the print routine: does it return to the terminator or to
+    terminator+1?
+    """
+    string_start = jsr_binary_addr + 3
+    stop, _terminated = _scan_to_bit7_terminator(d, string_start)
+    length = stop - string_start
     if length > 0:
-        # Convert binary → runtime addr for the public API. With no
-        # active move, b2r is the identity, but threading it through
-        # keeps the hook correct under relocation too.
-        from dasmos.core.memory import BinaryAddr
-        runtime_start = int(d.moves.b2r(BinaryAddr(string_start)))
-        d.string(runtime_start, length)
+        _classify_string(d, string_start, length)
     # Trace continues at the terminator address — it'll be classified
     # as an opcode by the normal trace loop.
-    return addr
+    return stop
+
+
+def stringhi_skip_hook(d: "Disassembler", jsr_binary_addr: int) -> int:
+    """Classify the bytes after a JSR as a string terminated by the
+    first byte with bit 7 set; trace continues **after** the terminator.
+
+    This is the *terminator-as-final-character* convention: the bit-7
+    terminator is the last character of the string (printed with bit 7
+    stripped) and the print routine consumes it, returning to
+    terminator+1. The terminator IS included in the string
+    classification and is *skipped* by the trace.
+
+    Acorn ADFS 1.30's ``print_inline_string`` (&92A0) uses this: its
+    strings end in ``&8D`` (``&0D | &80``, a trailing CR), and the
+    routine computes its return as ``ptr + Y`` (Y = terminator offset)
+    then ``RTS``.
+
+    The bit-7 analogue of :func:`stringz_hook` (which does the same for a
+    NUL terminator). Contrast :func:`stringhi_hook`, which leaves the
+    terminator in the instruction stream and resumes *at* it. The choice
+    between the two is *silent* — see that function's note.
+    """
+    string_start = jsr_binary_addr + 3
+    stop, terminated = _scan_to_bit7_terminator(d, string_start)
+    if terminated:
+        # Terminator is the final char: classify it as part of the
+        # string and resume past it.
+        _classify_string(d, string_start, stop - string_start + 1)
+        return stop + 1
+    # Unterminated: same best-effort fallback as stringhi_hook.
+    length = stop - string_start
+    if length > 0:
+        _classify_string(d, string_start, length)
+    return stop
 
 
 def stringz_hook(d: "Disassembler", jsr_binary_addr: int) -> int:

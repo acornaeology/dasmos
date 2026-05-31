@@ -1921,6 +1921,111 @@ class TestSubroutineHooks:
         assert "print_str" in label.explicit_name_texts()
 
 
+class TestStringhiSkipHook:
+    """Driver feature: :func:`dasmos.hooks.stringhi_skip_hook` — the
+    *terminator-as-final-character* sibling of ``stringhi_hook``.
+
+    The bit-7 terminator is the last character of the string (consumed,
+    printed with bit 7 stripped) and the print routine returns to
+    terminator+1 — the Acorn ADFS 1.30 ``print_inline_string`` (&92A0)
+    convention, where strings end in ``&8D``. ``stringhi_hook`` instead
+    leaves the terminator in the instruction stream and resumes *at* it.
+
+    Picking the wrong one is silent under round-trip verification (no
+    bytes change), so these tests assert on the resume address and the
+    instruction boundaries — not just byte equality.
+    """
+
+    def test_returns_address_after_terminator(self, tmp_path):
+        # Three bytes standing in for the JSR, then "Hi" + the &8D
+        # terminator, then a marker byte. The hook classifies "Hi\x8d"
+        # (terminator included) and resumes at the marker (term + 1).
+        from dasmos.disassembler import Disassembler
+        from dasmos.core.memory import BinaryAddr
+        from dasmos.hooks import stringhi_skip_hook
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(b"\x20\x98\xfe" + b"Hi\x8d" + b"\x60")
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        jsr_binary = int(d.moves.r2b_checked(0x8000).binary_addr)
+        cont = stringhi_skip_hook(d, jsr_binary)
+        # jsr(3) + "Hi"(2) + terminator(1) → resume at the marker &8006.
+        assert int(d.moves.b2r(BinaryAddr(cont))) == 0x8006
+
+    def test_unterminated_classifies_remainder(self, tmp_path):
+        # No bit-7 byte before the end of loaded memory: classify what's
+        # there and resume at the end (no +1) — same best-effort
+        # fallback as stringhi_hook.
+        from dasmos.disassembler import Disassembler
+        from dasmos.core.memory import BinaryAddr
+        from dasmos.hooks import stringhi_skip_hook
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(b"\x20\x98\xfe" + b"abc")  # no terminator
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        jsr_binary = int(d.moves.r2b_checked(0x8000).binary_addr)
+        cont = stringhi_skip_hook(d, jsr_binary)
+        assert int(d.moves.b2r(BinaryAddr(cont))) == 0x8006
+
+    def test_resumes_at_real_instruction(self, tmp_path):
+        # The ADFS &8D failure mode: a string whose terminator byte
+        # (&8D = STA abs) is followed by genuine code. The skip hook
+        # consumes the terminator and resumes at the LDA; the plain
+        # stringhi_hook leaves &8D in the stream, where it decodes as
+        # STA abs and swallows the LDA's bytes.
+        from dasmos.disassembler import Disassembler
+        from dasmos.ext.renderers.beebasm import BeebasmRenderer
+        from dasmos.hooks import stringhi_hook, stringhi_skip_hook
+        # jsr &fe98 / "Hi" + &8d / lda #&42 / rts
+        rom = b"\x20\x98\xfe" + b"Hi\x8d" + b"\xa9\x42\x60"
+
+        def render(hook):
+            bin_path = tmp_path / f"{hook.__name__}.bin"
+            bin_path.write_bytes(rom)
+            d = Disassembler.create(cpu="6502")
+            d.load(bin_path, 0x8000)
+            d.entry(0x8000, name="start")
+            d.hook_subroutine(0xFE98, "print_str", hook)
+            return str(BeebasmRenderer().render(d.disassemble()))
+
+        # Terminator consumed → the LDA after it is decoded as real code.
+        assert "lda #&42" in render(stringhi_skip_hook)
+        # Terminator left in stream → &8d decodes as STA abs, swallowing
+        # the LDA bytes, so the real instruction never appears.
+        assert "lda #&42" not in render(stringhi_hook)
+
+    @pytest.mark.beebasm
+    def test_classifies_string_including_terminator(
+        self, roundtrip_via_beebasm,
+    ):
+        # Full round-trip: the string ends in &8D (CR | &80) and the
+        # routine returns to terminator+1, so the LDA after it is real
+        # code rather than part of a phantom STA.
+        source = """
+            org &8000
+        .start
+            jsr &fe98
+            equs "Hi"
+            equb &8d
+            lda #&42
+            rts
+        save "step1.bin", start, P%
+        """
+
+        from dasmos.hooks import stringhi_skip_hook
+
+        def configure(d):
+            d.entry(0x8000, name="start")
+            d.hook_subroutine(0xFE98, "print_str", stringhi_skip_hook)
+
+        text = roundtrip_via_beebasm(source, 0x8000, configure)
+        # "Hi" + the &8d terminator are classified as a string…
+        assert "equs" in text and '"Hi"' in text
+        # …and the LDA after the terminator is decoded as real code.
+        assert "lda #&42" in text
+        assert "rts" in text
+
+
 @pytest.mark.beebasm
 class TestCrossReferences:
     """Driver feature: the renderer emits cross-reference annotations

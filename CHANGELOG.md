@@ -7,6 +7,15 @@ minor bumps may carry small breaking changes alongside additive ones.
 
 ## [Unreleased]
 
+### Added
+
+- `stringhi_skip_hook` — an inline-string subroutine hook for the Acorn
+  convention where the bit-7 terminator is the final character of the
+  string (consumed, trace resumes at terminator+1), as used by ADFS
+  1.30's `print_inline_string` (&92A0). Complements `stringhi_hook`,
+  which leaves the terminator in the instruction stream and resumes at
+  it. (#24)
+
 ## [0.2.0]
 
 A substantial release. New driver-API surface for renderer-agnostic
