@@ -111,17 +111,81 @@ class AcornSidewaysRomEnvironment(Environment):
 
         d.use_environment("acorn_sideways_rom",
                           rom_title="ANFS ROM 4.21 (variant 1)")
+
+    **Entry-slot modes** (``language_entry`` / ``service_entry``).
+    Some language ROMs put executable code directly at the entry slot
+    instead of a ``JMP abs`` (BBC BASIC II: ``CMP #1 / BEQ / RTS`` at
+    &8000). The byte0==``JMP abs`` heuristic can't see that, and byte0
+    and the ``rom_type`` bits genuinely disagree in shipped firmware,
+    so the slot treatment is an explicit per-slot opt-in:
+
+    - ``"auto"`` (default) — byte0 heuristic (``JMP``→entry+handler,
+      ``&00``→sentinel, else→3-byte data block). Unchanged behaviour.
+    - ``"code"`` — the slot is inline code: seed a code entry, let the
+      trace own the bytes, no handler label.
+    - ``"none"`` — the slot is not this ROM's entry (its bytes belong
+      to an adjacent region): attach no label, classification, or
+      banner.
+
+    BBC BASIC II (inline language code, no service entry)::
+
+        d.use_environment("acorn_sideways_rom",
+                          language_entry="code", service_entry="none")
+
+    A driver can also leave the slot in ``"auto"`` mode and reclaim it
+    afterwards with :meth:`Disassembler.entry` ``(addr, override=True)``
+    — the general classification-override path.
     """
+
+    #: Allowed values for the ``language_entry`` / ``service_entry``
+    #: per-slot mode kwargs (#26).
+    _ENTRY_MODES = ("auto", "code", "none")
 
     def __init__(
         self,
         name: str = "acorn_sideways_rom",
         *,
         rom_title: str | None = None,
+        language_entry: str = "auto",
+        service_entry: str = "auto",
         **kwargs,
     ):
         super().__init__(name=name, **kwargs)
         self._rom_title = rom_title
+        # Per-slot entry-classification mode. The byte0==``JMP abs``
+        # heuristic is only a proxy for "is this a real entry"; in the
+        # wild byte0 and the rom_type bits genuinely disagree (NFS has
+        # a ``JMP`` at &8000 with the language bit clear; econet-bridge
+        # and BBC BASIC have inline code with the language bit set), so
+        # the safe interface is an explicit opt-in rather than an
+        # automatic rule that would change existing ROMs' output:
+        #
+        # - "auto" (default): byte0 heuristic — JMP→entry+handler,
+        #   &00→sentinel/padding, anything else→3-byte data block.
+        #   Unchanged from before #26; zero regression.
+        # - "code": the slot is INLINE CODE (e.g. BBC BASIC's
+        #   ``CMP #1 / BEQ / RTS``). Seed a code entry and let the
+        #   trace own the bytes; no data classification, no handler
+        #   label (there is no JMP target).
+        # - "none": the slot is NOT this ROM's entry — its bytes belong
+        #   to an adjacent region (e.g. BBC BASIC's &8003, which is the
+        #   tail of the language code because the service bit is clear).
+        #   Attach nothing: no label, no classification, no banner.
+        self._language_entry_mode = self._validate_entry_mode(
+            "language_entry", language_entry,
+        )
+        self._service_entry_mode = self._validate_entry_mode(
+            "service_entry", service_entry,
+        )
+
+    @classmethod
+    def _validate_entry_mode(cls, kwarg_name: str, value: str) -> str:
+        if value not in cls._ENTRY_MODES:
+            raise DasmosError(
+                f"{kwarg_name}={value!r} is not a valid entry mode; "
+                f"expected one of {cls._ENTRY_MODES}"
+            )
+        return value
 
     def setup(self, disassembler: "Disassembler") -> None:
         d = disassembler
@@ -160,37 +224,46 @@ class AcornSidewaysRomEnvironment(Environment):
         # the label and the bytes. Title carries the "Sideways ROM
         # header" prefix as the structural marker for the whole
         # header block.
-        if not d.is_auto_suppressed_at(0x8000):
+        # In "none" mode the slot's bytes belong to an adjacent region
+        # (e.g. BBC BASIC's &8003 is the tail of the language code) — so
+        # attach no label, no classification, AND no slot banner there.
+        if (
+            self._language_entry_mode != "none"
+            and not d.is_auto_suppressed_at(0x8000)
+        ):
             d.banner(
                 0x8000,
                 title="Sideways ROM header — language-entry slot (3 bytes)",
                 description=self._language_entry_description(
-                    d.memory.get_u8(0x8000),
+                    d.memory.get_u8(0x8000), self._language_entry_mode,
                 ),
                 align=Align.BEFORE_LABEL,
                 auto_generated=True,
             )
 
-        # Language and service entries: each is either a ``JMP abs``
-        # (a real entry point) or 3 bytes of something else (some
-        # ROMs use a placeholder if they don't implement that side).
+        # Language and service entries. Each slot's treatment is chosen
+        # by its mode kwarg (auto / code / none) — see ``_check_entry``.
         # ``_check_entry`` registers ``language_entry`` / ``service_entry``
         # at &8000 / &8003 — these are the canonical structural names
         # for those addresses (#17 §1 dropped the redundant
         # ``rom_header`` label that used to sit at &8000 alongside
         # ``language_entry``).
-        self._check_entry(d, 0x8000, "language")
-        self._check_entry(d, 0x8003, "service")
+        self._check_entry(d, 0x8000, "language", self._language_entry_mode)
+        self._check_entry(d, 0x8003, "service", self._service_entry_mode)
 
         # Service-entry slot section banner (#17 §3): same shape as
         # the language-entry one — BEFORE_LABEL, sits ABOVE
-        # ``.service_entry``.
-        if not d.is_auto_suppressed_at(0x8003):
+        # ``.service_entry``. Suppressed in "none" mode (the bytes are
+        # not a service entry).
+        if (
+            self._service_entry_mode != "none"
+            and not d.is_auto_suppressed_at(0x8003)
+        ):
             d.banner(
                 0x8003,
                 title="Service-entry slot (3 bytes)",
                 description=self._service_entry_description(
-                    d.memory.get_u8(0x8003),
+                    d.memory.get_u8(0x8003), self._service_entry_mode,
                 ),
                 align=Align.BEFORE_LABEL,
                 auto_generated=True,
@@ -354,24 +427,36 @@ class AcornSidewaysRomEnvironment(Environment):
     # ----- helpers ----------------------------------------------------
 
     @staticmethod
-    def _check_entry(d, addr: int, entry_type: str) -> None:
-        """If the byte at ``addr`` is ``JMP abs``, register an entry
-        point and label both the entry and its handler. Otherwise
-        classify the 3 header bytes — splitting the &00 sentinel
-        case into per-byte classifications so the listing reads each
-        byte's role inline rather than burying it in a paragraph.
+    def _check_entry(d, addr: int, entry_type: str, mode: str = "auto") -> None:
+        """Classify an entry slot according to its ``mode`` (#26).
 
-        Three observed shapes:
+        - ``"none"``: the slot is not this ROM's entry — its bytes
+          belong to an adjacent region. Attach nothing (no label, no
+          classification, no entry); the trace or leftover pass owns
+          the bytes.
+        - ``"code"``: the slot is inline code (e.g. BBC BASIC's
+          ``CMP #1 / BEQ / RTS``). Label the entry and seed a code
+          entry; let the trace own the bytes. No handler label — there
+          is no ``JMP`` target.
+        - ``"auto"`` (default): the byte0 heuristic, unchanged —
 
-        - byte 0 = ``&4C`` (``JMP abs``) — register entry + handler.
-        - byte 0 = ``&00`` (no-language sentinel) — emit as
-          ``equb &00`` (sentinel) + ``equb &00, &00`` (padding) with
-          per-byte inline notes.
-        - anything else — single 3-byte ``equb`` block (the slot is
-          non-standard; whatever's there is opaque, no per-byte
-          structure to surface).
+          - byte 0 = ``&4C`` (``JMP abs``) — register entry + handler.
+          - byte 0 = ``&00`` (no-language sentinel) — emit as
+            ``equb &00`` (sentinel) + ``equb &00, &00`` (padding) with
+            per-byte inline notes.
+          - anything else — single 3-byte ``equb`` block (the slot is
+            non-standard; whatever's there is opaque, no per-byte
+            structure to surface).
         """
+        if mode == "none":
+            return
         d.label(addr, f"{entry_type}_entry")
+        if mode == "code":
+            # Inline code: seed the trace and let it claim the bytes.
+            # No d.byte (the trace classifies the instructions) and no
+            # handler label (there is no JMP target to name).
+            d.entry(addr)
+            return
         byte0 = d.memory.get_u8(addr)
         if byte0 == _JMP_ABS_OPCODE:
             d.entry(addr)
@@ -494,10 +579,12 @@ class AcornSidewaysRomEnvironment(Environment):
         return f"{title} v&{binary_version:02x}"
 
     @staticmethod
-    def _language_entry_description(byte0: int) -> str:
+    def _language_entry_description(byte0: int, entry_mode: str = "auto") -> str:
         """Mode-aware description for the language-entry slot at &8000.
 
-        Three observed shapes for the first byte:
+        In ``"code"`` mode the slot is inline code (the driver has
+        declared it so); otherwise the description is chosen from the
+        first byte's shape:
 
         - ``&4C`` (``JMP abs``) — ROM declares itself a language;
           MOS dispatches ``JMP &8000`` on language startup with a
@@ -518,27 +605,35 @@ class AcornSidewaysRomEnvironment(Environment):
             "| 2 | Request next byte of softkey expansion (Electron)    |\n"
             "| 3 | Request length of softkey expansion (Electron)       |"
         )
-        if byte0 == _JMP_ABS_OPCODE:
-            mode = (
+        if entry_mode == "code":
+            shape = (
+                f"Byte 0 is ``&{byte0:02x}`` — the language entry is "
+                f"**inline code**, not a ``JMP abs``. This ROM declares "
+                f"itself a language (``rom_type`` bit 6 set) and the MOS "
+                f"enters by *calling* &8000 directly, so the bytes are "
+                f"executed in place (e.g. BBC BASIC's ``CMP #1 / BEQ / RTS``)."
+            )
+        elif byte0 == _JMP_ABS_OPCODE:
+            shape = (
                 "Byte 0 is ``&4C`` so this ROM declares itself a language "
                 "(``rom_type`` bit 6 set); the slot is a real ``JMP`` to "
                 "``language_handler``."
             )
         elif byte0 == 0x00:
-            mode = (
+            shape = (
                 "Service-only ROM (``rom_type`` bit 6 clear). Per-byte "
                 "detail is inline."
             )
         else:
-            mode = (
+            shape = (
                 f"Byte 0 is ``&{byte0:02x}`` (non-standard placeholder); "
                 f"MOS would still execute ``JMP &8000`` on language "
                 f"startup so this ROM relies on never being asked."
             )
-        return f"{intro}\n\n{mode}\n\n{reason_table}"
+        return f"{intro}\n\n{shape}\n\n{reason_table}"
 
     @staticmethod
-    def _service_entry_description(byte0: int) -> str:
+    def _service_entry_description(byte0: int, entry_mode: str = "auto") -> str:
         """Description of the service-entry slot at &8003. Almost always
         ``JMP abs`` in practice — the slot is the universal entry
         point for MOS service-call dispatch.
@@ -549,16 +644,23 @@ class AcornSidewaysRomEnvironment(Environment):
             "filing-system init / select, paged-ROM scans, and many "
             "other events. The reason code arrives in A."
         )
+        if entry_mode == "code":
+            shape = (
+                f"Byte 0 is ``&{byte0:02x}`` — the service entry is "
+                f"**inline code**, not a ``JMP abs``; the MOS enters by "
+                f"calling &8003 directly."
+            )
+            return f"{intro}\n\n{shape}"
         if byte0 == _JMP_ABS_OPCODE:
             # JMP-mode is the universal case; no need to restate
             # what the next disassembly line shows.
             return intro
-        mode = (
+        shape = (
             f"Byte 0 is ``&{byte0:02x}`` (non-standard); a ROM that "
             f"never wants to handle service calls would set "
             f"``rom_type`` bit 7 clear and use a placeholder here."
         )
-        return f"{intro}\n\n{mode}"
+        return f"{intro}\n\n{shape}"
 
     @staticmethod
     def _rom_type_table(rom_type: int) -> str:

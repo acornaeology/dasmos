@@ -107,6 +107,66 @@ class ClassificationStore:
             if isinstance(value, Classification):
                 yield BinaryAddr(addr_int), value
 
+    def remove(self, binary_addr):
+        """Clear the entire classification span that ``binary_addr``
+        belongs to and return the removed
+        :class:`~dasmos.core.classification.Classification` (or ``None``
+        if the address was unclassified).
+
+        Unlike :meth:`split_at` (which converts a span into shorter
+        ``Byte`` runs), ``remove`` drops the whole span — the start
+        byte plus every :data:`INSIDE_A_CLASSIFICATION` marker — so the
+        bytes return to the unclassified state and become reclaimable
+        by a later :meth:`add_classification` or by the trace. The
+        backing memory bytes are never touched, so the round-trip
+        oracle is unaffected.
+
+        Works whether ``binary_addr`` is the start of the span or an
+        interior byte: it walks back to the start first. Clearing the
+        whole enclosing span (rather than a single byte) is required to
+        avoid leaving an orphaned ``INSIDE`` marker that would corrupt
+        the store.
+        """
+        binary_addr_int = int(BinaryAddr(binary_addr))
+        value = self._classifications.get(binary_addr_int)
+        if value is None:
+            return None
+        # Walk back to the start of the span.
+        start_int = binary_addr_int
+        while self._classifications.get(start_int) is INSIDE_A_CLASSIFICATION:
+            start_int -= 1
+            if start_int < 0:
+                raise ClassificationError(
+                    "INSIDE marker at 0 with no preceding start — store is corrupt"
+                )
+        original = self._classifications[start_int]
+        for i in range(original.length()):
+            self._classifications.pop(start_int + i, None)
+        return original
+
+    def remove_range(self, binary_addr, length: int) -> list:
+        """Clear every classification overlapping the half-open range
+        ``[binary_addr, binary_addr + length)`` and return the list of
+        removed :class:`~dasmos.core.classification.Classification`
+        objects (in address order).
+
+        A span that *starts before* the range but extends into it is
+        cleared in full — override clears whole classifications, never
+        partial ones (a partial clear would leave a dangling ``INSIDE``
+        marker). Returns an empty list when the range is already clear.
+        """
+        binary_addr_int = int(BinaryAddr(binary_addr))
+        removed = []
+        addr = binary_addr_int
+        end = binary_addr_int + length
+        while addr < end:
+            if addr in self._classifications:
+                original = self.remove(addr)
+                if original is not None:
+                    removed.append(original)
+            addr += 1
+        return removed
+
     def split_at(self, binary_addr) -> None:
         """If ``binary_addr`` falls in the interior of an existing
         multi-byte classification, replace the original with two

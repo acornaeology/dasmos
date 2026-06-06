@@ -11,6 +11,7 @@ exercise both the abstract plug-in plumbing and the concrete
 import pytest
 
 from dasmos.disassembler import Disassembler
+from dasmos.exceptions import DasmosError
 from dasmos.environment import (
     ENVIRONMENT_NAMESPACE,
     Environment,
@@ -960,6 +961,119 @@ class TestAcornSidewaysRom:
         assert "oswrch" in d.labels.get_label(0xffee).explicit_name_texts()
         # acorn_sideways_rom contribution.
         assert "language_entry" in d.labels.get_label(0x8000).explicit_name_texts()
+
+    # --- inline-code entry slots: language_entry / service_entry kwargs (#26)
+
+    @staticmethod
+    def _build_inline_code_rom():
+        """A ROM whose language entry is inline code, not a ``JMP abs``
+        — the BBC BASIC II shape. &8000 = ``CMP #1 / BEQ +&1f / RTS /
+        NOP``; ``rom_type`` = &40 (language bit set, service bit clear).
+        The service slot at &8003 is therefore the *tail* of the
+        language code, not a separate entry.
+        """
+        rom = bytearray(
+            TestAcornSidewaysRom._build_rom(
+                language_jmp=True, service_jmp=True,
+            )
+        )
+        rom[0x0000:0x0006] = bytes([0xc9, 0x01, 0xf0, 0x1f, 0x60, 0xea])
+        rom[0x0006] = 0x40  # language bit set, service + tube clear
+        return bytes(rom)
+
+    def test_language_entry_code_seeds_trace_and_renders_as_code(
+        self, tmp_path,
+    ):
+        from dasmos.cpu import Opcode
+        d = self._make_loaded_disassembler(
+            tmp_path, self._build_inline_code_rom(),
+        )
+        d.use_environment(
+            "acorn_sideways_rom",
+            language_entry="code", service_entry="none",
+        )
+        ir = d.disassemble()
+        # &8000 is a decoded instruction (CMP), not a 3-byte equb blob.
+        assert isinstance(ir.classifications.get_classification(0x8000), Opcode)
+        text = str(ir.render("beebasm"))
+        assert "cmp #1" in text
+        # The bytes are unchanged — still the language_entry label.
+        assert "language_entry" in d.labels.get_label(0x8000).explicit_name_texts()
+
+    def test_language_entry_code_adds_no_handler_label(self, tmp_path):
+        # Inline code has no JMP target, so there is no
+        # language_handler — that label only makes sense in JMP mode.
+        d = self._make_loaded_disassembler(
+            tmp_path, self._build_inline_code_rom(),
+        )
+        d.use_environment("acorn_sideways_rom", language_entry="code")
+        for addr in range(0x8000, 0x8100):
+            label = d.labels.get_label(addr)
+            if label is not None:
+                assert "language_handler" not in label.explicit_name_texts()
+
+    def test_service_entry_none_skips_label_classify_and_banner(
+        self, tmp_path,
+    ):
+        from dasmos.core.annotations import Align, Banner
+        d = self._make_loaded_disassembler(
+            tmp_path, self._build_inline_code_rom(),
+        )
+        d.use_environment(
+            "acorn_sideways_rom",
+            language_entry="code", service_entry="none",
+        )
+        # No service_entry label planted mid-instruction at &8003.
+        label = d.labels.get_label(0x8003)
+        if label is not None:
+            assert "service_entry" not in label.explicit_name_texts()
+        # No env service banner at &8003.
+        assert not [
+            a for a in d.annotations.get_for_align(0x8003, Align.BEFORE_LABEL)
+            if isinstance(a, Banner)
+        ]
+        # The trace (from the language inline code) owns &8003 as part
+        # of the BEQ instruction — the env did not force it to data.
+        ir = d.disassemble()
+        from dasmos.core.classification import Byte
+        c8002 = ir.classifications.get_classification(0x8002)
+        from dasmos.cpu import Opcode
+        assert isinstance(c8002, Opcode)  # BEQ at 8002 covers 8002-8003
+
+    def test_language_entry_code_banner_describes_inline_code(self, tmp_path):
+        from dasmos.core.annotations import Align, Banner
+        d = self._make_loaded_disassembler(
+            tmp_path, self._build_inline_code_rom(),
+        )
+        d.use_environment("acorn_sideways_rom", language_entry="code")
+        banner = next(
+            a for a in d.annotations.get_for_align(0x8000, Align.BEFORE_LABEL)
+            if isinstance(a, Banner)
+        )
+        body = banner.description.lower()
+        assert "inline code" in body
+        # Still carries the language reason-code contract.
+        assert "normal startup" in body
+
+    def test_invalid_entry_mode_raises(self, tmp_path):
+        d = self._make_loaded_disassembler(
+            tmp_path, self._build_inline_code_rom(),
+        )
+        with pytest.raises(DasmosError, match="language_entry"):
+            d.use_environment("acorn_sideways_rom", language_entry="bogus")
+
+    def test_default_auto_mode_unchanged_for_non_jmp_slot(self, tmp_path):
+        # Regression guard: with the default "auto" mode, a non-JMP,
+        # non-sentinel slot is still classified as a single 3-byte
+        # data block (the pre-#26 behaviour), NOT seeded as code.
+        from dasmos.core.classification import Byte
+        d = self._make_loaded_disassembler(
+            tmp_path, self._build_inline_code_rom(),
+        )
+        d.use_environment("acorn_sideways_rom")  # auto
+        ir = d.disassemble()
+        c = ir.classifications.get_classification(0x8000)
+        assert isinstance(c, Byte) and c.length() == 3
 
 
 class TestAcornModelBHardwareEnvironment:

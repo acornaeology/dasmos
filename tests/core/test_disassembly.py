@@ -150,3 +150,81 @@ class TestSplitClassification:
         assert isinstance(store.get_classification(0x8000), Byte)
         assert store.get_classification(0x8000).length() == 4
         assert not store.is_classified(0x8004)
+
+
+class TestRemoveClassification:
+    """``remove`` / ``remove_range`` — the public clearing primitives
+    that back the driver-side classification override (#25). Unlike
+    :meth:`split_at` (which converts a span into shorter Bytes),
+    ``remove`` clears the WHOLE enclosing span — start byte plus every
+    ``INSIDE_A_CLASSIFICATION`` marker — so the bytes return to the
+    unclassified state and a later pass (the trace, or a fresh
+    ``add_classification``) can claim them. The bytes themselves are
+    never touched, so the round-trip oracle is unaffected.
+    """
+
+    def test_remove_unclassified_is_noop_and_returns_none(self):
+        store = ClassificationStore()
+        assert store.remove(0x8000) is None
+        assert not store.is_classified(0x8000)
+
+    def test_remove_at_start_clears_whole_span(self):
+        store = ClassificationStore()
+        original = Byte(3)
+        store.add_classification(0x8000, original)
+        removed = store.remove(0x8000)
+        assert removed is original
+        for addr in (0x8000, 0x8001, 0x8002):
+            assert not store.is_classified(addr)
+            assert store.get_classification(addr) is None
+
+    def test_remove_from_interior_clears_whole_enclosing_span(self):
+        # Clearing must walk back to the start and drop the entire
+        # classification, not just the addressed byte — otherwise an
+        # orphaned INSIDE marker would corrupt the store.
+        store = ClassificationStore()
+        store.add_classification(0x8000, Word(4))
+        removed = store.remove(0x8002)
+        assert isinstance(removed, Word)
+        for addr in (0x8000, 0x8001, 0x8002, 0x8003):
+            assert not store.is_classified(addr)
+
+    def test_remove_then_add_succeeds_with_no_overlap_error(self):
+        # The whole point: after removing, the span is reclaimable.
+        store = ClassificationStore()
+        store.add_classification(0x8000, Byte(3))
+        store.remove(0x8000)
+        # Would have raised ClassificationError before the remove.
+        store.add_classification(0x8000, Word(2))
+        assert isinstance(store.get_classification(0x8000), Word)
+
+    def test_remove_leaves_neighbouring_classifications_intact(self):
+        store = ClassificationStore()
+        keep_before = Byte(1)
+        target = Byte(3)
+        keep_after = Byte(1)
+        store.add_classification(0x7fff, keep_before)
+        store.add_classification(0x8000, target)
+        store.add_classification(0x8003, keep_after)
+        store.remove(0x8001)
+        assert store.get_classification(0x7fff) is keep_before
+        assert store.get_classification(0x8003) is keep_after
+        for addr in (0x8000, 0x8001, 0x8002):
+            assert not store.is_classified(addr)
+
+    def test_remove_range_clears_every_overlapping_span(self):
+        # remove_range clears all classifications overlapping the range,
+        # including a span that STARTS before the range start (clearing
+        # the whole of that span, per override semantics).
+        store = ClassificationStore()
+        store.add_classification(0x8000, Byte(2))   # 0x8000-0x8001
+        store.add_classification(0x8002, Word(2))   # 0x8002-0x8003
+        store.add_classification(0x8004, Byte(1))   # 0x8004
+        removed = store.remove_range(0x8001, 4)     # touches all three
+        assert len(removed) == 3
+        for addr in range(0x8000, 0x8005):
+            assert not store.is_classified(addr)
+
+    def test_remove_range_on_clear_region_is_noop(self):
+        store = ClassificationStore()
+        assert store.remove_range(0x8000, 4) == []

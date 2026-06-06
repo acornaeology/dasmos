@@ -395,6 +395,83 @@ class TestSubroutines:
 # ---------------------------------------------------------------------------
 
 
+class TestClassificationOverride:
+    """Driver-side override of an existing classification (#25).
+
+    An environment (or earlier driver call) can classify bytes eagerly;
+    a later driver call must be able to reclaim them. ``override=True``
+    clears the conflicting classification first; without it, ``entry()``
+    on already-classified data warns rather than silently no-op-ing.
+    Override only changes how bytes render — never the bytes — so the
+    round-trip oracle is unaffected.
+    """
+
+    @staticmethod
+    def _loaded_6502(tmp_path, payload, addr=0x8000):
+        rom = tmp_path / "code.bin"
+        rom.write_bytes(bytes(payload))
+        d = Disassembler.create(cpu="6502")
+        d.load(rom, addr)
+        return d
+
+    def test_entry_override_reclaims_data_as_code(self, tmp_path):
+        from dasmos.cpu import Opcode
+        # CMP #1 / BEQ +&1f / RTS — the BBC BASIC inline-code shape.
+        d = self._loaded_6502(tmp_path, [0xc9, 0x01, 0xf0, 0x1f, 0x60])
+        d.byte(0x8000, 3)                  # an env mis-classified the slot
+        d.entry(0x8000, override=True)     # driver reclaims it as code
+        ir = d.disassemble()
+        # &8000 is now a decoded instruction, not a 3-byte data blob.
+        assert isinstance(ir.classifications.get_classification(0x8000), Opcode)
+
+    def test_entry_without_override_on_data_warns(self, tmp_path):
+        d = self._loaded_6502(tmp_path, [0xc9, 0x01, 0xf0, 0x1f, 0x60])
+        d.byte(0x8000, 3)
+        with pytest.warns(UserWarning, match="already classified"):
+            d.entry(0x8000)
+
+    def test_entry_without_override_leaves_data_unchanged(self, tmp_path):
+        import warnings
+        d = self._loaded_6502(tmp_path, [0xc9, 0x01, 0xf0, 0x1f, 0x60])
+        d.byte(0x8000, 3)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            d.entry(0x8000)
+        ir = d.disassemble()
+        # Silent no-op without override: the slot stays a 3-byte Byte.
+        c = ir.classifications.get_classification(0x8000)
+        assert isinstance(c, Byte) and c.length() == 3
+
+    def test_entry_override_emits_no_warning(self, tmp_path):
+        import warnings
+        d = self._loaded_6502(tmp_path, [0xc9, 0x01, 0xf0, 0x1f, 0x60])
+        d.byte(0x8000, 3)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            d.entry(0x8000, override=True)  # explicit intent — no warning
+
+    def test_entry_on_unclassified_addr_does_not_warn(self, tmp_path):
+        import warnings
+        d = self._loaded_6502(tmp_path, [0xc9, 0x01, 0xf0, 0x1f, 0x60])
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            d.entry(0x8000)
+
+    def test_byte_override_retypes_existing_classification(self, tmp_path):
+        d = self._loaded_6502(tmp_path, [0x00, 0x10, 0x00, 0x10])
+        d.word(0x8000, 4)
+        d.byte(0x8000, 4, override=True)
+        ir = d.disassemble()
+        assert isinstance(ir.classifications.get_classification(0x8000), Byte)
+
+    def test_byte_without_override_still_raises_on_overlap(self, tmp_path):
+        from dasmos.core.disassembly import ClassificationError
+        d = self._loaded_6502(tmp_path, [0x00, 0x10, 0x00, 0x10])
+        d.word(0x8000, 4)
+        with pytest.raises(ClassificationError):
+            d.byte(0x8000, 4)
+
+
 class TestDisassemble:
 
     def test_returns_an_ir(self):

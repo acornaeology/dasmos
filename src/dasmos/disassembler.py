@@ -387,7 +387,14 @@ class Disassembler:
 
     # -- driver-script API: entry points --------------------------------
 
-    def entry(self, runtime_addr, name: str | None = None, **label_kwargs):
+    def entry(
+        self,
+        runtime_addr,
+        name: str | None = None,
+        *,
+        override: bool = False,
+        **label_kwargs,
+    ):
         """Register a code entry point at ``runtime_addr``.
 
         The trace loop will start here. If ``name`` is given, also
@@ -397,10 +404,45 @@ class Disassembler:
         The runtime address is resolved to a binary address via the
         active-move stack on the move manager — entry points outside
         any move identity-map.
+
+        **Precedence over eager classifications.** Environments (and
+        earlier driver calls) may classify bytes *before* this call —
+        e.g. ``acorn_sideways_rom`` classifying a non-``JMP`` entry slot
+        as data. The trace cannot reclassify already-classified bytes,
+        so a plain ``entry()`` on such an address would render the bytes
+        as data and *silently do nothing*. To make that footgun visible:
+
+        - ``override=False`` (the default): if any byte at the target is
+          already classified, emit a :class:`UserWarning` — the entry
+          will not change how those bytes render.
+        - ``override=True``: clear the entire conflicting classification
+          span at the target first, so the trace can claim the bytes as
+          code. An explicit driver call made after ``use_environment()``
+          thus *wins* over the environment's classification. Only the
+          rendering changes — the bytes are untouched, so the
+          round-trip oracle still holds.
         """
         self._raise_if_disassembled("entry")
         binary_loc = self._moves.r2b_checked(runtime_addr)
-        self._entry_points.append(binary_loc.binary_addr)
+        binary_addr = binary_loc.binary_addr
+        if override:
+            self._classifications.remove(binary_addr)
+        elif self._classifications.is_classified(binary_addr):
+            from dasmos.core.disassembly import INSIDE_A_CLASSIFICATION
+            existing = self._classifications.get_classification(binary_addr)
+            kind = (
+                "the interior of a classification"
+                if existing is INSIDE_A_CLASSIFICATION
+                else type(existing).__name__
+            )
+            warnings.warn(
+                f"entry() at &{int(binary_addr):04x} targets bytes already "
+                f"classified ({kind}); the trace cannot reclassify them, so "
+                f"this entry will not change their rendering. Pass "
+                f"override=True to reclaim them as code.",
+                stacklevel=2,
+            )
+        self._entry_points.append(binary_addr)
         if name is not None:
             self.label(runtime_addr, name, **label_kwargs)
 
@@ -681,6 +723,23 @@ class Disassembler:
 
     # -- driver-script API: data classification -------------------------
 
+    def _override_clear(self, binary_addr, length: int, override: bool) -> None:
+        """When ``override`` is set, clear every classification span
+        overlapping ``[binary_addr, binary_addr + length)`` so a fresh
+        classification can be recorded without a
+        :class:`~dasmos.core.disassembly.ClassificationError`.
+
+        Shared by the data-classification primitives (:meth:`byte`,
+        :meth:`word`, :meth:`fill`, :meth:`string`). Like
+        :meth:`entry`'s ``override``, this only changes how the bytes
+        render — the bytes are untouched, so the round-trip oracle is
+        unaffected. A span that starts before ``binary_addr`` but
+        extends into the range is cleared in full (whole
+        classifications only; never a partial split).
+        """
+        if override:
+            self._classifications.remove_range(binary_addr, length)
+
     def byte(
         self,
         runtime_addr,
@@ -688,10 +747,17 @@ class Disassembler:
         cols: int | None = None,
         *,
         move: Move | None = None,
+        override: bool = False,
     ):
-        """Mark ``length`` bytes at ``runtime_addr`` as raw bytes."""
+        """Mark ``length`` bytes at ``runtime_addr`` as raw bytes.
+
+        Pass ``override=True`` to clear any conflicting classification
+        in the range first (see :meth:`_override_clear`); otherwise an
+        overlap raises :class:`ClassificationError`.
+        """
         self._raise_if_disassembled("byte")
         binary_addr = self._resolve_to_binary_addr(runtime_addr, move)
+        self._override_clear(binary_addr, length, override)
         self._classifications.add_classification(binary_addr, Byte(length, cols))
 
     def word(
@@ -701,10 +767,17 @@ class Disassembler:
         cols: int | None = None,
         *,
         move: Move | None = None,
+        override: bool = False,
     ):
-        """Mark ``length`` bytes at ``runtime_addr`` as 16-bit words."""
+        """Mark ``length`` bytes at ``runtime_addr`` as 16-bit words.
+
+        Pass ``override=True`` to clear any conflicting classification
+        in the range first; otherwise an overlap raises
+        :class:`ClassificationError`.
+        """
         self._raise_if_disassembled("word")
         binary_addr = self._resolve_to_binary_addr(runtime_addr, move)
+        self._override_clear(binary_addr, length, override)
         self._classifications.add_classification(binary_addr, Word(length, cols))
 
     def fill(
@@ -714,6 +787,7 @@ class Disassembler:
         value: int | None = None,
         *,
         move: Move | None = None,
+        override: bool = False,
     ):
         """Mark a run of ``length`` identical bytes at ``runtime_addr``.
 
@@ -723,9 +797,14 @@ class Disassembler:
         value the binary already contains. If ``value`` is supplied
         AND disagrees with the loaded byte, raises
         :class:`DisassemblerError`.
+
+        Pass ``override=True`` to clear any conflicting classification
+        in the range first; otherwise an overlap raises
+        :class:`ClassificationError`.
         """
         self._raise_if_disassembled("fill")
         binary_addr = self._resolve_to_binary_addr(runtime_addr, move)
+        self._override_clear(binary_addr, length, override)
         if value is None:
             # Infer from memory; requires the byte to be loaded.
             value = self._memory.get_u8(binary_addr)
@@ -747,10 +826,17 @@ class Disassembler:
         length: int,
         *,
         move: Move | None = None,
+        override: bool = False,
     ):
-        """Mark ``length`` bytes at ``runtime_addr`` as a string."""
+        """Mark ``length`` bytes at ``runtime_addr`` as a string.
+
+        Pass ``override=True`` to clear any conflicting classification
+        in the range first; otherwise an overlap raises
+        :class:`ClassificationError`.
+        """
         self._raise_if_disassembled("string")
         binary_addr = self._resolve_to_binary_addr(runtime_addr, move)
+        self._override_clear(binary_addr, length, override)
         self._classifications.add_classification(binary_addr, String(length))
 
     # -- driver-script API: expressions ---------------------------------

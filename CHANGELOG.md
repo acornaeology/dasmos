@@ -9,6 +9,30 @@ minor bumps may carry small breaking changes alongside additive ones.
 
 ### Added
 
+- **Classification override.** A driver can now reclaim bytes an
+  environment classified eagerly. `Disassembler.entry(addr,
+  override=True)` clears any conflicting classification at the target
+  before seeding the trace, so an explicit driver call made after
+  `use_environment()` wins. `override=True` is also accepted by
+  `byte` / `word` / `string` / `fill`. Backing this:
+  `ClassificationStore.remove(addr)` (clears a whole span) and
+  `remove_range(addr, length)`. Override only changes how bytes
+  render — never the bytes — so the round-trip oracle is unaffected.
+  (#25)
+- **No more silent `entry()` no-op.** Calling `entry()` on an address
+  already classified as data (without `override`) now emits a
+  `UserWarning` instead of silently doing nothing — the trace cannot
+  reclassify already-classified bytes. Accidental overlaps still
+  raise. (#25)
+- **`acorn_sideways_rom` entry-slot modes.** `use_environment(
+  "acorn_sideways_rom", language_entry=..., service_entry=...)` accepts
+  `"auto"` (default; unchanged `byte0` heuristic), `"code"` (the slot
+  is inline code — seed an entry, let the trace own the bytes, no
+  handler label), or `"none"` (the slot is not this ROM's entry —
+  attach no label, classification, or banner). Unblocks inline-code
+  language ROMs such as BBC BASIC II, whose `&8000` is
+  `CMP #1 / BEQ / RTS` rather than a `JMP abs` and whose `&8003` is the
+  tail of that code, not a service entry. (#26)
 - `stringhi_skip_hook` — an inline-string subroutine hook for the Acorn
   convention where the bit-7 terminator is the final character of the
   string (consumed, trace resumes at terminator+1), as used by ADFS
