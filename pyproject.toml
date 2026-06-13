@@ -73,6 +73,7 @@ acorn_model_b_hardware = "dasmos.ext.environments.acorn_model_b_hardware:Environ
 acorn_master_hardware = "dasmos.ext.environments.acorn_master_hardware:Environment"
 acorn_fdc_8271 = "dasmos.ext.environments.acorn_fdc_8271:Environment"
 acorn_fdc_1770 = "dasmos.ext.environments.acorn_fdc_1770:Environment"
+bbc_basic_6502 = "dasmos.ext.environments.bbc_basic_6502:Environment"
 
 [tool.setuptools]
 package-dir = { "" = "src" }

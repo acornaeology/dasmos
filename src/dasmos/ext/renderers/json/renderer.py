@@ -56,7 +56,13 @@ from __future__ import annotations
 import warnings
 from typing import TYPE_CHECKING, Any
 
-from dasmos.core.annotations import Align, Annotation, Banner, Comment
+from dasmos.core.annotations import (
+    Align,
+    Annotation,
+    Banner,
+    Comment,
+    DecodedAnnotation,
+)
 from dasmos.core.classification import Byte, Fill, String, Word
 from dasmos.core.format_hint import FormatHint
 from dasmos.core.markdown_asm import markdown_normalize_headings
@@ -433,6 +439,9 @@ class JsonRenderer(Renderer[StructuredOutput]):
         ci = self._gather_inline(ir, binary_addr, length)
         if ci:
             entry["comment_inline"] = ci
+        decoded = self._gather_decoded(ir, binary_addr, length)
+        if decoded:
+            entry["decoded"] = decoded if len(decoded) > 1 else decoded[0]
         xrefs = self._build_xref_summaries(ir, binary_addr, length)
         if xrefs:
             entry["xref_summaries"] = xrefs
@@ -861,6 +870,35 @@ class JsonRenderer(Renderer[StructuredOutput]):
                     continue
                 inline = text if inline is None else f"{inline} {text}"
         return inline
+
+    def _gather_decoded(
+        self, ir, binary_addr: int, length: int,
+    ) -> list[dict]:
+        """Collect decoded-value annotations (#27) across the item's
+        bytes as structured records ``{type, text, value?, comment?}``.
+
+        Surfaced as a first-class ``decoded`` field rather than folded
+        into ``comment_inline`` — the whole point of a typed region is
+        that downstream consumers get the typed value, not a string.
+        ``value`` and ``comment`` are omitted when absent.
+        """
+        out: list[dict] = []
+        for i in range(length):
+            for ann in ir.annotations.get_for_align(
+                binary_addr + i, Align.INLINE,
+            ):
+                if not isinstance(ann, DecodedAnnotation):
+                    continue
+                rec: dict = {
+                    "type": ann.decoded.type_name,
+                    "text": ann.decoded.text,
+                }
+                if ann.decoded.value is not None:
+                    rec["value"] = ann.decoded.value
+                if ann.comment:
+                    rec["comment"] = ann.comment
+                out.append(rec)
+        return out
 
     def _annotation_texts(self, ann) -> list[str]:
         """Render an annotation as one or more comments_before /

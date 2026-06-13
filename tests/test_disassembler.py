@@ -12,7 +12,9 @@ continues from here).
 
 import pytest
 
+from dasmos.core.annotations import Align, DecodedAnnotation
 from dasmos.core.classification import Byte, Fill, String, Word
+from dasmos.core.data_type import DataType, DecodedValue
 from dasmos.core.memory import BinaryAddr, RuntimeAddr
 from dasmos.core.move import BASE_MOVE_ID
 from dasmos.cpu import Cpu, Opcode
@@ -470,6 +472,166 @@ class TestClassificationOverride:
         d.word(0x8000, 4)
         with pytest.raises(ClassificationError):
             d.byte(0x8000, 4)
+
+
+class _Sum2(DataType):
+    """Stub fixed-width (2-byte) data type for typed_data tests:
+    decodes to the little-endian sum of its two bytes.
+    """
+
+    @property
+    def name(self) -> str:
+        return "sum2"
+
+    @property
+    def length(self) -> int:
+        return 2
+
+    def decode(self, raw: bytes) -> DecodedValue:
+        v = raw[0] + (raw[1] << 8)
+        return DecodedValue("sum2", str(v), v)
+
+
+class TestTypedData:
+    """Pluggable typed-data regions (#27): classify as raw Byte(N) for
+    byte-faithful emission, attach the decoded value as an annotation.
+    """
+
+    @staticmethod
+    def _loaded_6502(tmp_path, payload, addr=0x8000):
+        rom = tmp_path / "data.bin"
+        rom.write_bytes(bytes(payload))
+        d = Disassembler.create(cpu="6502")
+        d.load(rom, addr)
+        return d
+
+    def test_typed_data_classifies_as_bytes(self, tmp_path):
+        d = self._loaded_6502(tmp_path, [0x34, 0x12])
+        d.typed_data(0x8000, _Sum2())
+        ir = d.disassemble()
+        c = ir.classifications.get_classification(0x8000)
+        assert isinstance(c, Byte) and c.length() == 2
+
+    def test_typed_data_attaches_decoded_annotation(self, tmp_path):
+        d = self._loaded_6502(tmp_path, [0x34, 0x12])
+        d.typed_data(0x8000, _Sum2())
+        anns = d.annotations.get_for_align(0x8000, Align.INLINE)
+        decoded = [a for a in anns if isinstance(a, DecodedAnnotation)]
+        assert len(decoded) == 1
+        assert decoded[0].decoded.type_name == "sum2"
+        assert decoded[0].decoded.text == str(0x1234)
+        assert decoded[0].decoded.value == 0x1234
+
+    def test_length_implied_by_type(self, tmp_path):
+        # No length argument — the type owns its width.
+        d = self._loaded_6502(tmp_path, [0x01, 0x02, 0x99])
+        d.typed_data(0x8000, _Sum2())
+        ir = d.disassemble()
+        assert ir.classifications.get_classification(0x8000).length() == 2
+        # The third byte is untouched.
+        assert not ir.classifications.is_classified(0x8002) or (
+            ir.classifications.get_classification(0x8002) is not None
+        )
+
+    def test_matching_explicit_length_ok(self, tmp_path):
+        d = self._loaded_6502(tmp_path, [0x01, 0x02])
+        d.typed_data(0x8000, _Sum2(), length=2)  # agrees — fine
+
+    def test_mismatched_explicit_length_raises(self, tmp_path):
+        d = self._loaded_6502(tmp_path, [0x01, 0x02, 0x03])
+        with pytest.raises(DisassemblerError, match="length"):
+            d.typed_data(0x8000, _Sum2(), length=3)
+
+    def test_register_and_resolve_by_name(self, tmp_path):
+        d = self._loaded_6502(tmp_path, [0x34, 0x12])
+        d.register_data_type("sum2", _Sum2())
+        d.typed_data(0x8000, "sum2")
+        decoded = [
+            a for a in d.annotations.get_for_align(0x8000, Align.INLINE)
+            if isinstance(a, DecodedAnnotation)
+        ]
+        assert decoded and decoded[0].decoded.value == 0x1234
+
+    def test_unknown_name_raises(self, tmp_path):
+        d = self._loaded_6502(tmp_path, [0x00, 0x00])
+        with pytest.raises(DisassemblerError, match="bbc_float5"):
+            d.typed_data(0x8000, "bbc_float5")
+
+    def test_callable_decoder_requires_length(self, tmp_path):
+        d = self._loaded_6502(tmp_path, [0x01, 0x02])
+        with pytest.raises(DisassemblerError, match="length"):
+            d.typed_data(0x8000, lambda raw: "x")
+
+    def test_callable_decoder_with_length(self, tmp_path):
+        d = self._loaded_6502(tmp_path, [0x05, 0x00])
+        d.typed_data(0x8000, lambda raw: f"sum={raw[0] + raw[1]}", length=2)
+        decoded = [
+            a for a in d.annotations.get_for_align(0x8000, Align.INLINE)
+            if isinstance(a, DecodedAnnotation)
+        ]
+        assert decoded and decoded[0].decoded.text == "sum=5"
+
+    def test_optional_comment_attached(self, tmp_path):
+        d = self._loaded_6502(tmp_path, [0x34, 0x12])
+        d.typed_data(0x8000, _Sum2(), comment="the answer")
+        decoded = [
+            a for a in d.annotations.get_for_align(0x8000, Align.INLINE)
+            if isinstance(a, DecodedAnnotation)
+        ][0]
+        assert decoded.comment == "the answer"
+
+    def test_override_clears_conflicting_classification(self, tmp_path):
+        d = self._loaded_6502(tmp_path, [0x34, 0x12])
+        d.byte(0x8000, 2)
+        d.typed_data(0x8000, _Sum2(), override=True)
+        ir = d.disassemble()
+        assert ir.classifications.get_classification(0x8000).length() == 2
+
+    def test_without_override_overlap_raises(self, tmp_path):
+        from dasmos.core.disassembly import ClassificationError
+        d = self._loaded_6502(tmp_path, [0x34, 0x12])
+        d.byte(0x8000, 2)
+        with pytest.raises(ClassificationError):
+            d.typed_data(0x8000, _Sum2())
+
+    def test_unloaded_memory_raises(self, tmp_path):
+        d = self._loaded_6502(tmp_path, [0x34])  # only one byte loaded
+        with pytest.raises(DisassemblerError, match="loaded"):
+            d.typed_data(0x8000, _Sum2())  # needs 2 bytes
+
+    def test_beebasm_renders_decoded_inline(self, tmp_path):
+        d = self._loaded_6502(tmp_path, [0x34, 0x12])
+        d.typed_data(0x8000, _Sum2(), comment="the answer")
+        text = str(d.disassemble().render("beebasm"))
+        # Raw bytes still emitted (round-trip), decoded value inline.
+        assert "equb &34, &12" in text
+        assert "sum2 = 4660" in text
+        assert "the answer" in text
+
+    def test_beebasm_decoded_precedes_freeform_comment(self, tmp_path):
+        # Determinism: the decoded value renders before a separate
+        # free-form inline comment, regardless of registration order.
+        d = self._loaded_6502(tmp_path, [0x34, 0x12])
+        d.comment(0x8000, "a note", align=Align.INLINE)  # added FIRST
+        d.typed_data(0x8000, _Sum2())                    # decoded added second
+        line = next(
+            ln for ln in str(d.disassemble().render("beebasm")).splitlines()
+            if "equb &34" in ln
+        )
+        assert line.index("sum2 = 4660") < line.index("a note")
+
+    def test_json_emits_structured_decoded_field(self, tmp_path):
+        import json as _json
+        d = self._loaded_6502(tmp_path, [0x34, 0x12])
+        d.typed_data(0x8000, _Sum2(), comment="the answer")
+        doc = _json.loads(str(d.disassemble().render("json")))
+        item = next(it for it in doc["items"] if it["addr"] == 0x8000)
+        assert item["type"] == "byte"          # bytes, for fidelity
+        assert item["values"] == [0x34, 0x12]
+        assert item["decoded"] == {
+            "type": "sum2", "text": "4660",
+            "value": 4660, "comment": "the answer",
+        }
 
 
 class TestDisassemble:

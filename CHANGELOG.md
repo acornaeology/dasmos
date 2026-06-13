@@ -9,6 +9,26 @@ minor bumps may carry small breaking changes alongside additive ones.
 
 ### Added
 
+- **Pluggable custom data types.** `d.typed_data(addr, type)` marks an
+  N-byte region as a domain-specific aggregate: it emits the **raw
+  bytes** for byte-faithful reassembly and attaches the *decoded* value
+  as an annotation (an asm inline comment; a structured `decoded`
+  field — `{type, text, value, comment}` — in JSON output). A
+  `DataType` (`dasmos.core.data_type`) owns its width, so the length is
+  implied by the type, not repeated at the call site; `type` may be a
+  registered name, a `DataType` instance, or a bare callable plus an
+  explicit `length`. Decoding is eager (driver/env-side), so renderers
+  need no per-type knowledge and the round-trip oracle is never at
+  risk — many domain types (the BBC 5-byte float is the motivating
+  case) have no assembler literal that reassembles to the same bytes.
+  Environments contribute types via `d.register_data_type(name, type)`.
+  (#27)
+- **`bbc_basic_6502` environment.** Registers the `bbc_float5` data
+  type — BBC BASIC's packed 5-byte floating-point format (excess-128
+  exponent, implied leading 1, sign in the mantissa MSB). Decodes the
+  REAL-constant pool (e, π/2, ln 2, …) to readable values while keeping
+  the bytes exact. (#27)
+
 - **Classification override.** A driver can now reclaim bytes an
   environment classified eagerly. `Disassembler.entry(addr,
   override=True)` clears any conflicting classification at the target

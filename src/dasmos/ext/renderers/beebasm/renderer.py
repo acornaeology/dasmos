@@ -42,7 +42,13 @@ from __future__ import annotations
 import warnings
 from typing import TYPE_CHECKING
 
-from dasmos.core.annotations import Align, Annotation, Banner, Comment
+from dasmos.core.annotations import (
+    Align,
+    Annotation,
+    Banner,
+    Comment,
+    DecodedAnnotation,
+)
 from dasmos.core.classification import Byte, Fill, String, Word
 from dasmos.core.format_hint import FormatHint
 from dasmos.core.markdown_asm import markdown_to_asm_text, strip_address_uri_links
@@ -783,20 +789,32 @@ class BeebasmRenderer(TextRenderer):
         # ``dead`` token in NFS-3.65 &9B4F sits inside a 3-byte JMP
         # at &9B4D); without this, the operand-byte comment is
         # silently dropped.
-        inline_pieces: list[str] = []
+        # Decoded-value annotations (#27) render BEFORE free-form inline
+        # comments — the decoded value answers "what is this region",
+        # the comment elaborates. Collecting them into separate lists
+        # makes that ordering deterministic regardless of the order the
+        # driver registered them in.
+        decoded_pieces: list[str] = []
+        comment_pieces: list[str] = []
         for off in range(classification.length()):
             for ann in ir.annotations.get_for_align(
                 binary_addr + off, Align.INLINE,
             ):
                 rendered = self._render_annotation_inline(ann)
-                # Strip the ``;`` prefix on all but the first piece so
-                # the join reads as one comment, not three.
-                if inline_pieces:
-                    prefix = self.comment_prefix() + " "
-                    if rendered.startswith(prefix):
-                        rendered = rendered[len(prefix):]
-                inline_pieces.append(rendered)
-        user_inline_text = "  ".join(inline_pieces) if inline_pieces else None
+                if isinstance(ann, DecodedAnnotation):
+                    decoded_pieces.append(rendered)
+                else:
+                    comment_pieces.append(rendered)
+        ordered_pieces: list[str] = []
+        for rendered in decoded_pieces + comment_pieces:
+            # Strip the ``;`` prefix on all but the first piece so the
+            # join reads as one comment, not several.
+            if ordered_pieces:
+                prefix = self.comment_prefix() + " "
+                if rendered.startswith(prefix):
+                    rendered = rendered[len(prefix):]
+            ordered_pieces.append(rendered)
+        user_inline_text = "  ".join(ordered_pieces) if ordered_pieces else None
         if self.byte_column and content_lines:
             line_byte_counts = self._line_byte_counts(classification)
             cumulative = 0
@@ -1366,6 +1384,8 @@ class BeebasmRenderer(TextRenderer):
             ]
         if isinstance(ann, Annotation):
             return [ann.text]
+        if isinstance(ann, DecodedAnnotation):
+            return [f"{self.comment_prefix()} {self._decoded_text(ann)}"]
         raise TypeError(f"unknown annotation type: {type(ann).__name__}")
 
     def _render_annotation_inline(self, ann) -> str:
@@ -1374,6 +1394,8 @@ class BeebasmRenderer(TextRenderer):
         Banner inline form is not supported (banners are inherently
         multi-line); attach them at one of the standalone alignments.
         """
+        if isinstance(ann, DecodedAnnotation):
+            return f"{self.comment_prefix()} {self._decoded_text(ann)}"
         if isinstance(ann, Comment):
             text = self._comment_text_for_asm(ann, inline=True)
             return f"{self.comment_prefix()} {text}"
@@ -1385,6 +1407,16 @@ class BeebasmRenderer(TextRenderer):
                 "Align position (BEFORE_LABEL, AFTER_LABEL, etc.)"
             )
         raise TypeError(f"unknown annotation type: {type(ann).__name__}")
+
+    @staticmethod
+    def _decoded_text(ann: DecodedAnnotation) -> str:
+        """Plain-text body for a decoded-value annotation (#27):
+        ``<type> = <text>`` plus an optional trailing human note.
+        """
+        body = f"{ann.decoded.type_name} = {ann.decoded.text}"
+        if ann.comment:
+            body = f"{body}  {ann.comment}"
+        return body
 
     @staticmethod
     def _comment_text_for_asm(ann: Comment, *, inline: bool) -> str:

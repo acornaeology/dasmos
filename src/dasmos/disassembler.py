@@ -34,8 +34,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from dasmos.core.annotations import Align, AnnotationStore, Banner, Comment
+from dasmos.core.annotations import (
+    Align,
+    AnnotationStore,
+    Banner,
+    Comment,
+    DecodedAnnotation,
+)
 from dasmos.core.classification import Byte, ExpressionRegistry, Fill, String, Word
+from dasmos.core.data_type import DataType, DecodedValue
 from dasmos.core.format_hint import FormatHint, FormatHintRegistry
 from dasmos.core.config import Config
 from dasmos.core.disassembly import (
@@ -133,6 +140,12 @@ class Disassembler:
         # Hook signature: ``(disassembler, jsr_binary_addr) -> int``,
         # returning the binary address where the trace continues.
         self._subroutine_hooks: dict[int, object] = {}
+        # Custom data types registered via :meth:`register_data_type`
+        # (typically by an environment's ``setup``, mirroring how the
+        # INKEY table is contributed by ``acorn_mos``). Maps a type
+        # name to its :class:`~dasmos.core.data_type.DataType`. Used by
+        # :meth:`typed_data` to resolve a string type name.
+        self._data_types: dict[str, DataType] = {}
         # Auto-label generation policy. Each prefix is configurable so
         # a domain label that happens to start with the same prefix
         # doesn't collide with a synthesised one.
@@ -838,6 +851,118 @@ class Disassembler:
         binary_addr = self._resolve_to_binary_addr(runtime_addr, move)
         self._override_clear(binary_addr, length, override)
         self._classifications.add_classification(binary_addr, String(length))
+
+    # -- driver-script API: custom data types ----------------------------
+
+    def register_data_type(self, name: str, data_type: DataType) -> None:
+        """Register a custom :class:`~dasmos.core.data_type.DataType`
+        under ``name`` so :meth:`typed_data` can resolve it by string.
+
+        Environments call this from ``setup`` to contribute domain
+        types (e.g. ``bbc_basic_6502`` registers ``"bbc_float5"``),
+        keeping platform-specific decode knowledge out of core — the
+        same pattern as the env-supplied INKEY table. Last-write-wins.
+        """
+        self._raise_if_disassembled("register_data_type")
+        self._data_types[name] = data_type
+
+    def typed_data(
+        self,
+        runtime_addr,
+        data_type,
+        *,
+        length: int | None = None,
+        comment: str | None = None,
+        move: Move | None = None,
+        override: bool = False,
+    ) -> None:
+        """Classify a custom-typed data region: emit the raw bytes for
+        byte-faithful reassembly, and attach the **decoded** value as a
+        :class:`~dasmos.core.annotations.DecodedAnnotation`.
+
+        ``data_type`` may be:
+
+        - a **string** — resolved from the registry populated by
+          :meth:`register_data_type` (typically by an environment);
+        - a :class:`~dasmos.core.data_type.DataType` instance — used
+          directly (no registration needed);
+        - a bare **callable** ``bytes -> str | DecodedValue`` — for a
+          one-off decode; this form *requires* an explicit ``length``
+          since a plain function carries no width.
+
+        The width is **implied by the type** (a ``DataType`` owns its
+        ``length``); pass ``length`` only to validate, and a disagreeing
+        value raises. The region is classified as
+        :class:`~dasmos.core.classification.Byte` (so the bytes
+        round-trip exactly — many domain types, like the BBC 5-byte
+        float, have no assembler literal that reassembles to the same
+        bytes); the decoded value rides along as an annotation, never as
+        a literal.
+
+        ``comment`` is an optional human note rendered after the decoded
+        value. ``override=True`` clears any conflicting classification
+        in the range first (see :meth:`_override_clear`).
+        """
+        self._raise_if_disassembled("typed_data")
+        # Resolve the decoder, its name, and its implied width.
+        if isinstance(data_type, str):
+            resolved = self._data_types.get(data_type)
+            if resolved is None:
+                raise DisassemblerError(
+                    f"unknown data type {data_type!r}; register it with "
+                    f"register_data_type(...) or activate the environment "
+                    f"that contributes it"
+                )
+            decode = resolved.decode
+            type_name = resolved.name
+            implied_length = resolved.length
+        elif isinstance(data_type, DataType):
+            decode = data_type.decode
+            type_name = data_type.name
+            implied_length = data_type.length
+        elif callable(data_type):
+            if length is None:
+                raise DisassemblerError(
+                    "a bare callable decoder carries no width; pass an "
+                    "explicit length= (or use a DataType, which owns its "
+                    "length)"
+                )
+            decode = data_type
+            type_name = getattr(data_type, "__name__", "data")
+            implied_length = length
+        else:
+            raise TypeError(
+                f"typed_data expected a type name, DataType, or callable; "
+                f"got {type(data_type).__name__}"
+            )
+        if length is not None and length != implied_length:
+            raise DisassemblerError(
+                f"length={length} disagrees with the {type_name!r} type "
+                f"width of {implied_length}; omit length to use the type's "
+                f"own width"
+            )
+        length = implied_length
+
+        binary_addr = self._resolve_to_binary_addr(runtime_addr, move)
+        if not self._memory.is_loaded(binary_addr, length):
+            raise DisassemblerError(
+                f"typed_data {type_name!r} at "
+                f"0x{int(runtime_addr):x} needs {length} loaded bytes but "
+                f"the region is not fully loaded"
+            )
+        raw = bytes(
+            self._memory.get_u8(int(binary_addr) + i) for i in range(length)
+        )
+        decoded = decode(raw)
+        if not isinstance(decoded, DecodedValue):
+            # A bare callable may return plain text; wrap it.
+            decoded = DecodedValue(type_name=type_name, text=str(decoded))
+
+        self._override_clear(binary_addr, length, override)
+        self._classifications.add_classification(binary_addr, Byte(length))
+        self._annotations.add(
+            binary_addr, DecodedAnnotation(decoded=decoded, comment=comment),
+        )
 
     # -- driver-script API: expressions ---------------------------------
 

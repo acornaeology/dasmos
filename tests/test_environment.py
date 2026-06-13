@@ -1076,6 +1076,95 @@ class TestAcornSidewaysRom:
         assert isinstance(c, Byte) and c.length() == 3
 
 
+class TestBbcBasic6502Environment:
+    """BBC BASIC (6502) language environment: registers the packed
+    5-byte floating-point data type (``bbc_float5``) used for BASIC's
+    REAL constants. The decoder is verified against the real BBC
+    BASIC II ROM constants.
+    """
+
+    # Real packed bytes from the BBC BASIC II ROM, with their known
+    # mathematical values. (exponent + 4 mantissa bytes, big-endian.)
+    _KNOWN = [
+        (0xAAE4, bytes([0x82, 0x2d, 0xf8, 0x54, 0x58]), 2.718281828, "e"),
+        (0xAA63, bytes([0x81, 0x49, 0x0f, 0xda, 0xa2]), 1.570796327, "pi/2"),
+        (0xA86E, bytes([0x80, 0x31, 0x72, 0x17, 0xf8]), 0.6931471806, "ln2"),
+        (0xA869, bytes([0x7f, 0x5e, 0x5b, 0xd8, 0xaa]), 0.4342944819, "log10e"),
+        (0xAA59, bytes([0x81, 0xc9, 0x10, 0x00, 0x00]), -1.570800781, "-pi/2"),
+    ]
+
+    def test_registered_and_discoverable(self):
+        from dasmos.environment import environment_names
+        assert "bbc_basic_6502" in environment_names()
+
+    def test_decode_matches_known_rom_constants(self):
+        from dasmos.ext.environments.bbc_basic_6502 import decode_bbc_float5
+        for _addr, raw, expected, label in self._KNOWN:
+            got = decode_bbc_float5(raw)
+            assert got == pytest.approx(expected, rel=1e-7), (
+                f"{label}: decoded {got!r}, expected ~{expected}"
+            )
+
+    def test_decode_zero_exponent_is_zero(self):
+        from dasmos.ext.environments.bbc_basic_6502 import decode_bbc_float5
+        assert decode_bbc_float5(bytes([0, 0, 0, 0, 0])) == 0.0
+
+    def test_decode_wrong_length_raises(self):
+        from dasmos.ext.environments.bbc_basic_6502 import decode_bbc_float5
+        with pytest.raises(ValueError, match="5 bytes"):
+            decode_bbc_float5(bytes([0x82, 0x2d, 0xf8]))
+
+    def test_use_environment_registers_named_type(self, tmp_path):
+        # The driver activates the env and refers to the type by name —
+        # never importing env internals.
+        rom = tmp_path / "fp.bin"
+        rom.write_bytes(bytes([0x82, 0x2d, 0xf8, 0x54, 0x58]))  # e
+        d = Disassembler.create(cpu="6502")
+        d.load(rom, 0x8000)
+        d.use_environment("bbc_basic_6502")
+        d.typed_data(0x8000, "bbc_float5", comment="e (Euler's number)")
+        ir = d.disassemble()
+        # Classified as 5 raw bytes for fidelity.
+        from dasmos.core.classification import Byte
+        c = ir.classifications.get_classification(0x8000)
+        assert isinstance(c, Byte) and c.length() == 5
+        # Decoded value surfaced as an annotation.
+        from dasmos.core.annotations import Align, DecodedAnnotation
+        decoded = [
+            a for a in ir.annotations.get_for_align(0x8000, Align.INLINE)
+            if isinstance(a, DecodedAnnotation)
+        ]
+        # Full round-trippable decimal, not a misleadingly-rounded form.
+        assert decoded and decoded[0].decoded.text == "2.718281827867031"
+
+    def test_beebasm_round_trips_and_shows_decoded(self, tmp_path):
+        # The five raw bytes re-assemble byte-identical; the decoded
+        # value rides along as an inline comment.
+        import shutil, subprocess
+        beebasm = shutil.which("beebasm")
+        if beebasm is None:
+            pytest.skip("beebasm not found")
+        payload = bytes([0x82, 0x2d, 0xf8, 0x54, 0x58])  # e
+        rom = tmp_path / "fp.bin"
+        rom.write_bytes(payload)
+        d = Disassembler.create(cpu="6502")
+        d.load(rom, 0x8000)
+        d.use_environment("bbc_basic_6502")
+        d.typed_data(0x8000, "bbc_float5", comment="e")
+        text = str(d.disassemble().render("beebasm"))
+        assert "bbc_float5 = 2.718281827867031" in text
+        # The rendered listing already carries org + save; assemble it.
+        asm = tmp_path / "fp.asm"
+        asm.write_text(text)
+        out = tmp_path / "rebuilt.bin"
+        r = subprocess.run(
+            [beebasm, "-i", str(asm), "-o", str(out)],
+            capture_output=True, text=True, cwd=tmp_path,
+        )
+        assert r.returncode == 0, r.stderr + r.stdout
+        assert out.read_bytes() == payload
+
+
 class TestAcornModelBHardwareEnvironment:
     """BBC Model B / B+ hardware-register Environment: registers the
     memory-mapped I/O label set for the Model B family — the shared

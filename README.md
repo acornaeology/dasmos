@@ -166,6 +166,8 @@ $ dasmos list-environments
 │                        │ Environment.                                        │
 │ acorn_mos              │ Acorn MOS environment.                              │
 │ acorn_sideways_rom     │ Acorn sideways ROM environment.                     │
+│ bbc_basic_6502         │ Registers BBC BASIC (6502) language-specific data   │
+│                        │ types.                                              │
 └────────────────────────┴─────────────────────────────────────────────────────┘
 ```
 

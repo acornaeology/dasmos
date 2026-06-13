@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Union
 
+from dasmos.core.data_type import DecodedValue
 from dasmos.core.memory import BinaryAddr
 
 
@@ -116,8 +117,34 @@ class Banner:
     priority: Optional[int] = None
 
 
+@dataclass
+class DecodedAnnotation:
+    """The decoded value of a typed-data region (see
+    :class:`~dasmos.core.data_type.DataType`).
+
+    Attached by :meth:`~dasmos.disassembler.Disassembler.typed_data`
+    alongside the region's :class:`~dasmos.core.classification.Byte`
+    classification. It is a distinct entry type (not a
+    :class:`Comment`) so the renderer can place it deterministically —
+    immediately after the raw bytes and *before* any free-form inline
+    comment — and so the JSON renderer can surface it as a structured
+    field rather than folding it into ``comment_inline``.
+
+    ``comment`` is an optional human note rendered after the decoded
+    value (e.g. ``"Euler's number (e)"``). Defaults to ``INLINE`` —
+    the decoded value of a data region is a trailing annotation on the
+    emitted bytes.
+    """
+
+    decoded: DecodedValue
+    comment: Optional[str] = None
+    align: Align = Align.INLINE
+    auto_generated: bool = True
+    priority: Optional[int] = None
+
+
 # Type alias for store entries.
-Entry = Union[Comment, Annotation, Banner]
+Entry = Union[Comment, Annotation, Banner, DecodedAnnotation]
 
 
 class AnnotationStore:
