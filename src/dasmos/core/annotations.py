@@ -142,6 +142,17 @@ class DecodedAnnotation:
     auto_generated: bool = True
     priority: Optional[int] = None
 
+    def display_text(self) -> str:
+        """The single human-readable line both renderers show for this
+        decoded region: ``"<label> <text>"`` plus the optional human
+        note. Keeping the composition here (rather than in each
+        renderer) stops the asm and JSON forms from drifting apart.
+        """
+        body = f"{self.decoded.display_label} {self.decoded.text}"
+        if self.comment:
+            body = f"{body}  {self.comment}"
+        return body
+
 
 # Type alias for store entries.
 Entry = Union[Comment, Annotation, Banner, DecodedAnnotation]

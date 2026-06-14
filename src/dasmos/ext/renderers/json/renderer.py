@@ -860,16 +860,30 @@ class JsonRenderer(Renderer[StructuredOutput]):
         annotations across the item's bytes flatten to a single
         space-joined string (asm convention: at most one inline
         comment per line, but env analysers may stack them).
+
+        Decoded-value annotations (#27) are folded in here too (#28):
+        their human display text — ``"<label> <text>  <note>"`` via
+        :meth:`DecodedAnnotation.display_text` — is what the beebasm
+        renderer shows inline, so a JSON consumer rendering the
+        standard comment channels sees the same thing without having to
+        special-case the structured ``decoded`` field (which is still
+        emitted separately for programmatic use). Decoded pieces render
+        before free-form inline comments, matching the beebasm order.
         """
-        inline: str | None = None
+        decoded_pieces: list[str] = []
+        comment_pieces: list[str] = []
         for i in range(length):
             byte_addr = binary_addr + i
             for ann in ir.annotations.get_for_align(byte_addr, Align.INLINE):
+                if isinstance(ann, DecodedAnnotation):
+                    decoded_pieces.append(ann.display_text())
+                    continue
                 text = self._annotation_text(ann)
                 if not text:
                     continue
-                inline = text if inline is None else f"{inline} {text}"
-        return inline
+                comment_pieces.append(text)
+        pieces = decoded_pieces + comment_pieces
+        return " ".join(pieces) if pieces else None
 
     def _gather_decoded(
         self, ir, binary_addr: int, length: int,

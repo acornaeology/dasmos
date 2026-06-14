@@ -605,7 +605,7 @@ class TestTypedData:
         text = str(d.disassemble().render("beebasm"))
         # Raw bytes still emitted (round-trip), decoded value inline.
         assert "equb &34, &12" in text
-        assert "sum2 = 4660" in text
+        assert "sum2 4660" in text
         assert "the answer" in text
 
     def test_beebasm_decoded_precedes_freeform_comment(self, tmp_path):
@@ -618,7 +618,7 @@ class TestTypedData:
             ln for ln in str(d.disassemble().render("beebasm")).splitlines()
             if "equb &34" in ln
         )
-        assert line.index("sum2 = 4660") < line.index("a note")
+        assert line.index("sum2 4660") < line.index("a note")
 
     def test_json_emits_structured_decoded_field(self, tmp_path):
         import json as _json
@@ -632,6 +632,31 @@ class TestTypedData:
             "type": "sum2", "text": "4660",
             "value": 4660, "comment": "the answer",
         }
+
+    def test_json_folds_decoded_into_comment_inline(self, tmp_path):
+        # #28: the decoded display text is also surfaced through
+        # ``comment_inline`` so a consumer rendering the standard
+        # comment channels sees it without special-casing ``decoded``.
+        import json as _json
+        d = self._loaded_6502(tmp_path, [0x34, 0x12])
+        d.typed_data(0x8000, _Sum2(), comment="the answer")
+        doc = _json.loads(str(d.disassemble().render("json")))
+        item = next(it for it in doc["items"] if it["addr"] == 0x8000)
+        assert item["comment_inline"] == "sum2 4660  the answer"
+        # Structured channel still present for programmatic consumers.
+        assert item["decoded"]["type"] == "sum2"
+
+    def test_json_decoded_precedes_freeform_in_comment_inline(self, tmp_path):
+        # Decoded text orders before a separate free-form inline
+        # comment, matching the beebasm renderer.
+        import json as _json
+        d = self._loaded_6502(tmp_path, [0x34, 0x12])
+        d.comment(0x8000, "a note", align=Align.INLINE)  # added FIRST
+        d.typed_data(0x8000, _Sum2())                    # decoded second
+        doc = _json.loads(str(d.disassemble().render("json")))
+        item = next(it for it in doc["items"] if it["addr"] == 0x8000)
+        ci = item["comment_inline"]
+        assert ci.index("sum2 4660") < ci.index("a note")
 
 
 class TestDisassemble:

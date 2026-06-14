@@ -55,13 +55,22 @@ class BbcFloat5(DataType):
     """The BBC BASIC packed 5-byte floating-point data type.
 
     Fixed width of 5 bytes; decodes to a ``float`` surfaced both as the
-    structured ``value`` and as ``text``. The text is the **full**
-    round-trippable decimal (``repr`` — the shortest decimal that maps
-    back to the exact stored value), deliberately *not* rounded: a
-    trimmed form like ``2.718281828`` would misleadingly read as true
-    e, when the ROM constant is only an approximation
-    (``2.718281827867031``). The 32-bit mantissa fits a 64-bit float
-    exactly, so the ``float`` is the precise stored value.
+    structured ``value`` and as ``text``.
+
+    The displayed ``text`` is formatted to ~10 significant figures —
+    the honest width of a 32-bit mantissa (relative precision
+    2^-32 ≈ 2.3e-10). ``repr`` would print the full float64
+    shortest-round-trip decimal (``2.718281827867031``), but those
+    trailing digits are an artefact of widening the stored value into a
+    float64, not precision the ROM constant carries. Whether the
+    constant is *intended* as a familiar value (e, π/2, …) is answered
+    by the driver's human note, not by spurious digits. The exact
+    stored value remains available, full-precision, in ``value`` (the
+    32-bit mantissa fits a 64-bit float exactly).
+
+    The human display label is ``float40`` (a friendlier "40-bit BBC
+    float"); the machine ``type_name`` stays ``bbc_float5`` to match
+    the registry key callers pass to ``typed_data``.
     """
 
     @property
@@ -76,6 +85,7 @@ class BbcFloat5(DataType):
         value = decode_bbc_float5(raw)
         return DecodedValue(
             type_name="bbc_float5",
-            text=repr(value),
+            label="float40",
+            text=f"{value:.10g}",
             value=value,
         )

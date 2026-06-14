@@ -1134,8 +1134,14 @@ class TestBbcBasic6502Environment:
             a for a in ir.annotations.get_for_align(0x8000, Align.INLINE)
             if isinstance(a, DecodedAnnotation)
         ]
-        # Full round-trippable decimal, not a misleadingly-rounded form.
-        assert decoded and decoded[0].decoded.text == "2.718281827867031"
+        # Text is trimmed to the ~10 significant figures a 32-bit
+        # mantissa actually distinguishes (#29); the exact stored value
+        # stays full-precision in ``value``.
+        assert decoded and decoded[0].decoded.text == "2.718281828"
+        assert decoded[0].decoded.value == 2.718281827867031
+        # Machine type id stays the registry key; display label differs.
+        assert decoded[0].decoded.type_name == "bbc_float5"
+        assert decoded[0].decoded.display_label == "float40"
 
     def test_beebasm_round_trips_and_shows_decoded(self, tmp_path):
         # The five raw bytes re-assemble byte-identical; the decoded
@@ -1152,7 +1158,7 @@ class TestBbcBasic6502Environment:
         d.use_environment("bbc_basic_6502")
         d.typed_data(0x8000, "bbc_float5", comment="e")
         text = str(d.disassemble().render("beebasm"))
-        assert "bbc_float5 = 2.718281827867031" in text
+        assert "float40 2.718281828  e" in text
         # The rendered listing already carries org + save; assemble it.
         asm = tmp_path / "fp.asm"
         asm.write_text(text)

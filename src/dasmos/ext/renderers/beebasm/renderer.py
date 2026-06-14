@@ -1411,12 +1411,12 @@ class BeebasmRenderer(TextRenderer):
     @staticmethod
     def _decoded_text(ann: DecodedAnnotation) -> str:
         """Plain-text body for a decoded-value annotation (#27):
-        ``<type> = <text>`` plus an optional trailing human note.
+        ``<label> <text>`` plus an optional trailing human note. The
+        composition is shared with the JSON renderer via
+        :meth:`DecodedAnnotation.display_text` so the two forms stay in
+        step (#28).
         """
-        body = f"{ann.decoded.type_name} = {ann.decoded.text}"
-        if ann.comment:
-            body = f"{body}  {ann.comment}"
-        return body
+        return ann.display_text()
 
     @staticmethod
     def _comment_text_for_asm(ann: Comment, *, inline: bool) -> str:

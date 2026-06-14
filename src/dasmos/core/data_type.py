@@ -47,20 +47,36 @@ from typing import Any, Optional
 class DecodedValue:
     """The decoded interpretation of a typed-data region.
 
-    - ``type_name`` names the data type (e.g. ``"bbc_float5"``); it is
-      surfaced to readers so the listing says *what* the region is, not
-      just its value.
+    - ``type_name`` is the **machine** identifier for the data type
+      (e.g. ``"bbc_float5"``, matching the registry key passed to
+      ``typed_data(addr, "bbc_float5")``). It is surfaced verbatim as
+      the JSON ``decoded.type`` field so programmatic consumers can map
+      a decoded value back to the type that produced it.
+    - ``label`` is the optional **human** display label a renderer
+      shows in the listing (e.g. ``"float40"``). When ``None`` it falls
+      back to ``type_name`` — see :attr:`display_label`. Keeping it
+      distinct lets a type read ``bbc_float5`` to the API while reading
+      ``float40`` to a person.
     - ``text`` is the human-readable form an asm renderer emits as an
-      inline comment (e.g. ``"2.718281828"``).
+      inline comment (e.g. ``"2.718281828"``). It is the display form,
+      not necessarily the full-precision one — see ``value``.
     - ``value`` is an optional JSON-serialisable structured value (e.g.
-      the ``float`` itself) the JSON renderer surfaces alongside the
-      text, so downstream consumers get the typed value, not just a
-      string.
+      the exact ``float``) the JSON renderer surfaces alongside the
+      text, so downstream consumers get the precise typed value, not
+      just a (possibly rounded) string.
     """
 
     type_name: str
     text: str
     value: Optional[Any] = None
+    label: Optional[str] = None
+
+    @property
+    def display_label(self) -> str:
+        """The human display label, falling back to :attr:`type_name`
+        when no distinct :attr:`label` was supplied.
+        """
+        return self.label if self.label is not None else self.type_name
 
 
 class DataType(ABC):
