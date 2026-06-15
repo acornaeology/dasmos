@@ -684,18 +684,22 @@ class JsonRenderer(Renderer[StructuredOutput]):
         """Best-effort character-literal text for the JSON renderer.
 
         Uses the universal ``'c'`` form (works for nearly every
-        printable byte). The double-quote (``0x22``) renders as
-        ``'"'`` (single-quoted double-quote, unambiguous). The
-        apostrophe (``0x27``) has no clean ``'c'`` form, so this
-        method returns ``None`` for it (caller falls back to a
-        numeric literal with a warning).
+        printable byte). The two quote chars each have a blind spot in
+        that form, covered by a cross-fallback that mirrors the beebasm
+        renderer at the same byte (#30):
 
-        Non-printable bytes also return ``None``.
+        - double-quote (``0x22``) renders as ``'"'`` (single-quoted,
+          unambiguous);
+        - apostrophe (``0x27``) has no clean ``'c'`` form, so it renders
+          as ``ASC("'")`` — the same form the beebasm renderer emits.
+
+        Only genuinely non-printable bytes return ``None`` (the caller
+        then falls back to a numeric literal with a warning).
         """
         if not (0x20 <= value <= 0x7E):
             return None
         if value == 0x27:
-            return None
+            return f'ASC("{chr(value)}")'
         return f"'{chr(value)}'"
 
     def _addr_label_or_hex(self, ir, addr: int, *, width: int) -> str:

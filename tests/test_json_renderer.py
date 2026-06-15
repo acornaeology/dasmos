@@ -138,6 +138,28 @@ class TestItemEmission:
         assert ldy["operand"] == "#'g'"
         assert ldy["format_hint"] == "char"
 
+    def test_format_hint_char_quote_chars_match_beebasm(self, tmp_path):
+        # The apostrophe (0x27) has no clean ``'c'`` form, so it renders
+        # via the same ``ASC("'")`` cross-fallback the beebasm renderer
+        # uses — no numeric degradation, no warning (#30). The
+        # double-quote (0x22) renders unambiguously as ``'"'``.
+        import warnings
+        bin_path = tmp_path / "p.bin"
+        # ldy #&27 ('), ldx #&22 ("), rts
+        bin_path.write_bytes(bytes([0xa0, 0x27, 0xa2, 0x22, 0x60]))
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.entry(0x8000)
+        d.char_literal(0x8001)
+        d.char_literal(0x8003)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # any UserWarning fails the test
+            items = d.disassemble().render(JsonRenderer()).data["items"]
+        assert items[0]["operand"] == '#ASC("\'")'
+        assert items[0]["format_hint"] == "char"
+        assert items[1]["operand"] == "#'\"'"
+        assert items[1]["format_hint"] == "char"
+
     def test_format_hint_decimal_forces_base_10_in_operand(self, tmp_path):
         from dasmos.core.format_hint import FormatHint
         bin_path = tmp_path / "p.bin"
