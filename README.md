@@ -181,7 +181,7 @@ docstring of a single plug-in:
 
 ```console
 $ dasmos describe-cpu 6502
-The classic NMOS 6502.
+6502: The classic NMOS 6502.
 
 16-bit address space; the 56 documented mnemonics across 13
 addressing modes; 151 documented opcodes (undocumented opcodes

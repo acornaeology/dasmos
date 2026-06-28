@@ -38,7 +38,19 @@ README_FILEPATH = ROOT_DIRPATH / "README.md"
 # belt-and-braces in case a formatter ignores NO_COLOR.
 ANSI_M_RE = re.compile(r"\x1b\[[0-9;]*m")
 
-CAPTURE_ENV = {"COLUMNS": "80", "NO_COLOR": "1"}
+# Pin the asyoulikeit output format to the terminal ("display") form.
+# Without this, asyoulikeit falls back to TTY sensing: the CliRunner
+# buffer is not a terminal, so it would emit the pipe ("tsv") form, in
+# which a scalar's multi-line value is escaped to literal "\n". Newer
+# asyoulikeit releases tightened that escaping, so a fresh CI resolution
+# produced different captured text than an older pinned local one. Fixing
+# the format makes the captured output deterministic across versions and
+# matches what a reader sees in a real terminal.
+CAPTURE_ENV = {
+    "COLUMNS": "80",
+    "NO_COLOR": "1",
+    "ASYOULIKEIT_FORMAT": "display",
+}
 
 
 def _strip_ansi(text: str) -> str:
