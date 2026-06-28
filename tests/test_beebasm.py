@@ -604,6 +604,42 @@ class TestEquateDescriptionMarkdown:
         assert "`" not in equate_line, equate_line
         assert "osbyte (&FFF4)" in equate_line
 
+    def test_constant_duplicating_label_is_not_emitted(self, tmp_path):
+        # A constant that exactly duplicates a label definition (same
+        # name at the same address) must not produce a second
+        # ``name = value`` equate — beebasm rejects a redefinition.
+        # This happens when a driver registers a hardware-register
+        # constant whose address an active environment also labels.
+        # LDA &00CC references the address, so the (out-of-range)
+        # label is emitted as an equate.
+        d = _make_disassembler_with_program(tmp_path, b"\xa5\xcc\x60", 0x8000)
+        d.entry(0x8000)
+        d.label(0x00CC, "scsi_data")
+        d.constant(0x00CC, "scsi_data")
+        text = str(d.disassemble().render("beebasm"))
+        equate_lines = [
+            line for line in text.splitlines()
+            if line.startswith("scsi_data") and "=" in line
+        ]
+        assert len(equate_lines) == 1, equate_lines
+
+    def test_constant_with_same_name_different_value_still_emitted(self, tmp_path):
+        # Only an exact (name, value) duplicate is suppressed; a
+        # same-named constant at a different value is a real conflict
+        # and must still be emitted so the author can see it.
+        d = _make_disassembler_with_program(tmp_path, b"\xa5\xcc\x60", 0x8000)
+        d.entry(0x8000)
+        d.label(0x00CC, "scsi_data")
+        d.constant(0x00DD, "scsi_data")
+        text = str(d.disassemble().render("beebasm"))
+        equate_lines = [
+            line for line in text.splitlines()
+            if line.startswith("scsi_data") and "=" in line
+        ]
+        assert len(equate_lines) == 2, equate_lines
+        assert any("&cc" in line for line in equate_lines)
+        assert any("&dd" in line for line in equate_lines)
+
     def test_banner_on_entry_strips_markdown(self, tmp_path):
         # The Banner ``On Entry:`` / ``On Exit:`` register-value text
         # is also user-authored prose with the same markdown

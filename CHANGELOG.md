@@ -60,6 +60,25 @@ minor bumps may carry small breaking changes alongside additive ones.
   which leaves the terminator in the instruction stream and resumes at
   it. (#24)
 
+### Changed
+
+- **Acorn SCSI host-adapter register names.** The shared Fred-bus
+  labels at &FC40-&FC43 are renamed from the generic
+  `fred_hard_drive_0..3` to the specific `scsi_data`, `scsi_status`,
+  `scsi_select` and `scsi_irq_enable`, matching the Acorn SCSI /
+  Winchester host adapter the addresses actually drive. Disassemblies
+  using the `acorn_model_b_hardware` / `acorn_master_hardware`
+  environments inherit the clearer names.
+
+### Fixed
+
+- **Duplicate equate when a constant shadows a label.** The beebasm
+  renderer no longer emits a constant equate that exactly duplicates a
+  label definition (same name at the same address). Previously a driver
+  that registered, say, a `scsi_data` constant at an address an
+  environment also labels `scsi_data` produced two `scsi_data = &xxxx`
+  lines and beebasm rejected the second with "Symbol already defined".
+
 ## [0.2.0]
 
 A substantial release. New driver-API surface for renderer-agnostic

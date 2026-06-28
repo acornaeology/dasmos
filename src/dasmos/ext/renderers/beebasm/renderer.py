@@ -574,7 +574,36 @@ class BeebasmRenderer(TextRenderer):
         ``(value, name)`` pair, common when several JSR sites trigger
         the same OSBYTE-hook substitution, collapse to one equate).
         Emitted in registration order.
+
+        A constant that exactly duplicates a label definition (same
+        name at the same address, where the label is itself emitted) is
+        skipped: the label table already defines ``name = &xxxx`` and
+        beebasm rejects a second definition. This happens when a driver
+        registers a hardware-register constant whose address an active
+        environment also labels — e.g. a ``scsi_data`` constant at
+        &FC40 alongside the ``scsi_data`` label from the Acorn
+        environment.
         """
+        # (name, addr) pairs the label table / inline definitions emit.
+        label_defs: set[tuple[str, int]] = set()
+        for addr_obj, label in ir.labels.items():
+            addr = int(addr_obj)
+            names = {
+                n.text
+                for name_list in label.explicit_names.values()
+                for n in name_list
+            }
+            if not names:
+                continue
+            will_emit = (
+                self._label_address_is_in_range(ir, addr)
+                or label.required
+                or addr in self._used_external_labels
+            )
+            if will_emit:
+                for nm in names:
+                    label_defs.add((nm, addr))
+
         seen: set[str] = set()
         lines: list[str] = []
         # Compute name column width across all unique names.
@@ -583,6 +612,8 @@ class BeebasmRenderer(TextRenderer):
             if c.name in seen:
                 continue
             seen.add(c.name)
+            if (c.name, int(c.value)) in label_defs:
+                continue  # duplicate of an emitted label definition
             unique.append(c)
         if not unique:
             return []

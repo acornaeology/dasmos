@@ -128,12 +128,14 @@ _CUBE: list[tuple[int, str]] = [
 # Fred-bus 1MHz peripheral page (&FC00-&FCFF). Most of Fred is
 # expansion / aftermarket; only the Acorn SCSI / Winchester hard
 # drive interface (&FC40-&FC43) has a stable meaning across BBC
-# machines, used by ADFS and similar disk-controller ROMs.
+# machines, used by ADFS and similar disk-controller ROMs. The four
+# registers are the SCSI host adapter's data, status, select and
+# interrupt-enable ports.
 _FRED_SHARED: list[tuple[int, str]] = [
-    (0xfc40, "fred_hard_drive_0"),
-    (0xfc41, "fred_hard_drive_1"),
-    (0xfc42, "fred_hard_drive_2"),
-    (0xfc43, "fred_hard_drive_3"),
+    (0xfc40, "scsi_data"),
+    (0xfc41, "scsi_status"),
+    (0xfc42, "scsi_select"),
+    (0xfc43, "scsi_irq_enable"),
 ]
 
 
