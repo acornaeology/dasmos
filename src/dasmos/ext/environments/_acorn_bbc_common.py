@@ -6,11 +6,25 @@ Imported (privately) by the per-machine hardware Environments —
 a registered Environment plug-in (note the leading underscore).
 
 Each per-machine env starts from this shared base and adds its
-own specifics (currently just ACCCON on the Master). The shared
-base is everything where the register's address and meaning are
-stable across both machines — the system / user VIAs, CRTC,
-ACIA, video ULA, ECONET ADLC, ADC, Tube, base ROMSEL, and the
-Fred-bus SCSI / Winchester block.
+own specifics. ``SHARED_LABELS`` is everything where the
+register's address *and* meaning are stable across both machines
+— the system / user VIAs, CRTC, ACIA, video ULA, ECONET ADLC,
+Tube, base ROMSEL, and the Fred-bus SCSI / Winchester block.
+
+Registers whose *address* differs between the machines are NOT in
+``SHARED_LABELS``; they live in the machine-specific blocks the
+per-machine envs add (see #31):
+
+- The station-ID / NMI-control latch (&FE18) and the μPD7002 ADC
+  (&FEC0) are Model-B/B+ placements — exported as
+  ``MODEL_B_ONLY_LABELS``. On the Master, &FE18 *is* the ADC and
+  the Econet NMI control moves to dedicated INTOFF/INTON latches;
+  those Master placements are defined in
+  :mod:`acorn_master_hardware`.
+- ACCCON (&FE34) exists on the B+ and the Master but not the plain
+  Model B — exported as ``ACCCON_LABELS`` for both machine envs to
+  include (the env grouping lumps B with B+; a plain-B ROM simply
+  never references &FE34, so the optional label never emits).
 
 Floppy-disc-controller registers are deliberately NOT in this
 shared block. The choice between the Intel 8271 and the WD1770
@@ -43,9 +57,18 @@ _SERIAL_ULA: list[tuple[int, str]] = [
     (0xfe10, "serial_ula_set_baud_cassette_and_motor"),
 ]
 
-# Station ID / NMI control
+# Station ID / NMI control — Model B / B+ only. On the Master,
+# &FE18 is the ADC and the Econet NMI control is at &FE38/&FE3C
+# (see acorn_master_hardware).
 _STATION_ID: list[tuple[int, str]] = [
     (0xfe18, "station_id_disable_net_nmis"),
+]
+
+# ACCCON access-control register — present on the B+ and Master
+# (shadow-RAM / ROM-banking / IRQ steering), absent on the plain
+# Model B. Both machine envs include it (see module docstring).
+_ACCCON: list[tuple[int, str]] = [
+    (0xfe34, "acccon"),
 ]
 
 # Video ULA
@@ -99,12 +122,18 @@ _ECONET: list[tuple[int, str]] = [
     (0xfea3, "econet_data_terminate_frame"),
 ]
 
-# Analogue-to-digital converter
-_ADC: list[tuple[int, str]] = [
-    (0xfec0, "adc_start_conversion_or_status"),
-    (0xfec1, "adc_read_data_high_byte"),
-    (0xfec2, "adc_read_data_low_byte"),
-]
+def adc_labels(base: int) -> list[tuple[int, str]]:
+    """The three μPD7002 ADC registers based at ``base``.
+
+    The register *meaning* is identical across the BBC line; only
+    the base address differs — &FEC0 on the Model B / B+, &FE18 on
+    the Master. The machine env supplies the base (see #31).
+    """
+    return [
+        (base + 0, "adc_start_conversion_or_status"),
+        (base + 1, "adc_read_data_high_byte"),
+        (base + 2, "adc_read_data_low_byte"),
+    ]
 
 # Tube control
 _TUBE: list[tuple[int, str]] = [
@@ -139,10 +168,22 @@ _FRED_SHARED: list[tuple[int, str]] = [
 ]
 
 
-# The full shared register set for any BBC-line machine. Per-
-# machine envs concatenate this with their own additions.
+# The register set common to EVERY BBC-line machine (B, B+,
+# Master) at the SAME address. Machine-specific placements
+# (station ID, ADC, ACCCON) are deliberately excluded — see the
+# module docstring and the exports below. Per-machine envs
+# concatenate this with the blocks that apply to them.
 SHARED_LABELS: list[tuple[int, str]] = (
-    _CRTC + _ACIA + _SERIAL_ULA + _STATION_ID + _VIDEO_ULA + _ROMSEL_BASE
-    + _SYSTEM_VIA + _USER_VIA + _ECONET + _ADC
+    _CRTC + _ACIA + _SERIAL_ULA + _VIDEO_ULA + _ROMSEL_BASE
+    + _SYSTEM_VIA + _USER_VIA + _ECONET
     + _TUBE + _CUBE + _FRED_SHARED
 )
+
+# Model B / B+ placements: the station-ID / NMI-control latch at
+# &FE18 and the ADC at &FEC0. Added by acorn_model_b_hardware; the
+# Master env puts the ADC at &FE18 instead (see #31).
+MODEL_B_ONLY_LABELS: list[tuple[int, str]] = _STATION_ID + adc_labels(0xfec0)
+
+# ACCCON (&FE34): included by both the Model-B/B+ env and the
+# Master env (B+ and Master have it; plain Model B does not).
+ACCCON_LABELS: list[tuple[int, str]] = _ACCCON

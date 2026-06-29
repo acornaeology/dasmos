@@ -1,19 +1,23 @@
-"""WD1770 floppy-disc-controller register Environment.
+"""WD1770 floppy-disc-controller register Environment (&FE80 window).
 
-The 1770 is the FDC fitted as standard to the BBC B+ and Master,
-and to Model B machines retrofitted with a 1770 board (Acorn's
-own upgrade plus various third-party boards). Used by Acorn DFS
-2.x and later, ADFS, and most third-party DFSes targeting
-post-Model-B hardware.
+This env covers the 1770 at the &FE80 / &FE84-&FE87 window — the
+mapping used by the BBC B+ and by Model B machines retrofitted with
+a 1770 board (Acorn's own upgrade plus various third-party boards),
+which place the 1770 in the old 8271 SHEILA window for DFS
+compatibility. Used by Acorn DFS 2.x and later, ADFS, and most
+third-party DFSes targeting that mapping.
 
-Pair with whichever machine env applies — typically
-``acorn_master_hardware`` for Master / B+ ROMs, or
-``acorn_model_b_hardware`` for retrofitted Model B images. The
-FDC choice is independent of the machine model, so this env is its
-own composable axis. For the original 8271, use
-``acorn_fdc_8271`` instead. The two are mutually exclusive: a
-given system has one FDC chip, not both, and they share the
-&FE80 / &FE84 addresses.
+NOTE: the BBC **Master**'s onboard 1770 is NOT here — it lives at
+&FE24 / &FE28-&FE2B and, being fixed Master hardware, is included
+directly in :mod:`acorn_master_hardware` rather than as a separate
+composable env (see #31).
+
+Pair with ``acorn_model_b_hardware`` for B+ / retrofitted-Model-B
+images. The FDC choice is independent of the machine model, so this
+env is its own composable axis. For the original 8271, use
+``acorn_fdc_8271`` instead. The chips are mutually exclusive: a
+given system has one FDC, and the 8271 and the B+/retrofit 1770
+share the &FE80 / &FE84 addresses.
 
 All registered as :meth:`Disassembler.optional_label` — they emit
 in the equate table only when actually referenced by the

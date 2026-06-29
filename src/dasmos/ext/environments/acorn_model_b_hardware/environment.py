@@ -2,8 +2,14 @@
 
 The Model B family register set: the shared BBC-line memory-mapped
 I/O block (see :mod:`dasmos.ext.environments._acorn_bbc_common`) —
-CRTC, ACIA, station ID, video ULA, base ROMSEL, system VIA,
-user VIA, Econet ADLC, ADC, Tube, CUBE Tube, Fred-bus SCSI.
+CRTC, ACIA, video ULA, base ROMSEL, system VIA, user VIA, Econet
+ADLC, Tube, CUBE Tube, Fred-bus SCSI — plus the Model-B/B+
+placements that differ on the Master: the station-ID / NMI-control
+latch at &FE18 and the μPD7002 ADC at &FEC0 (on the Master those
+move — see ``acorn_master_hardware`` / #31). ACCCON (&FE34) is also
+registered: the B+ has it (and the Master), though the plain
+Model B does not — a plain-B ROM simply never references it, so the
+optional label never emits.
 
 The floppy-disc-controller registers are NOT included here. The
 Model B can be fitted with either an Intel 8271 (Acorn's original
@@ -28,10 +34,19 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from dasmos.environment import Environment
-from dasmos.ext.environments._acorn_bbc_common import SHARED_LABELS
+from dasmos.ext.environments._acorn_bbc_common import (
+    ACCCON_LABELS,
+    MODEL_B_ONLY_LABELS,
+    SHARED_LABELS,
+)
 
 if TYPE_CHECKING:
     from dasmos.disassembler import Disassembler
+
+
+_ALL_LABELS: list[tuple[int, str]] = (
+    SHARED_LABELS + MODEL_B_ONLY_LABELS + ACCCON_LABELS
+)
 
 
 class AcornModelBHardwareEnvironment(Environment):
@@ -57,5 +72,5 @@ class AcornModelBHardwareEnvironment(Environment):
         super().__init__(name=name, **kwargs)
 
     def setup(self, disassembler: "Disassembler") -> None:
-        for addr, label_name in SHARED_LABELS:
+        for addr, label_name in _ALL_LABELS:
             disassembler.optional_label(addr, label_name)

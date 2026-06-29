@@ -1233,9 +1233,28 @@ class TestAcornModelBHardwareEnvironment:
         assert "romsel" in self.d.labels.get_label(0xfe30).explicit_name_texts()
 
     def test_station_id_label(self):
+        # Model-B / B+ placement: &FE18 is the station-ID / NMI-control
+        # latch (on the Master &FE18 is the ADC — see the Master tests).
         assert "station_id_disable_net_nmis" in (
             self.d.labels.get_label(0xfe18).explicit_name_texts()
         )
+
+    def test_adc_labels_at_model_b_location(self):
+        # The μPD7002 ADC is at &FEC0 on the Model B / B+ (it moves to
+        # &FE18 on the Master).
+        for addr, name in [
+            (0xfec0, "adc_start_conversion_or_status"),
+            (0xfec1, "adc_read_data_high_byte"),
+            (0xfec2, "adc_read_data_low_byte"),
+        ]:
+            assert name in self.d.labels.get_label(addr).explicit_name_texts(), (
+                f"missing ADC label {name} at &{addr:04x}"
+            )
+
+    def test_acccon_label_present_for_bplus(self):
+        # ACCCON (&FE34) exists on the B+ (and Master), not the plain
+        # Model B; the combined B/B+ env registers it.
+        assert "acccon" in self.d.labels.get_label(0xfe34).explicit_name_texts()
 
     def test_no_fdc_registers_present(self):
         # FDC choice is orthogonal — neither &FE80-&FE87 names nor
@@ -1288,6 +1307,39 @@ class TestAcornMasterHardwareEnvironment:
     def test_acccon_label(self):
         assert "acccon" in self.d.labels.get_label(0xfe34).explicit_name_texts()
 
+    def test_adc_at_master_location(self):
+        # On the Master the ADC is at &FE18-&FE1A, NOT the Model-B &FEC0.
+        for addr, name in [
+            (0xfe18, "adc_start_conversion_or_status"),
+            (0xfe19, "adc_read_data_high_byte"),
+            (0xfe1a, "adc_read_data_low_byte"),
+        ]:
+            assert name in self.d.labels.get_label(addr).explicit_name_texts(), (
+                f"missing Master ADC label {name} at &{addr:04x}"
+            )
+
+    def test_fe18_is_not_station_id_on_master(self):
+        # The Model-B station-ID label must NOT leak onto the Master,
+        # where &FE18 is the ADC (#31).
+        names = self.d.labels.get_label(0xfe18).explicit_name_texts()
+        assert "station_id_disable_net_nmis" not in names
+
+    def test_fec0_not_labelled_adc_on_master(self):
+        # &FEC0 is the network interface on the Master, not the ADC;
+        # it should carry no ``adc_`` label.
+        label = self.d.labels.get_label(0xfec0)
+        names = label.explicit_name_texts() if label is not None else []
+        assert not any(n.startswith("adc_") for n in names)
+
+    def test_econet_nmi_control_latches(self):
+        # Master-dedicated INTOFF / INTON latches.
+        assert "disable_net_nmis" in (
+            self.d.labels.get_label(0xfe38).explicit_name_texts()
+        )
+        assert "enable_net_nmis" in (
+            self.d.labels.get_label(0xfe3c).explicit_name_texts()
+        )
+
     def test_shared_register_labels_present(self):
         # The Master env should still register the shared BBC-line
         # block (CRTC, video ULA, system VIA, Tube, …).
@@ -1304,11 +1356,24 @@ class TestAcornMasterHardwareEnvironment:
             self.d.labels.get_label(0xfee1).explicit_name_texts()
         )
 
-    def test_no_fdc_registers_present(self):
-        # The Master ships with the 1770, but the FDC is its own
-        # composable env. The bare ``acorn_master_hardware`` env
-        # does NOT label any &FE80-&FE87 address (``get_label``
-        # returns ``None`` when no label is registered).
+    def test_onboard_1770_fdc_labels(self):
+        # The Master's fixed onboard WD1770 is included directly in the
+        # machine env: drive control at &FE24, chip registers at
+        # &FE28-&FE2B (#31).
+        for addr, name in [
+            (0xfe24, "fdc_1770_drive_control"),
+            (0xfe28, "fdc_1770_command_or_status"),
+            (0xfe29, "fdc_1770_track"),
+            (0xfe2a, "fdc_1770_sector"),
+            (0xfe2b, "fdc_1770_data"),
+        ]:
+            assert name in self.d.labels.get_label(addr).explicit_name_texts(), (
+                f"missing onboard 1770 label {name} at &{addr:04x}"
+            )
+
+    def test_does_not_use_fe80_fdc_window(self):
+        # The Master 1770 is at &FE28, NOT the &FE80 window used by the
+        # 8271 and the B+ / retrofit 1770.
         for addr in (0xfe80, 0xfe81, 0xfe82, 0xfe84, 0xfe85, 0xfe86, 0xfe87):
             label = self.d.labels.get_label(addr)
             if label is None:
@@ -1383,12 +1448,12 @@ class TestAcornFdc8271Environment:
 
 
 class TestAcornFdc1770Environment:
-    """WD1770 floppy-disc-controller Environment: registers
-    ``fdc_1770_drive_control`` (&FE80) and the four 1770 chip
-    registers — command/status, track, sector, data — at
-    &FE84-&FE87. Composable with any machine env: pair with
-    :mod:`acorn_master_hardware` for Master / B+ ROMs, or
-    :mod:`acorn_model_b_hardware` for retrofitted Model B images.
+    """WD1770 floppy-disc-controller Environment (&FE80 window):
+    registers ``fdc_1770_drive_control`` (&FE80) and the four 1770
+    chip registers — command/status, track, sector, data — at
+    &FE84-&FE87. This is the B+ / Model-B-retrofit mapping; pair with
+    :mod:`acorn_model_b_hardware`. The Master's onboard 1770 lives
+    elsewhere — see :class:`TestAcornFdc1770MasterEnvironment`.
     """
 
     def setup_method(self):
@@ -1427,12 +1492,16 @@ class TestAcornFdc1770Environment:
             names = label.explicit_name_texts()
             assert not any("8271" in n for n in names)
 
-    def test_composes_with_master_hardware(self):
+    def test_composes_with_model_b_hardware(self):
+        # The &FE80-window 1770 is the B+ / retrofitted-Model-B mapping,
+        # so it composes with the Model-B machine env.
         d = Disassembler.create(
             cpu="6502",
-            environments=["acorn_master_hardware", "acorn_fdc_1770"],
+            environments=["acorn_model_b_hardware", "acorn_fdc_1770"],
         )
-        assert "acccon" in d.labels.get_label(0xfe34).explicit_name_texts()
+        assert "station_id_disable_net_nmis" in (
+            d.labels.get_label(0xfe18).explicit_name_texts()
+        )
         assert "fdc_1770_command_or_status" in (
             d.labels.get_label(0xfe84).explicit_name_texts()
         )
