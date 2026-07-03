@@ -79,6 +79,12 @@ class TestTopLevelSchema:
         assert out.data["meta"]["load_addr"] == 0x8000
         assert out.data["meta"]["end_addr"] == 0x8006
 
+    def test_meta_carries_schema_version(self, tiny_disassembler):
+        from dasmos.ext.renderers.json.renderer import JSON_SCHEMA_VERSION
+        out = tiny_disassembler.render(JsonRenderer())
+        assert out.data["meta"]["schema_version"] == JSON_SCHEMA_VERSION
+        assert JSON_SCHEMA_VERSION >= 2
+
     def test_str_round_trips_via_json(self, tiny_disassembler):
         # ``str(output)`` is canonical JSON; loading it back gives the
         # same dict. Confirms the StructuredOutput shape works.

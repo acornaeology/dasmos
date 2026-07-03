@@ -5,7 +5,9 @@ Emits a JSON-serialisable dictionary:
 .. code-block:: python
 
     {
-      "meta": {"load_addr": int, "end_addr": int},
+      # schema_version bumps on every breaking shape change; absent in
+      # docs from dasmos <= 1.14.0 (treat as 1: references were [int]).
+      "meta": {"schema_version": int, "load_addr": int, "end_addr": int},
       "constants": [{"name": str, "value": int, "comment": str?}, ...],
       "subroutines": [{"addr": int, "name": str?, ..., "fall_through": True?,
                        "align": "before_label"|...?}],
@@ -86,6 +88,14 @@ if TYPE_CHECKING:
     from dasmos.ir import IntermediateRepresentation
 
 
+#: Version of the JSON output schema, emitted as ``meta.schema_version``.
+#: Bumped on every breaking change to the shape so consumers can branch.
+#: A document with no ``schema_version`` is the implicit pre-versioning
+#: schema shipped through dasmos 1.14.0 (``references`` was a bare
+#: ``[int]`` list); version 2 makes ``references`` structured objects.
+JSON_SCHEMA_VERSION = 2
+
+
 class JsonRenderer(Renderer[StructuredOutput]):
     """JSON structured-output renderer.
 
@@ -121,8 +131,12 @@ class JsonRenderer(Renderer[StructuredOutput]):
         try:
             start, end = ir.memory.entire_load_range()
         except Exception:
-            return {"load_addr": 0, "end_addr": 0}
-        return {"load_addr": int(start), "end_addr": int(end)}
+            start, end = 0, 0
+        return {
+            "schema_version": JSON_SCHEMA_VERSION,
+            "load_addr": int(start),
+            "end_addr": int(end),
+        }
 
     def _build_constants(self, ir) -> list[dict[str, Any]]:
         """``constants`` registered via :meth:`Disassembler.constant`,

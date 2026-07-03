@@ -9,16 +9,21 @@ minor bumps may carry small breaking changes alongside additive ones.
 
 ### Changed
 
-- **JSON `references` now carries per-reference kind (breaking).** Each
-  item's `references` field changed from a flat `[int]` list of caller
-  runtime addresses to a list of objects
-  `[{"addr": int, "kind": str, "move_id": int?}]`, where `kind` is the
-  `ReferenceKind` value (`direct` / `pointer` / `indexed` /
-  `indexed_pointer`) and `move_id` appears only when non-zero. Consumers
-  that classified callers by regexing the `xref_summaries` prose (e.g.
-  the acornaeology site renderer) can now read the kind directly;
-  `xref_summaries` is derived from this same structured data, so the two
-  can no longer drift. (#36)
+- **JSON `references` now carries per-reference kind; new
+  `meta.schema_version` (breaking).** Each item's `references` field
+  changed from a flat `[int]` list of caller runtime addresses to a list
+  of objects `[{"addr": int, "kind": str, "move_id": int?}]`, where
+  `kind` is the `ReferenceKind` value (`direct` / `pointer` / `indexed`
+  / `indexed_pointer`) and `move_id` appears only when non-zero.
+  Consumers that classified callers by regexing the `xref_summaries`
+  prose (e.g. the acornaeology site renderer) can now read the kind
+  directly; `xref_summaries` is derived from this same structured data,
+  so the two can no longer drift. A new `meta.schema_version` (now `2`)
+  signals the output shape so consumers can branch; a document without
+  it is the pre-versioning schema shipped through 1.14.0, whose
+  `references` were bare ints. (#36)
+
+## [1.14.0] — 2026-07-03
 
 ### Added
 
@@ -57,6 +62,63 @@ minor bumps may carry small breaking changes alongside additive ones.
   hide a base. See `docs/design/reference-kinds-memo.md`, which also
   specifies the follow-up base±displacement slot-naming layer.
 
+## [1.13.0] — 2026-06-29
+
+### Fixed
+
+- **Acorn hardware-environment register placements.** Corrected the
+  Master ADC, NMI, and FDC register placements in the Acorn hardware
+  environments so disassemblies resolve those addresses to the right
+  register names.
+
+## [1.12.1] — 2026-06-28
+
+### Changed
+
+- Internal: pinned the generated-README example capture to a stable
+  display format. No library-facing changes.
+
+## [1.12.0] — 2026-06-28
+
+### Changed
+
+- **Acorn SCSI host-adapter register names.** The shared Fred-bus
+  labels at &FC40-&FC43 are renamed from the generic
+  `fred_hard_drive_0..3` to the specific `scsi_data`, `scsi_status`,
+  `scsi_select` and `scsi_irq_enable`, matching the Acorn SCSI /
+  Winchester host adapter the addresses actually drive. Disassemblies
+  using the `acorn_model_b_hardware` / `acorn_master_hardware`
+  environments inherit the clearer names.
+
+### Fixed
+
+- **Duplicate equate when a constant shadows a label.** The beebasm
+  renderer no longer emits a constant equate that exactly duplicates a
+  label definition (same name at the same address). Previously a driver
+  that registered, say, a `scsi_data` constant at an address an
+  environment also labels `scsi_data` produced two `scsi_data = &xxxx`
+  lines and beebasm rejected the second with "Symbol already defined".
+
+## [1.11.1] — 2026-06-15
+
+### Fixed
+
+- **Apostrophe `CHAR` hint in JSON.** The JSON renderer now renders a
+  `CHAR` format hint for `'` as `ASC("'")`, matching the beebasm
+  renderer instead of emitting a form beebasm would reject.
+
+## [1.11.0] — 2026-06-14
+
+### Changed
+
+- **Decoded typed-values rendering.** Decoded `typed_data` values now
+  carry a human-readable label with honest precision, and the JSON
+  output folds the decoded value into the comment field.
+
+## [1.10.0] — 2026-06-13
+
+### Added
+
 - **Pluggable custom data types.** `d.typed_data(addr, type)` marks an
   N-byte region as a domain-specific aggregate: it emits the **raw
   bytes** for byte-faithful reassembly and attaches the *decoded* value
@@ -76,6 +138,10 @@ minor bumps may carry small breaking changes alongside additive ones.
   exponent, implied leading 1, sign in the mantissa MSB). Decodes the
   REAL-constant pool (e, π/2, ln 2, …) to readable values while keeping
   the bytes exact. (#27)
+
+## [1.9.0] — 2026-06-06
+
+### Added
 
 - **Classification override.** A driver can now reclaim bytes an
   environment classified eagerly. `Disassembler.entry(addr,
@@ -101,31 +167,17 @@ minor bumps may carry small breaking changes alongside additive ones.
   language ROMs such as BBC BASIC II, whose `&8000` is
   `CMP #1 / BEQ / RTS` rather than a `JMP abs` and whose `&8003` is the
   tail of that code, not a service entry. (#26)
+
+## [1.8.0] — 2026-05-31
+
+### Added
+
 - `stringhi_skip_hook` — an inline-string subroutine hook for the Acorn
   convention where the bit-7 terminator is the final character of the
   string (consumed, trace resumes at terminator+1), as used by ADFS
   1.30's `print_inline_string` (&92A0). Complements `stringhi_hook`,
   which leaves the terminator in the instruction stream and resumes at
   it. (#24)
-
-### Changed
-
-- **Acorn SCSI host-adapter register names.** The shared Fred-bus
-  labels at &FC40-&FC43 are renamed from the generic
-  `fred_hard_drive_0..3` to the specific `scsi_data`, `scsi_status`,
-  `scsi_select` and `scsi_irq_enable`, matching the Acorn SCSI /
-  Winchester host adapter the addresses actually drive. Disassemblies
-  using the `acorn_model_b_hardware` / `acorn_master_hardware`
-  environments inherit the clearer names.
-
-### Fixed
-
-- **Duplicate equate when a constant shadows a label.** The beebasm
-  renderer no longer emits a constant equate that exactly duplicates a
-  label definition (same name at the same address). Previously a driver
-  that registered, say, a `scsi_data` constant at an address an
-  environment also labels `scsi_data` produced two `scsi_data = &xxxx`
-  lines and beebasm rejected the second with "Symbol already defined".
 
 ## [0.2.0]
 
