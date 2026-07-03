@@ -163,6 +163,60 @@ After which a reference to ``&221`` renders as ``irq1v+1`` instead of
 ``l0221``.
 
 
+Indexed-base addresses and regions
+----------------------------------
+
+Some addresses are only ever the *base* of an indexed operand — the
+byte the instruction touches is ``base + X`` (or ``base + Y``), and the
+base itself is never read or written. The classic case is a per-channel
+or per-control-block workspace pointer copied with ``lda base,X`` where
+``X`` selects the block. Naming such a base with a plain
+:meth:`~dasmos.Disassembler.label` is misleading: it appears on the
+memory map as a location the ROM owns, and its cross-reference count
+implies reads and writes that never happen at that exact byte.
+
+:meth:`~dasmos.Disassembler.index_base` names a base *as a base*. It
+keeps the name, description and group — so the ``,X`` operand still
+resolves and stays documented — but keeps the address off the
+fixed-location memory map, and its cross-reference reads
+``used as index base N times`` rather than ``referenced N times``:
+
+.. code-block:: python
+
+   d.index_base(0x0000, "zp_user_ptr_0", group="zero_page",
+                description="Caller's zero-page pointer, byte 0; the "
+                            "transfer copies base+0..+3 via lda ...,X.")
+
+In the JSON renderer these appear under a dedicated ``index_bases``
+array rather than ``memory_map``.
+
+When several bases cluster around a named anchor — reached via indexed
+addressing with small displacements — declare an *indexing region*
+instead of naming each byte. :meth:`~dasmos.Disassembler.index_region`
+takes the anchor's address and name plus an inclusive offset
+``window``; in-window neighbours then render relative to the anchor:
+
+.. code-block:: python
+
+   d.index_region(0x0E00, "fsm_sector0", window=(-6, 0),
+                  description="Free-space-map sector 0; compaction "
+                              "sweeps the notional entries just below it.")
+
+An operand whose base falls three bytes below the anchor now renders as
+``lda fsm_sector0-3,X`` — the ``anchor±k`` arithmetic reassembles to the
+same bytes — instead of needing a hand-written ``fsm_s0_pre3`` label for
+each slot. Pass ``named_slots=True`` to give each gap a distinct
+identifier (``fsm_sector0_m3`` / ``fsm_sector0_p3``) rather than the
+arithmetic form.
+
+A region names only the *gaps*: an explicit
+:meth:`~dasmos.Disassembler.label` you place inside the window always
+wins (precedence: explicit label → region form → auto-label → hex), so
+a region and individually-named locations coexist over the same address
+range. Region windows must be disjoint; an overlapping declaration
+raises at call time.
+
+
 Marking subroutines
 -------------------
 
