@@ -111,6 +111,13 @@ class IntermediateRepresentation:
         """
         return self._disassembler.subroutines
 
+    @property
+    def index_regions(self):
+        """Indexing regions registered via
+        :meth:`Disassembler.index_region`, in declaration order.
+        """
+        return self._disassembler.index_regions
+
     def render(self, renderer: "Renderer | str", **kwargs: Any) -> Output:
         """Render this IR via the named or supplied renderer.
 

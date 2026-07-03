@@ -30,6 +30,7 @@ from dasmos.cpu import (
     FlowControl,
     Opcode,
     OperandKind,
+    ReferenceKind,
 )
 from dasmos.ext.cpus.cpu6502.cpu import (
     Nmos6502Cpu,
@@ -78,12 +79,19 @@ class AddressingMode(Enum):
     are transparent downstream.
     """
 
-    ZP_INDIRECT          = ("zp_indirect",          1, OperandKind.ADDRESS_8)            # (zp)
-    ABSOLUTE_INDIRECT_X  = ("absolute_indirect_x",  2, OperandKind.ADDRESS_16_INDIRECT)  # JMP (addr,X)
+    ZP_INDIRECT          = ("zp_indirect",          1, OperandKind.ADDRESS_8,           ReferenceKind.POINTER)          # (zp)
+    ABSOLUTE_INDIRECT_X  = ("absolute_indirect_x",  2, OperandKind.ADDRESS_16_INDIRECT, ReferenceKind.INDEXED_POINTER)  # JMP (addr,X)
 
-    def __init__(self, _label: str, operand_length: int, operand_kind: OperandKind):
+    def __init__(
+        self,
+        _label: str,
+        operand_length: int,
+        operand_kind: OperandKind,
+        reference_kind: ReferenceKind,
+    ):
         self.operand_length = operand_length
         self.operand_kind = operand_kind
+        self.reference_kind = reference_kind
 
 
 # ---------------------------------------------------------------------------

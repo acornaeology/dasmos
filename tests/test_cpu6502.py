@@ -91,6 +91,43 @@ class TestAddressingModeEnum:
         assert AddressingMode.ABSOLUTE.operand_kind is OperandKind.ADDRESS_16
         assert AddressingMode.RELATIVE.operand_kind is OperandKind.RELATIVE_OFFSET
 
+    def test_reference_kinds_are_correct(self):
+        from dasmos.core.memory import ReferenceKind
+        # Direct: operand IS the accessed address.
+        for mode in (
+            AddressingMode.ZERO_PAGE,
+            AddressingMode.ABSOLUTE,
+            AddressingMode.RELATIVE,
+        ):
+            assert mode.reference_kind is ReferenceKind.DIRECT, mode.name
+        # Indexed base: operand names base, byte touched is base+reg.
+        for mode in (
+            AddressingMode.ZERO_PAGE_X,
+            AddressingMode.ZERO_PAGE_Y,
+            AddressingMode.ABSOLUTE_X,
+            AddressingMode.ABSOLUTE_Y,
+        ):
+            assert mode.reference_kind is ReferenceKind.INDEXED, mode.name
+            assert not mode.reference_kind.touches_named_address
+
+    def test_indirect_pointer_asymmetry(self):
+        # The subtle case: (zp),Y reads the named zp pointer directly
+        # (POINTER, owned), but (zp,X) reads the pointer from zp+X
+        # (INDEXED_POINTER, base-only). They must classify oppositely.
+        from dasmos.core.memory import ReferenceKind
+        assert (
+            AddressingMode.INDIRECT_INDEXED.reference_kind
+            is ReferenceKind.POINTER
+        )
+        assert AddressingMode.INDIRECT_INDEXED.reference_kind.touches_named_address
+        assert (
+            AddressingMode.INDEXED_INDIRECT.reference_kind
+            is ReferenceKind.INDEXED_POINTER
+        )
+        assert not AddressingMode.INDEXED_INDIRECT.reference_kind.touches_named_address
+        # JMP (addr) reads the two pointer bytes at addr → owned.
+        assert AddressingMode.INDIRECT.reference_kind is ReferenceKind.POINTER
+
     def test_aliasing_hazard_does_not_recur(self):
         # Regression: ABSOLUTE / ABSOLUTE_X / ABSOLUTE_Y / INDIRECT
         # all share (operand_length=2, operand_kind=ADDRESS_16). Without

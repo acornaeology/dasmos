@@ -26,6 +26,7 @@ Design points:
 
 import hashlib
 from collections.abc import Callable
+from enum import Enum
 from pathlib import Path
 
 from dasmos.exceptions import DasmosError
@@ -136,6 +137,128 @@ class BinaryLocation:
         if self.move_id != 0:
             result += f"[{self.move_id}]"
         return result
+
+
+#: ``access=`` value marking a label as an *indexing base* rather than
+#: a byte the program touches directly. Such labels keep their name /
+#: description / group (so the ``,X`` operand still renders and is
+#: documented) but are kept off the fixed-location memory map — see
+#: ``Disassembler.index_base`` and the JSON renderer's ``index_bases``.
+INDEXED_BASE_ACCESS = "indexed_base"
+
+
+class ReferenceKind(Enum):
+    """How an operand's *named* address relates to the location the
+    instruction actually accesses.
+
+    CPU-agnostic. The four members are the orthogonal 2×2 of two
+    yes/no questions that every load/store addressing mode answers,
+    independent of instruction set:
+
+    ============================ ================= =====================
+    axis ↓ / axis →              names the address names a *base*
+                                 directly          (+ a runtime index)
+    ============================ ================= =====================
+    location holds the datum     ``DIRECT``        ``INDEXED``
+    location holds a *pointer*   ``POINTER``       ``INDEXED_POINTER``
+    ============================ ================= =====================
+
+    A CPU plug-in maps each of its addressing modes onto one member via
+    ``AddressingMode.reference_kind`` — that mapping is the only
+    ISA-specific part. Modes whose effective address comes purely from
+    a *register* (no symbol in the operand — Z80 ``(IX+d)``, ARM
+    ``[r1,#off]``) name no address and simply record no reference; the
+    upstream :class:`~dasmos.cpu.OperandKind` decides that. A plug-in
+    that never sets ``reference_kind`` gets :attr:`DIRECT` everywhere,
+    i.e. pre-classification behaviour.
+
+    The only contract consumers depend on is the derived boolean
+    :attr:`touches_named_address`; the richer 4-way split is headroom
+    for renderer wording and future features. See
+    ``docs/design/reference-kinds-memo.md``.
+
+    Examples across ISAs (illustrative, not definitional):
+
+    - ``DIRECT`` — 6502 ``lda addr`` / ``lda zp``; 6809 ``lda >addr``;
+      8086 ``mov ax,[disp]``; ARM PC-relative ``ldr r0,label``.
+    - ``POINTER`` — 6502 ``jmp (addr)`` / ``lda (zp),Y``; 6809
+      ``lda [addr]``; 8086 ``jmp [mem]``.
+    - ``INDEXED`` — 6502 ``lda addr,X`` / ``lda zp,X``; 6809
+      ``lda addr,X``; 8086 ``mov ax,table[bx]``.
+    - ``INDEXED_POINTER`` — 6502 ``lda (zp,X)``; 6809 ``lda [addr,X]``.
+    """
+
+    DIRECT = "direct"
+    """The operand is the exact address accessed — the named location
+    holds the datum. (6502 ``zero_page`` / ``absolute`` data and
+    control-flow ``absolute``.)"""
+
+    POINTER = "pointer"
+    """The operand names a location whose *contents* form the target;
+    the named location itself is read to fetch the pointer. The named
+    address is therefore genuinely accessed. (6502 ``JMP (addr)``;
+    ``(zp),Y`` — the pointer sits at exactly the named address.)"""
+
+    INDEXED = "indexed"
+    """The operand names a *base*; the location touched is the base
+    combined with a runtime index/register. The named byte is touched
+    only if the index happens to be zero, which the disassembler cannot
+    assume. (6502 ``zero_page,X/Y``; ``absolute,X/Y``.)"""
+
+    INDEXED_POINTER = "indexed_pointer"
+    """The operand names a *base*; the pointer is fetched from
+    ``base + index``, so the named byte is again base-only. (6502
+    ``(zp,X)`` — note this classifies oppositely to the visually
+    similar ``(zp),Y``, whose pointer sits at the named address.)"""
+
+    @property
+    def touches_named_address(self) -> bool:
+        """``True`` when the named address is genuinely read or written
+        (:attr:`DIRECT` / :attr:`POINTER`), ``False`` when the operand
+        is only an indexing base (:attr:`INDEXED` /
+        :attr:`INDEXED_POINTER`).
+
+        This boolean — not the specific member — is the contract every
+        consumer depends on: an address is a real, owned memory location
+        iff at least one reference to it satisfies this predicate.
+        """
+        return self in (ReferenceKind.DIRECT, ReferenceKind.POINTER)
+
+
+class Reference:
+    """A single use site of a label: *where* it is referenced (a
+    :class:`BinaryLocation`) and *how* (a :class:`ReferenceKind`).
+
+    Exposes ``binary_addr`` / ``move_id`` as delegating properties so
+    code that predates the ``kind`` field — e.g. renderers doing
+    ``int(r.binary_addr)`` — keeps working unchanged.
+    """
+
+    __slots__ = ("location", "kind")
+
+    def __init__(self, location: BinaryLocation, kind: ReferenceKind = ReferenceKind.DIRECT):
+        assert location is not None
+        self.location = location
+        self.kind = kind
+
+    @property
+    def binary_addr(self):
+        return self.location.binary_addr
+
+    @property
+    def move_id(self):
+        return self.location.move_id
+
+    def __eq__(self, other):
+        if isinstance(other, Reference):
+            return self.location == other.location and self.kind == other.kind
+        return NotImplemented
+
+    def __hash__(self):
+        return hash((Reference, self.location, self.kind))
+
+    def __repr__(self):
+        return f"Reference({self.location}, {self.kind.name})"
 
 
 class RuntimeLocation:

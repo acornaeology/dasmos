@@ -56,6 +56,16 @@ the orchestrator (`Disassembler`).
 - Each `Opcode` describes its addressing mode, mnemonic, operand
   length, and the trace semantics (where control flow goes after this
   instruction).
+- Each addressing mode declares a `reference_kind`
+  (`dasmos.core.memory.ReferenceKind`) saying whether an operand's
+  named symbol is the accessed address (`DIRECT`/`POINTER`) or merely
+  an indexing base (`INDEXED`/`INDEXED_POINTER`) — a CPU-agnostic 2×2
+  (direct-vs-base × datum-vs-pointer). This drives honest
+  cross-reference wording and keeps pure indexing bases off the memory
+  map. It defaults to `DIRECT`, so a new CPU can omit it and add it
+  later; register-relative modes that name no memory symbol need no
+  entry (they record no reference). See
+  `docs/design/reference-kinds-memo.md`.
 - Per-instruction CPU-state update: how this instruction changes the
   optimistic CPU state used by post-trace label-naming.
 - Small queries the orchestrator and the renderer need:

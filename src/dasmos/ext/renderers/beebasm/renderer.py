@@ -1019,17 +1019,41 @@ class BeebasmRenderer(TextRenderer):
         """Format the ``; &<addr> referenced N time(s) by &<r1>, …``
         line for a label, or return ``None`` when the label has no
         recorded references.
+
+        References that only use this address as an *indexing base*
+        (``ReferenceKind`` that doesn't touch the named byte) are
+        reported separately as "used as index base", so the summary
+        never implies a location is read or written when it is not.
         """
         if not label.references:
             return None
-        unique_refs = sorted({int(r.binary_addr) for r in label.references})
-        count = len(unique_refs)
+        direct = sorted({
+            int(r.binary_addr)
+            for r in label.references
+            if r.kind.touches_named_address
+        })
+        indexed = sorted({
+            int(r.binary_addr)
+            for r in label.references
+            if not r.kind.touches_named_address
+        })
+        # A binary addr classified both ways (different opcodes) counts
+        # as a genuine access; keep it out of the index-base list.
+        indexed = [ba for ba in indexed if ba not in set(direct)]
+        prefix = f"{self.comment_prefix()} {self.hex(runtime_addr)}"
+        clauses: list[str] = []
+        if direct:
+            clauses.append(self._xref_clause("referenced", direct))
+        if indexed:
+            clauses.append(self._xref_clause("used as index base", indexed))
+        return f"{prefix} {'; also '.join(clauses)}"
+
+    def _xref_clause(self, verb: str, refs: list[int]) -> str:
+        """``<verb> N time(s) by &r1, &r2, …`` for a set of ref addrs."""
+        count = len(refs)
         word = "time" if count == 1 else "times"
-        ref_list = ", ".join(self.hex(r) for r in unique_refs)
-        return (
-            f"{self.comment_prefix()} {self.hex(runtime_addr)} "
-            f"referenced {count} {word} by {ref_list}"
-        )
+        ref_list = ", ".join(self.hex(r) for r in refs)
+        return f"{verb} {count} {word} by {ref_list}"
 
     # -- move-aware emission --------------------------------------------
 

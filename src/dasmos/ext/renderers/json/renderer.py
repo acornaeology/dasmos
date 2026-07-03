@@ -19,6 +19,13 @@ Emits a JSON-serialisable dictionary:
                    "align": "before_label"|"after_label"|"before_line"|"after_line", ...}],
       "external_labels": {"name": int, ...},
       "memory_map": [{"addr": int, "name": str, "length": int?, ...}],
+      # Addresses used only as an indexing base (access='indexed_base'):
+      # documented but never touched directly, so kept out of memory_map.
+      "index_bases": [{"addr": int, "name": str, "length": int?, ...}],
+      # Author-declared indexing regions (d.index_region): in-window
+      # neighbours of the anchor render as anchor±k / named slots.
+      "regions": [{"anchor": int, "name": str, "window": [lo, hi],
+                   "named_slots": bool, ...}],
       "items": [
         {
           "addr": int,             # runtime_addr
@@ -66,7 +73,7 @@ from dasmos.core.annotations import (
 from dasmos.core.classification import Byte, Fill, String, Word
 from dasmos.core.format_hint import FormatHint
 from dasmos.core.markdown_asm import markdown_normalize_headings
-from dasmos.core.memory import BinaryAddr, RuntimeAddr
+from dasmos.core.memory import INDEXED_BASE_ACCESS, BinaryAddr, RuntimeAddr
 from dasmos.cpu import Opcode, OperandKind
 from dasmos.output import StructuredOutput
 from dasmos.renderer import Renderer
@@ -98,6 +105,8 @@ class JsonRenderer(Renderer[StructuredOutput]):
             "banners": self._build_banners(ir),
             "external_labels": self._build_external_labels(ir),
             "memory_map": self._build_memory_map(ir),
+            "index_bases": self._build_index_bases(ir),
+            "regions": self._build_regions(ir),
             "items": self._build_items(ir),
         }
         return StructuredOutput(data, indent=self._indent)
@@ -330,13 +339,53 @@ class JsonRenderer(Renderer[StructuredOutput]):
         at least one of those metadata fields set — a row authored
         purely with ``length`` / ``access`` and no narrative still
         belongs in the rendered memory map.
+
+        Addresses tagged ``access='indexed_base'`` are *excluded* here
+        and reported separately by :meth:`_build_index_bases`: they are
+        indexing bases, not locations the program touches directly.
         """
+        return self._collect_map_rows(ir, indexed_bases=False)
+
+    def _build_index_bases(self, ir) -> list[dict[str, Any]]:
+        """Rows for labels tagged ``access='indexed_base'`` — addresses
+        used only as the base of an indexed operand (``base,X``), where
+        the byte touched is ``base + register`` and the base itself is
+        never accessed. Kept out of ``memory_map`` so a base is never
+        presented as an owned location, while still documenting it.
+        """
+        return self._collect_map_rows(ir, indexed_bases=True)
+
+    def _build_regions(self, ir) -> list[dict[str, Any]]:
+        """Indexing regions declared via ``d.index_region()`` — one row
+        per region documenting its anchor, name, offset window, and the
+        naming style used for in-window gaps."""
+        result: list[dict[str, Any]] = []
+        for region in ir.index_regions:
+            entry: dict[str, Any] = {
+                "anchor": region.anchor_addr,
+                "name": region.name,
+                "window": [region.lo, region.hi],
+                "named_slots": region.named_slots,
+            }
+            if region.group is not None:
+                entry["group"] = region.group
+            if region.description:
+                entry["description"] = region.description
+            result.append(entry)
+        return result
+
+    def _collect_map_rows(
+        self, ir, *, indexed_bases: bool,
+    ) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         for runtime_addr_obj, label in sorted(
             ir.labels.items(), key=lambda kv: int(kv[0]),
         ):
             runtime_addr = int(runtime_addr_obj)
             if self._label_address_is_in_range(ir, runtime_addr):
+                continue
+            is_indexed_base = label.access == INDEXED_BASE_ACCESS
+            if is_indexed_base != indexed_bases:
                 continue
             has_metadata = (
                 label.description
@@ -357,7 +406,9 @@ class JsonRenderer(Renderer[StructuredOutput]):
                 entry["length"] = label.length
             if label.group is not None:
                 entry["group"] = label.group
-            if label.access is not None:
+            # The ``indexed_base`` marker is implicit in the section;
+            # don't repeat it as an access value on every row.
+            if label.access is not None and not is_indexed_base:
                 entry["access"] = label.access
             if label.description:
                 entry["description"] = label.description
@@ -980,40 +1031,59 @@ class JsonRenderer(Renderer[StructuredOutput]):
           via that ref's specific ``move_id``, with a ``[<move_id>]``
           suffix when the move id is non-zero (so a ref from inside a
           relocated region reads as ``&0030[1]``, not ``&933e``).
+        - Sites that use the address only as an indexing base are
+          reported separately as "used as index base", so the text
+          never implies a byte is read or written when it is not.
         """
         runtime_addr = int(ir.moves.b2r(BinaryAddr(binary_addr)))
         label = ir.labels.get_label(runtime_addr)
         if label is None or not label.references:
             return None
-        # Collect unique (ref_runtime, move_id) pairs.
-        seen: list[tuple[int, int]] = []
-        seen_set: set[tuple[int, int]] = set()
-        for ref in label.references:
-            ba = int(ref.binary_addr)
-            mid = int(getattr(ref, "move_id", 0) or 0)
-            move_def = ir.moves.all_moves[mid]
-            ref_runtime = int(
-                move_def.convert_binary_to_runtime_addr(BinaryAddr(ba))
-            )
-            key = (ref_runtime, mid)
-            if key not in seen_set:
-                seen_set.add(key)
-                seen.append(key)
-        seen.sort()
-        if not seen:
+
+        def collect(touching: bool) -> list[tuple[int, int]]:
+            seen: list[tuple[int, int]] = []
+            seen_set: set[tuple[int, int]] = set()
+            for ref in label.references:
+                if ref.kind.touches_named_address != touching:
+                    continue
+                ba = int(ref.binary_addr)
+                mid = int(getattr(ref, "move_id", 0) or 0)
+                move_def = ir.moves.all_moves[mid]
+                ref_runtime = int(
+                    move_def.convert_binary_to_runtime_addr(BinaryAddr(ba))
+                )
+                key = (ref_runtime, mid)
+                if key not in seen_set:
+                    seen_set.add(key)
+                    seen.append(key)
+            seen.sort()
+            return seen
+
+        def clause(verb: str, seen: list[tuple[int, int]]) -> str:
+            count = len(seen)
+            word = "time" if count == 1 else "times"
+            parts = [
+                f"&{rt:04x}[{mid}]" if mid else f"&{rt:04x}"
+                for rt, mid in seen
+            ]
+            return f"{verb} {count} {word} by " + ", ".join(parts)
+
+        direct = collect(touching=True)
+        # Exclude any addr that also has a touching ref from the
+        # index-base list (a genuine access wins).
+        direct_addrs = {rt for rt, _ in direct}
+        indexed = [
+            (rt, mid) for rt, mid in collect(touching=False)
+            if rt not in direct_addrs
+        ]
+        if not direct and not indexed:
             return None
-        count = len(seen)
-        word = "time" if count == 1 else "times"
-        parts = []
-        for ref_runtime, mid in seen:
-            if mid:
-                parts.append(f"&{ref_runtime:04x}[{mid}]")
-            else:
-                parts.append(f"&{ref_runtime:04x}")
-        return (
-            f"&{binary_addr:04x} referenced {count} {word} by "
-            + ", ".join(parts)
-        )
+        clauses: list[str] = []
+        if direct:
+            clauses.append(clause("referenced", direct))
+        if indexed:
+            clauses.append(clause("used as index base", indexed))
+        return f"&{binary_addr:04x} " + "; also ".join(clauses)
 
     @staticmethod
     def _label_address_is_in_range(ir, runtime_addr: int) -> bool:

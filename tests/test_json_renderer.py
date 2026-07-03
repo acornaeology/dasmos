@@ -63,7 +63,7 @@ class TestTopLevelSchema:
 
     EXPECTED_KEYS = (
         "meta", "constants", "subroutines", "banners",
-        "external_labels", "memory_map", "items",
+        "external_labels", "memory_map", "index_bases", "regions", "items",
     )
 
     def test_render_returns_structured_output(self, tiny_disassembler):

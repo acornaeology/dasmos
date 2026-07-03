@@ -50,8 +50,9 @@ from dasmos.core.disassembly import (
     ClassificationStore,
 )
 from dasmos.core.labels import LabelManager
-from dasmos.core.memory import BinaryAddr, MemoryImage
+from dasmos.core.memory import INDEXED_BASE_ACCESS, BinaryAddr, MemoryImage
 from dasmos.core.move import BASE_MOVE_ID, Move, MoveManager
+from dasmos.core.regions import IndexRegion, RegionManager
 from dasmos.cpu import Cpu, create_cpu
 from dasmos.exceptions import DasmosError
 from dasmos.ir import IntermediateRepresentation
@@ -205,6 +206,10 @@ class Disassembler:
         # Subroutine metadata registered via :meth:`subroutine` —
         # name, banner content, fall-through computed at render time.
         self._subroutines: list[SubroutineEntry] = []
+        # Author-declared indexing regions (:meth:`index_region`) —
+        # windows around an anchor whose in-window gaps render as
+        # ``anchor±k``. See ``docs/design/reference-kinds-memo.md``.
+        self._regions = RegionManager()
         # Per-binary-address CPU state, computed by the post-trace
         # ``_compute_cpu_states`` linear sweep. Maps the address of
         # each classified opcode to the CpuState IMMEDIATELY BEFORE
@@ -322,6 +327,13 @@ class Disassembler:
         in :attr:`labels`.
         """
         return self._subroutines
+
+    @property
+    def index_regions(self) -> list[IndexRegion]:
+        """Indexing regions registered via :meth:`index_region`, in
+        declaration order. Each anchor also appears in :attr:`labels`.
+        """
+        return self._regions.all_regions
 
     # -- driver-script API: setup ---------------------------------------
 
@@ -485,6 +497,85 @@ class Disassembler:
         return self._labels.add_label(
             runtime_addr, name, is_optional=True, **kwargs,
         )
+
+    def index_base(self, runtime_addr, name: str, **kwargs):
+        """Define a label for an address used only as an *indexing base*
+        — the operand of ``lda base,X`` / ``sta base,Y`` etc., where the
+        byte actually touched is ``base + register`` and ``base`` itself
+        is never read or written.
+
+        Behaves like :meth:`optional_label` (the name is emitted only if
+        referenced, so the ``base,X`` operand can resolve) but tags the
+        label with ``access='indexed_base'``. That keeps any
+        ``description=`` / ``group=`` / ``length=`` the author supplies —
+        so the base is still documented — while keeping it **off** the
+        fixed-location memory map (the JSON renderer lists such bases
+        under a separate ``index_bases`` section). This is the
+        intention-revealing alternative to omitting metadata to hide a
+        base from the map.
+
+        See ``docs/design/reference-kinds-memo.md``.
+        """
+        self._raise_if_disassembled("index_base")
+        self._shift_move_kwarg(kwargs)
+        kwargs.setdefault("access", INDEXED_BASE_ACCESS)
+        return self._labels.add_label(
+            runtime_addr, name, is_optional=True, **kwargs,
+        )
+
+    def index_region(
+        self,
+        anchor_addr,
+        name: str,
+        window: tuple[int, int],
+        *,
+        description: str | None = None,
+        group: str | None = None,
+        access: str | None = None,
+        named_slots: bool = False,
+    ) -> IndexRegion:
+        """Declare an *indexing region*: a window of addresses around an
+        anchor whose in-window neighbours render relative to the anchor
+        label (``fsm_sector0-3,X``) rather than as bare addresses.
+
+        ``anchor_addr`` gets the explicit, always-emitted label
+        ``name`` (so the ``anchor±k`` arithmetic always resolves), plus
+        any ``description`` / ``group`` / ``access`` — exactly as
+        :meth:`label` would, so the anchor takes its normal place on the
+        memory map. ``window=(lo, hi)`` is the **inclusive offset
+        range** the region owns (``lo`` typically ≤ 0, ``hi`` ≥ 0);
+        offset 0 is the anchor itself.
+
+        In-window addresses that carry their own explicit label keep it
+        — a region names only the *gaps*. With ``named_slots=True`` each
+        gap gets a distinct identifier (``name_m<k>`` / ``name_p<k>``)
+        instead of the default ``name±k`` arithmetic form.
+
+        Windows must be disjoint; an overlap with an already-declared
+        region raises :class:`~dasmos.core.regions.RegionError`. See
+        ``docs/design/reference-kinds-memo.md``.
+        """
+        self._raise_if_disassembled("index_region")
+        lo, hi = window
+        region = self._regions.add(
+            IndexRegion(
+                anchor_addr=int(anchor_addr),
+                name=name,
+                lo=int(lo),
+                hi=int(hi),
+                description=description,
+                group=group,
+                access=access,
+                named_slots=named_slots,
+            )
+        )
+        # The anchor is a required label so its equate is always emitted
+        # and every ``anchor±k`` operand resolves.
+        self._labels.add_label(
+            anchor_addr, name,
+            description=description, group=group, access=access,
+        )
+        return region
 
     def constant(
         self,
@@ -1855,13 +1946,15 @@ class Disassembler:
 
     # -- internals: reference analysis + auto-label generation ----------
 
-    def _compute_references(self) -> dict[int, list[int]]:
+    def _compute_references(self):
         """Walk every classified opcode, resolve operand → target,
         and record use sites against any label at the target.
 
-        Returns ``{target_runtime_addr: [ref_binary_addr, …]}`` for
-        the auto-label pass to consume — even targets that don't yet
-        have a label appear here.
+        Returns ``{target_runtime_addr: [(ref_binary_addr, kind), …]}``
+        for the auto-label pass to consume — even targets that don't
+        yet have a label appear here. ``kind`` is the operand's
+        :class:`~dasmos.core.memory.ReferenceKind` (direct / indexed
+        base / pointer), so the auto-label pass can re-attach it.
 
         Each recorded reference carries the ref's ``move_id`` (the
         move under which the referencing opcode is executing) so
@@ -1870,20 +1963,26 @@ class Disassembler:
         running at runtime &30 under move 1.
         """
         from dasmos.cpu import Opcode, OperandKind
-        from dasmos.core.memory import BinaryLocation
-        refs_by_addr: dict[int, list[int]] = {}
+        from dasmos.core.memory import BinaryLocation, ReferenceKind
+        refs_by_addr: dict[int, list[tuple[int, ReferenceKind]]] = {}
         for binary_addr, classification in self._classifications.iter_classified_starts():
             if not isinstance(classification, Opcode):
                 continue
             target = self._operand_label_target(int(binary_addr), classification)
             if target is None:
                 continue
-            refs_by_addr.setdefault(target, []).append(int(binary_addr))
+            kind = getattr(
+                classification.addressing_mode,
+                "reference_kind",
+                ReferenceKind.DIRECT,
+            )
+            refs_by_addr.setdefault(target, []).append((int(binary_addr), kind))
             label = self._labels.get_label(target)
             if label is not None:
                 ref_move_id = self._moves._move_id_for_binary_addr[int(binary_addr)]
                 label.add_reference(
                     BinaryLocation(int(binary_addr), int(ref_move_id)),
+                    kind,
                 )
         return refs_by_addr
 
@@ -1919,7 +2018,7 @@ class Disassembler:
         return None
 
     def _generate_auto_labels(
-        self, refs_by_addr: dict[int, list[int]],
+        self, refs_by_addr,
     ) -> None:
         """For every referenced address with no explicit name,
         synthesise one and register it in the LabelManager with
@@ -1936,8 +2035,14 @@ class Disassembler:
         - ``<loop_prefix><addr>``       — single ref, backward branch
           within ``auto_label_loop_limit`` bytes
         """
-        from dasmos.core.memory import BinaryLocation, RuntimeAddr
-        for runtime_addr, ref_binary_addrs in refs_by_addr.items():
+        from dasmos.core.memory import BinaryLocation, ReferenceKind, RuntimeAddr
+        for runtime_addr, ref_sites in refs_by_addr.items():
+            # One kind per referencing binary address (an opcode's
+            # addressing mode is fixed), so a plain dict dedupes.
+            kind_by_ref: dict[int, ReferenceKind] = {}
+            for ref_binary_addr, kind in ref_sites:
+                kind_by_ref.setdefault(ref_binary_addr, kind)
+            ref_binary_addrs = sorted(kind_by_ref)
             existing = self._labels.get_label(runtime_addr)
             if existing is not None and (
                 existing.explicit_name_texts()
@@ -1951,16 +2056,50 @@ class Disassembler:
                 or any(existing.expressions.values())
             ):
                 continue
+            # A referenced address inside a declared index region, with
+            # no explicit name of its own, renders relative to the anchor
+            # (an ``anchor±k`` expression, or a named-slot label) — which
+            # suppresses the auto-label just like an author-supplied
+            # expression does. Offset 0 is the anchor itself and already
+            # carries its explicit name (skipped above), so it never
+            # reaches here.
+            region_hit = self._regions.region_and_offset_for(runtime_addr)
+            if region_hit is not None and region_hit[1] != 0:
+                region, offset = region_hit
+                if region.named_slots:
+                    self._labels.add_label(
+                        runtime_addr, region.slot_name(offset),
+                        is_optional=True,
+                    )
+                else:
+                    self._labels.add_expression(
+                        runtime_addr, region.slot_expression(offset),
+                    )
+                self._record_references(
+                    runtime_addr, ref_binary_addrs, kind_by_ref,
+                )
+                continue
             name = self._synthesise_auto_label_name(
-                runtime_addr, sorted(set(ref_binary_addrs)),
+                runtime_addr, ref_binary_addrs,
             )
             self._labels.add_label(
                 runtime_addr, name,
                 is_autogenerated=True, is_optional=True,
             )
-            label = self._labels.get_label(runtime_addr)
-            for ref in sorted(set(ref_binary_addrs)):
-                label.add_reference(BinaryLocation(ref, 0))
+            self._record_references(
+                runtime_addr, ref_binary_addrs, kind_by_ref,
+            )
+
+    def _record_references(self, runtime_addr, ref_binary_addrs, kind_by_ref):
+        """Attach the (deduplicated, kind-tagged) use sites to the label
+        just created at ``runtime_addr``."""
+        from dasmos.core.memory import BinaryLocation
+        label = self._labels.get_label(runtime_addr)
+        for ref_binary_addr in ref_binary_addrs:
+            label.add_reference(
+                BinaryLocation(ref_binary_addr, 0),
+                kind_by_ref[ref_binary_addr],
+            )
 
     # Single-byte RTS opcode on the NMOS 6502 / CMOS 65C02 — used
     # by the return-N auto-label rule. The opcode value is the same

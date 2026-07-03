@@ -16,7 +16,13 @@ from dasmos.core.labels import (
     LabelManager,
     LocalLabel,
 )
-from dasmos.core.memory import BinaryAddr, BinaryLocation, RuntimeAddr
+from dasmos.core.memory import (
+    BinaryAddr,
+    BinaryLocation,
+    Reference,
+    ReferenceKind,
+    RuntimeAddr,
+)
 from dasmos.core.move import BASE_MOVE_ID, MoveManager
 
 
@@ -285,7 +291,25 @@ class TestLabelManagerReference:
     def test_add_reference(self, lm):
         lm.add_reference(0x8000, BinaryLocation(0x9000, BASE_MOVE_ID))
         lab = lm.get_label(RuntimeAddr(0x8000))
-        assert lab.references == [BinaryLocation(0x9000, BASE_MOVE_ID)]
+        assert lab.references == [
+            Reference(BinaryLocation(0x9000, BASE_MOVE_ID), ReferenceKind.DIRECT),
+        ]
+
+    def test_add_reference_defaults_to_direct_kind(self, lm):
+        lm.add_reference(0x8000, BinaryLocation(0x9000, BASE_MOVE_ID))
+        lab = lm.get_label(RuntimeAddr(0x8000))
+        assert lab.references[0].kind is ReferenceKind.DIRECT
+        assert int(lab.references[0].binary_addr) == 0x9000
+
+    def test_add_reference_records_indexed_base_kind(self, lm):
+        lm.add_reference(
+            0x8000, BinaryLocation(0x9000, BASE_MOVE_ID),
+            ReferenceKind.INDEXED,
+        )
+        lab = lm.get_label(RuntimeAddr(0x8000))
+        assert lab.references[0].kind is ReferenceKind.INDEXED
+        assert not lab.has_direct_reference()
+        assert lab.indexed_base_reference_count() == 1
 
 
 class TestLabelManagerIndependence:

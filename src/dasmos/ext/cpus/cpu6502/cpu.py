@@ -38,6 +38,7 @@ from dasmos.cpu import (
     FlowControl,
     Opcode,
     OperandKind,
+    ReferenceKind,
 )
 
 # Canonical registered name of this CPU plug-in. Kept in sync with
@@ -124,24 +125,31 @@ class AddressingMode(Enum):
     is belt-and-braces to catch that mistake at class-creation time.
     """
 
-    IMPLIED            = ("implied",            0, OperandKind.NONE)
-    ACCUMULATOR        = ("accumulator",        0, OperandKind.NONE)
-    IMMEDIATE          = ("immediate",          1, OperandKind.IMMEDIATE)
-    ZERO_PAGE          = ("zero_page",          1, OperandKind.ADDRESS_8)
-    ZERO_PAGE_X        = ("zero_page_x",        1, OperandKind.ADDRESS_8)
-    ZERO_PAGE_Y        = ("zero_page_y",        1, OperandKind.ADDRESS_8)
-    ABSOLUTE           = ("absolute",           2, OperandKind.ADDRESS_16)
-    ABSOLUTE_X         = ("absolute_x",         2, OperandKind.ADDRESS_16)
-    ABSOLUTE_Y         = ("absolute_y",         2, OperandKind.ADDRESS_16)
-    INDIRECT           = ("indirect",           2, OperandKind.ADDRESS_16_INDIRECT)   # JMP (addr)
-    INDEXED_INDIRECT   = ("indexed_indirect",   1, OperandKind.ADDRESS_8)    # (zp,X)
-    INDIRECT_INDEXED   = ("indirect_indexed",   1, OperandKind.ADDRESS_8)    # (zp),Y
-    RELATIVE           = ("relative",           1, OperandKind.RELATIVE_OFFSET)  # branches
+    IMPLIED            = ("implied",            0, OperandKind.NONE,               ReferenceKind.DIRECT)
+    ACCUMULATOR        = ("accumulator",        0, OperandKind.NONE,               ReferenceKind.DIRECT)
+    IMMEDIATE          = ("immediate",          1, OperandKind.IMMEDIATE,          ReferenceKind.DIRECT)
+    ZERO_PAGE          = ("zero_page",          1, OperandKind.ADDRESS_8,          ReferenceKind.DIRECT)
+    ZERO_PAGE_X        = ("zero_page_x",        1, OperandKind.ADDRESS_8,          ReferenceKind.INDEXED)
+    ZERO_PAGE_Y        = ("zero_page_y",        1, OperandKind.ADDRESS_8,          ReferenceKind.INDEXED)
+    ABSOLUTE           = ("absolute",           2, OperandKind.ADDRESS_16,         ReferenceKind.DIRECT)
+    ABSOLUTE_X         = ("absolute_x",         2, OperandKind.ADDRESS_16,         ReferenceKind.INDEXED)
+    ABSOLUTE_Y         = ("absolute_y",         2, OperandKind.ADDRESS_16,         ReferenceKind.INDEXED)
+    INDIRECT           = ("indirect",           2, OperandKind.ADDRESS_16_INDIRECT, ReferenceKind.POINTER)  # JMP (addr)
+    INDEXED_INDIRECT   = ("indexed_indirect",   1, OperandKind.ADDRESS_8,          ReferenceKind.INDEXED_POINTER)  # (zp,X)
+    INDIRECT_INDEXED   = ("indirect_indexed",   1, OperandKind.ADDRESS_8,          ReferenceKind.POINTER)  # (zp),Y
+    RELATIVE           = ("relative",           1, OperandKind.RELATIVE_OFFSET,    ReferenceKind.DIRECT)  # branches
 
-    def __init__(self, _label: str, operand_length: int, operand_kind: OperandKind):
+    def __init__(
+        self,
+        _label: str,
+        operand_length: int,
+        operand_kind: OperandKind,
+        reference_kind: ReferenceKind,
+    ):
         # _label is only present to disambiguate the value tuples — see class docstring.
         self.operand_length = operand_length
         self.operand_kind = operand_kind
+        self.reference_kind = reference_kind
 
 
 # ---------------------------------------------------------------------------

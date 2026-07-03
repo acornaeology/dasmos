@@ -31,6 +31,7 @@ from enum import Enum
 from typing import Protocol, Type, runtime_checkable
 
 from dasmos.core.classification import Classification
+from dasmos.core.memory import ReferenceKind
 from dasmos.extension import (
     Extension,
     ExtensionError,
@@ -117,13 +118,17 @@ class AddressingModeMember(Protocol):
     member must satisfy.
 
     Each member exposes the byte length of the operand (so the trace
-    engine can advance the program counter) and the kind of the
-    operand (so the trace engine and renderers know how to decode it).
+    engine can advance the program counter), the kind of the operand
+    (so the trace engine and renderers know how to decode it), and the
+    :class:`~dasmos.core.memory.ReferenceKind` (so use-site tracking
+    knows whether the operand names the accessed address directly or
+    merely an indexing base).
     """
 
     name: str
     operand_length: int
     operand_kind: OperandKind
+    reference_kind: ReferenceKind
 
 
 @dataclass(frozen=True)

@@ -24,6 +24,7 @@ from dasmos.cpu import (
     FlowControl,
     Opcode,
     OperandKind,
+    ReferenceKind,
 )
 
 
@@ -57,14 +58,21 @@ class _FakeAddressingMode(Enum):
     :class:`dasmos.ext.cpus.cpu6502.AddressingMode`.
     """
 
-    IMPLIED   = ("implied",   0, OperandKind.NONE)
-    IMMEDIATE = ("immediate", 1, OperandKind.IMMEDIATE)
-    ABSOLUTE  = ("absolute",  2, OperandKind.ADDRESS_16)
-    INDIRECT  = ("indirect",  2, OperandKind.ADDRESS_16)
+    IMPLIED   = ("implied",   0, OperandKind.NONE,       ReferenceKind.DIRECT)
+    IMMEDIATE = ("immediate", 1, OperandKind.IMMEDIATE,  ReferenceKind.DIRECT)
+    ABSOLUTE  = ("absolute",  2, OperandKind.ADDRESS_16, ReferenceKind.DIRECT)
+    INDIRECT  = ("indirect",  2, OperandKind.ADDRESS_16, ReferenceKind.POINTER)
 
-    def __init__(self, _label: str, operand_length: int, operand_kind: OperandKind):
+    def __init__(
+        self,
+        _label: str,
+        operand_length: int,
+        operand_kind: OperandKind,
+        reference_kind: ReferenceKind,
+    ):
         self.operand_length = operand_length
         self.operand_kind = operand_kind
+        self.reference_kind = reference_kind
 
 
 class TestAddressingModeAliasingHazard:
@@ -135,6 +143,7 @@ class TestAddressingModeMember:
         assert member.name == "ABSOLUTE"
         assert member.operand_length == 2
         assert member.operand_kind is OperandKind.ADDRESS_16
+        assert member.reference_kind is ReferenceKind.DIRECT
 
 
 # ---------------------------------------------------------------------------

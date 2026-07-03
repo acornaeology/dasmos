@@ -27,7 +27,12 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Optional
 
-from dasmos.core.memory import BinaryLocation, RuntimeAddr
+from dasmos.core.memory import (
+    BinaryLocation,
+    Reference,
+    ReferenceKind,
+    RuntimeAddr,
+)
 from dasmos.core.move import BASE_MOVE_ID, MoveManager
 from dasmos.exceptions import DasmosError
 
@@ -80,8 +85,10 @@ class Label:
         self.length: int | None = None
         self.group: str | None = None
         self.access: str | None = None
-        # Sites that reference this label (binary locations of use).
-        self.references: list[BinaryLocation] = []
+        # Sites that reference this label, each carrying how it reaches
+        # this address (direct / indexed base / pointer — see
+        # ``ReferenceKind``).
+        self.references: list[Reference] = []
         # Per-move-id collections.
         self.explicit_names: dict[int, list[ExplicitName]] = defaultdict(list)
         self.local_labels: dict[int, list[LocalLabel]] = defaultdict(list)
@@ -109,8 +116,34 @@ class Label:
         if expression not in self.all_names():
             self.expressions[move_id].append(expression)
 
-    def add_reference(self, reference: BinaryLocation) -> None:
-        self.references.append(reference)
+    def add_reference(
+        self,
+        location: BinaryLocation | Reference,
+        kind: ReferenceKind = ReferenceKind.DIRECT,
+    ) -> None:
+        """Record a use site. ``location`` may be a bare
+        :class:`BinaryLocation` (wrapped with ``kind``) or an
+        already-built :class:`Reference` (stored as-is; ``kind`` is
+        then ignored).
+        """
+        if isinstance(location, Reference):
+            self.references.append(location)
+        else:
+            self.references.append(Reference(location, kind))
+
+    def indexed_base_reference_count(self) -> int:
+        """Number of unique referencing sites that use this address only
+        as an indexing base (never touching the named byte)."""
+        return len({
+            int(r.binary_addr)
+            for r in self.references
+            if not r.kind.touches_named_address
+        })
+
+    def has_direct_reference(self) -> bool:
+        """``True`` if any reference genuinely reads or writes the named
+        address (as opposed to using it purely as an indexing base)."""
+        return any(r.kind.touches_named_address for r in self.references)
 
     def notify_emit_opportunity(self, move_id: int) -> None:
         self.emit_opportunities.add(move_id)
@@ -355,10 +388,11 @@ class LabelManager:
     def add_reference(
         self,
         runtime_addr,
-        reference: BinaryLocation,
+        reference: BinaryLocation | Reference,
+        kind: ReferenceKind = ReferenceKind.DIRECT,
     ) -> Label:
         label = self._get_or_create(runtime_addr)
-        label.add_reference(reference)
+        label.add_reference(reference, kind)
         return label
 
     def _resolve_move_id(self, move_id: int | None) -> int:

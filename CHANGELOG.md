@@ -9,6 +9,41 @@ minor bumps may carry small breaking changes alongside additive ones.
 
 ### Added
 
+- **Indexing regions (`d.index_region`).** Declares a window of
+  addresses around an anchor label whose in-window neighbours render
+  relative to the anchor — `lda fsm_sector0-3,X` instead of a scatter
+  of per-byte `_preN` labels or a bare address. `window=(lo, hi)` is an
+  inclusive offset range; the anchor keeps its normal
+  `description`/`group`/`access` and memory-map row. A region is a
+  naming *lens for the gaps*: an explicit label placed inside the
+  window always wins (precedence: explicit → region → auto-label →
+  hex), enforced by construction. The default inline form is arithmetic
+  on the anchor (`anchor±k`), which reassembles to identical bytes;
+  `named_slots=True` instead gives each gap a `name_m<k>` / `name_p<k>`
+  identifier. Windows must be disjoint — an overlap raises `RegionError`
+  at declaration. Regions are runtime-space and move-agnostic, exposed
+  on the IR (`ir.index_regions`) and as a top-level `regions` array in
+  JSON. Built on the existing expression-label machinery, so no renderer
+  changes were needed for the inline form. See
+  `docs/design/reference-kinds-memo.md`.
+
+- **Indexed-base reference classification.** Every use site now records
+  *how* an operand reaches its address via a
+  `ReferenceKind` (`dasmos.core.memory`): `DIRECT`, `POINTER`,
+  `INDEXED`, or `INDEXED_POINTER`. A CPU's `AddressingMode` carries the
+  kind (6502 and 65C02 populated; the `(zp),Y` pointer classifies as
+  owned while `(zp,X)` is base-only). Cross-reference summaries reword
+  accordingly — an address used only as an indexing base now reads
+  `used as index base N times by …` instead of the misleading
+  `referenced N times …`, in both the beebasm and JSON renderers. New
+  `d.index_base(addr, name, …)` (and the `access='indexed_base'` tag it
+  sets) documents a base — keeping its description / group / length —
+  while keeping it **off** the fixed-location memory map; the JSON
+  renderer lists such bases under a new top-level `index_bases` array.
+  This is the intention-revealing replacement for stripping metadata to
+  hide a base. See `docs/design/reference-kinds-memo.md`, which also
+  specifies the follow-up base±displacement slot-naming layer.
+
 - **Pluggable custom data types.** `d.typed_data(addr, type)` marks an
   N-byte region as a domain-specific aggregate: it emits the **raw
   bytes** for byte-faithful reassembly and attaches the *decoded* value
