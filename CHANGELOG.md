@@ -7,6 +7,19 @@ minor bumps may carry small breaking changes alongside additive ones.
 
 ## [Unreleased]
 
+### Changed
+
+- **JSON `references` now carries per-reference kind (breaking).** Each
+  item's `references` field changed from a flat `[int]` list of caller
+  runtime addresses to a list of objects
+  `[{"addr": int, "kind": str, "move_id": int?}]`, where `kind` is the
+  `ReferenceKind` value (`direct` / `pointer` / `indexed` /
+  `indexed_pointer`) and `move_id` appears only when non-zero. Consumers
+  that classified callers by regexing the `xref_summaries` prose (e.g.
+  the acornaeology site renderer) can now read the kind directly;
+  `xref_summaries` is derived from this same structured data, so the two
+  can no longer drift. (#36)
+
 ### Added
 
 - **Indexing regions (`d.index_region`).** Declares a window of

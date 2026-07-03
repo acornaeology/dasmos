@@ -51,6 +51,55 @@ class TestReferenceKindOnLabel:
         assert label.indexed_base_reference_count() == 1
 
 
+class TestJsonStructuredReferenceKinds:
+    """`references` carries per-caller kind structurally, so consumers
+    never parse it back out of the xref-summary prose (#36)."""
+
+    def _mixed_target_json(self, tmp_path):
+        # &8000 JSR &8006   (direct call)      -> &8006 kind=direct
+        # &8003 LDA &8006,X (indexed base)     -> &8006 kind=indexed
+        # &8006 RTS         (the shared target)
+        binpath = tmp_path / "mix.bin"
+        binpath.write_bytes(bytes([
+            0x20, 0x06, 0x80,
+            0xBD, 0x06, 0x80,
+            0x60,
+        ]))
+        d = Disassembler.create(cpu="6502")
+        d.load(binpath, 0x8000)
+        d.entry(0x8000)
+        return d.disassemble().render(JsonRenderer()).data
+
+    def _item(self, data, addr):
+        return next(it for it in data["items"] if it["addr"] == addr)
+
+    def test_references_are_objects_with_kind(self, tmp_path):
+        data = self._mixed_target_json(tmp_path)
+        refs = self._item(data, 0x8006)["references"]
+        assert refs == [
+            {"addr": 0x8000, "kind": "direct"},
+            {"addr": 0x8003, "kind": "indexed"},
+        ]
+
+    def test_summary_is_derivable_from_the_structured_kinds(self, tmp_path):
+        # The prose must agree with the structured data — same source.
+        data = self._mixed_target_json(tmp_path)
+        item = self._item(data, 0x8006)
+        refs = item["references"]
+        summary = " ".join(item.get("xref_summaries", []))
+        direct = [r["addr"] for r in refs if r["kind"] in ("direct", "pointer")]
+        base = [r["addr"] for r in refs if r["kind"] in ("indexed", "indexed_pointer")]
+        assert direct == [0x8000] and base == [0x8003]
+        assert "referenced 1 time by &8000" in summary
+        assert "used as index base 1 time by &8003" in summary
+
+    def test_move_id_included_only_when_nonzero(self, tmp_path):
+        # The common (moveless) case carries no move_id key.
+        data = self._mixed_target_json(tmp_path)
+        for ref in self._item(data, 0x8006)["references"]:
+            assert "move_id" not in ref
+
+
 class TestBeebasmXrefWording:
 
     def _equates(self, tmp_path):

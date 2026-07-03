@@ -44,7 +44,11 @@ Emits a JSON-serialisable dictionary:
           # labelled byte address with incoming references), kept
           # separate from user comments (#16).
           "xref_summaries": [str, ...]?,
-          "references": [int, ...]?,
+          # Structured incoming references: caller runtime addr, its
+          # ReferenceKind (direct/pointer/indexed/indexed_pointer), and
+          # move_id when non-zero. xref_summaries is prose derived from
+          # this same data.
+          "references": [{"addr": int, "kind": str, "move_id": int?}, ...]?,
           "type": "code"|"string"|"word"|"fill"|"byte",
           # type-specific: mnemonic/operand/target/target_label,
           #                values/expressions, value/length, string,
@@ -497,13 +501,20 @@ class JsonRenderer(Renderer[StructuredOutput]):
         if xrefs:
             entry["xref_summaries"] = xrefs
 
-        # Cross-references — runtime addrs that reference this label.
-        if label is not None and label.references:
-            refs = sorted({
-                int(ir.moves.b2r(BinaryAddr(int(r.binary_addr))))
-                for r in label.references
-            })
-            entry["references"] = refs
+        # Cross-references — structured, per-reference: the caller's
+        # runtime address, its ReferenceKind, and (when non-zero) the
+        # move it runs under. Consumers read the kind straight from here
+        # rather than parsing it out of the xref-summary prose.
+        records = self._collect_reference_records(ir, binary_addr)
+        if records:
+            entry["references"] = [
+                {
+                    "addr": rt,
+                    "kind": kind.value,
+                    **({"move_id": mid} if mid else {}),
+                }
+                for rt, mid, kind in records
+            ]
 
         # Classification-specific.
         if isinstance(c, Opcode):
@@ -1021,43 +1032,73 @@ class JsonRenderer(Renderer[StructuredOutput]):
         return ""
 
     @staticmethod
-    def _format_xref_summary_text(ir, binary_addr: int, length: int) -> str | None:
-        """Build the ``&<addr> referenced N time(s) by &<r1>, ...``
-        text emitted as a comments_before entry on every labelled item
-        with incoming references.
+    def _collect_reference_records(ir, binary_addr: int):
+        """The single structured source of incoming references for the
+        label at ``binary_addr``'s runtime address.
 
-        - The cited address is the BINARY address of the item.
-        - Each ref is emitted as the RUNTIME address of the JSR/branch
-          via that ref's specific ``move_id``, with a ``[<move_id>]``
-          suffix when the move id is non-zero (so a ref from inside a
-          relocated region reads as ``&0030[1]``, not ``&933e``).
-        - Sites that use the address only as an indexing base are
-          reported separately as "used as index base", so the text
-          never implies a byte is read or written when it is not.
+        Returns a sorted, deduplicated ``list[(ref_runtime_addr,
+        move_id, ReferenceKind)]``. Each caller is resolved to a runtime
+        address via *its own* ``move_id`` (so a ref from inside a
+        relocated region reads as ``&0030[1]``, not ``&933e``). Both the
+        machine-readable ``references`` field and the derived
+        ``xref_summaries`` prose read from here, so the two can never
+        drift.
+
+        When a single caller/move reaches the target both directly and
+        as an index base (two instructions resolving to the same runtime
+        address under the same move), the touching kind wins — a genuine
+        access is never masked by a base-only one.
         """
         runtime_addr = int(ir.moves.b2r(BinaryAddr(binary_addr)))
         label = ir.labels.get_label(runtime_addr)
         if label is None or not label.references:
-            return None
+            return []
+        by_key: dict[tuple[int, int], "ReferenceKind"] = {}
+        for ref in label.references:
+            ba = int(ref.binary_addr)
+            mid = int(getattr(ref, "move_id", 0) or 0)
+            move_def = ir.moves.all_moves[mid]
+            ref_runtime = int(
+                move_def.convert_binary_to_runtime_addr(BinaryAddr(ba))
+            )
+            key = (ref_runtime, mid)
+            existing = by_key.get(key)
+            if existing is None or (
+                not existing.touches_named_address
+                and ref.kind.touches_named_address
+            ):
+                by_key[key] = ref.kind
+        return [
+            (rt, mid, kind) for (rt, mid), kind in sorted(by_key.items())
+        ]
 
-        def collect(touching: bool) -> list[tuple[int, int]]:
-            seen: list[tuple[int, int]] = []
-            seen_set: set[tuple[int, int]] = set()
-            for ref in label.references:
-                if ref.kind.touches_named_address != touching:
-                    continue
-                ba = int(ref.binary_addr)
-                mid = int(getattr(ref, "move_id", 0) or 0)
-                move_def = ir.moves.all_moves[mid]
-                ref_runtime = int(
-                    move_def.convert_binary_to_runtime_addr(BinaryAddr(ba))
-                )
-                key = (ref_runtime, mid)
-                if key not in seen_set:
-                    seen_set.add(key)
-                    seen.append(key)
-            seen.sort()
-            return seen
+    @staticmethod
+    def _format_xref_summary_text(ir, binary_addr: int, length: int) -> str | None:
+        """Build the ``&<addr> referenced N time(s) by &<r1>, ...``
+        text emitted as a comments_before entry on every labelled item
+        with incoming references. Derived entirely from
+        :meth:`_collect_reference_records`.
+
+        - The cited address is the BINARY address of the item.
+        - Each ref is the RUNTIME address of the caller via its specific
+          ``move_id``, with a ``[<move_id>]`` suffix when non-zero.
+        - Sites that use the address only as an indexing base are
+          reported separately as "used as index base", so the text never
+          implies a byte is read or written when it is not.
+        """
+        records = JsonRenderer._collect_reference_records(ir, binary_addr)
+        if not records:
+            return None
+        # Records are deduped per (addr, move) with the touching kind
+        # winning, so these two lists are disjoint by construction.
+        touching = [
+            (rt, mid) for rt, mid, kind in records
+            if kind.touches_named_address
+        ]
+        base_only = [
+            (rt, mid) for rt, mid, kind in records
+            if not kind.touches_named_address
+        ]
 
         def clause(verb: str, seen: list[tuple[int, int]]) -> str:
             count = len(seen)
@@ -1068,21 +1109,11 @@ class JsonRenderer(Renderer[StructuredOutput]):
             ]
             return f"{verb} {count} {word} by " + ", ".join(parts)
 
-        direct = collect(touching=True)
-        # Exclude any addr that also has a touching ref from the
-        # index-base list (a genuine access wins).
-        direct_addrs = {rt for rt, _ in direct}
-        indexed = [
-            (rt, mid) for rt, mid in collect(touching=False)
-            if rt not in direct_addrs
-        ]
-        if not direct and not indexed:
-            return None
         clauses: list[str] = []
-        if direct:
-            clauses.append(clause("referenced", direct))
-        if indexed:
-            clauses.append(clause("used as index base", indexed))
+        if touching:
+            clauses.append(clause("referenced", touching))
+        if base_only:
+            clauses.append(clause("used as index base", base_only))
         return f"&{binary_addr:04x} " + "; also ".join(clauses)
 
     @staticmethod
