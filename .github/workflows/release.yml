@@ -111,7 +111,7 @@ jobs:
       id-token: write
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ steps.deploy1.outputs.page_url || steps.deploy2.outputs.page_url || steps.deploy3.outputs.page_url }}
     # Allow only one concurrent Pages deployment; don't cancel an
     # in-flight run because interrupting a deployment can leave Pages
     # in a stuck "pending" state.
@@ -119,6 +119,29 @@ jobs:
       group: pages
       cancel-in-progress: false
     steps:
+      # GitHub Pages' backend intermittently rejects the hand-off with
+      # "Deployment failed, try again later" — a transient service
+      # error, not a build problem (the artifact is already uploaded).
+      # Retry the deploy up to three times with a short backoff before
+      # failing the release. The first two attempts use
+      # continue-on-error so a transient doesn't fail the job; the final
+      # attempt does not, so a *persistent* Pages failure still surfaces.
       - name: Deploy
-        id: deployment
+        id: deploy1
+        uses: actions/deploy-pages@v4
+        continue-on-error: true
+      - name: Pause before retry
+        if: steps.deploy1.outcome == 'failure'
+        run: sleep 20
+      - name: Deploy (retry 1)
+        id: deploy2
+        if: steps.deploy1.outcome == 'failure'
+        uses: actions/deploy-pages@v4
+        continue-on-error: true
+      - name: Pause before final retry
+        if: steps.deploy1.outcome == 'failure' && steps.deploy2.outcome == 'failure'
+        run: sleep 30
+      - name: Deploy (retry 2)
+        id: deploy3
+        if: steps.deploy1.outcome == 'failure' && steps.deploy2.outcome == 'failure'
         uses: actions/deploy-pages@v4
