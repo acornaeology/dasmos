@@ -163,6 +163,8 @@ After which a reference to ``&221`` renders as ``irq1v+1`` instead of
 ``l0221``.
 
 
+.. _indexed-base-addresses:
+
 Indexed-base addresses and regions
 ----------------------------------
 
@@ -215,6 +217,11 @@ wins (precedence: explicit label → region form → auto-label → hex), so
 a region and individually-named locations coexist over the same address
 range. Region windows must be disjoint; an overlapping declaration
 raises at call time.
+
+For the workflow and judgement of retrofitting these calls onto an
+already-annotated driver — how to find candidates, which labels to
+leave alone, and when *not* to reach for a region — see
+:doc:`cookbook`.
 
 
 Marking subroutines
