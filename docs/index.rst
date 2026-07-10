@@ -49,6 +49,7 @@ Driver scripts written for py8dis can be ported automatically to
 
    cli
    driver_api
+   cookbook_expressions
    cookbook
    api
 

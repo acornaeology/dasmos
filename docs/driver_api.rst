@@ -156,11 +156,74 @@ as the address's label form:
 
 .. code-block:: python
 
+   from dasmos.expr import ref
+
    d.label(0x220, "irq1v")
-   d.expr_label(0x221, "irq1v+1")
+   d.expr_label(0x221, ref(0x220) + 1)   # renders as ``irq1v+1``
 
 After which a reference to ``&221`` renders as ``irq1v+1`` instead of
-``l0221``.
+``l0221``. The argument is an *assembler-neutral expression* built with
+the :mod:`dasmos.expr` DSL — the same expressions accepted by
+:meth:`~dasmos.Disassembler.expr` for operands and data bytes. They are
+the subject of the next section.
+
+
+.. _expressions:
+
+Assembler-neutral expressions
+-----------------------------
+
+Wherever a driver supplies an operand or data value that isn't a plain
+label — a byte extracted from an address, an offset, a mask, a computed
+constant — it does so with an :class:`~dasmos.core.expr.Expr` tree built
+from the :mod:`dasmos.expr` DSL. dasmos renders that one tree into each
+target assembler's own syntax: ``&`` vs ``$`` hex, ``AND`` vs ``&``,
+``<(x)`` byte-select, and — crucially — the *correct parenthesisation*
+for each assembler's operator precedence. You write the intent once; the
+renderer gets the syntax right per backend.
+
+The building blocks:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Builder
+     - Meaning
+   * - ``ref(addr)``
+     - the label at a runtime address, resolved to its name at render
+       time (falls back to a hex literal if unnamed)
+   * - ``sym(name)``
+     - a bare symbolic name, emitted verbatim (a constant, say)
+   * - ``lo(e)`` / ``hi(e)``
+     - low / high byte of ``e``
+   * - ``hexlit(n)`` / ``declit(n)`` / ``char(n)``
+     - an integer literal forced to hex / decimal / a character literal
+   * - ``string(s)``
+     - a string literal — index (``string("BRK")[0]``) or slice it
+   * - Python operators
+     - ``+ - * // & | ^ << >>`` and unary ``-`` / ``~`` compose sub-trees
+
+``ref`` and integer literals cover the vast majority of cases. A bare
+Python ``int`` is accepted anywhere and becomes a literal, so
+``ref(0x8130) - 1`` just works.
+
+.. code-block:: python
+
+   from dasmos.expr import ref, sym, lo, hi
+
+   d.constant(3, "num_lives")
+   d.expr(0x8001, sym("num_lives") + 1)   # lda #num_lives + 1
+   d.expr(0x8005, lo(ref(0x8130) - 1))    # lda #<(table - 1)
+
+Backward compatibility: a plain string is still accepted and is parsed
+from the beebasm/py8dis dialect (``"table-1"``, ``"HI(x)"``,
+``"a AND &FF"``) into the same tree, so existing drivers need no changes.
+Prefer the DSL in new code — it is checked at build time and renders
+correctly to every backend.
+
+The :doc:`cookbook <cookbook_expressions>` works through expressions
+(and macros) from simple to advanced.
 
 
 .. _indexed-base-addresses:

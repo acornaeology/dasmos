@@ -57,6 +57,23 @@ Format hints: renderer-agnostic operand-format intent
    :no-index:
 
 
+Expressions: the assembler-neutral DSL
+--------------------------------------
+
+The builders (``ref``, ``sym``, ``lo``, ``hi``, ``string``, ``param``,
+…) and node types used to author operand and data values that render
+correctly to every backend. See :ref:`expressions` for the guide and
+:ref:`cookbook-expressions` for worked examples.
+
+.. automodule:: dasmos.expr
+   :members:
+
+.. automodule:: dasmos.core.expr
+   :members:
+   :show-inheritance:
+   :no-index:
+
+
 Output: text and structured
 ---------------------------
 
