@@ -27,7 +27,7 @@ from pathlib import Path
 import pytest
 
 from dasmos.core.expr_parse import parse_expression
-from dasmos.expr import Expr, char, group
+from dasmos.expr import Expr, char, group, string
 from dasmos.ext.renderers.beebasm import BeebasmRenderer
 from dasmos.ext.renderers.tass64 import Tass64Renderer
 
@@ -64,6 +64,15 @@ def _hash_dsl(m: str, half: str) -> Expr:
     return (group(key) & 0xFF) if half == "lo" else (group(key) // 0x100)
 
 
+def _hash_str_dsl(m: str, half: str) -> Expr:
+    """The macro-friendly form: index a single mnemonic *string* rather
+    than spell out three character literals. Constant-folds to exactly
+    the same tree as :func:`_hash_dsl`."""
+    s = string(m)
+    key = (s[0] & 0x1F) * 0x400 + (s[1] & 0x1F) * 0x20 + (s[2] & 0x1F)
+    return (group(key) & 0xFF) if half == "lo" else (group(key) // 0x100)
+
+
 # ---------------------------------------------------------------------------
 # Rendering (no assembler needed)
 # ---------------------------------------------------------------------------
@@ -89,10 +98,12 @@ class TestRendering:
         for m in MNEMONICS:
             for half in ("lo", "hi"):
                 parsed = parse_expression(_hash_string(m, half))
-                dsl = _hash_dsl(m, half)
                 bee = BeebasmRenderer()
-                assert bee.render_expression(parsed, None) == \
-                    bee.render_expression(dsl, None)
+                base = bee.render_expression(parsed, None)
+                # Char-literal DSL and string-indexing DSL both fold to
+                # the same rendering as the parsed dialect string.
+                assert bee.render_expression(_hash_dsl(m, half), None) == base
+                assert bee.render_expression(_hash_str_dsl(m, half), None) == base
 
 
 # ---------------------------------------------------------------------------
@@ -141,9 +152,11 @@ def test_hash_assembles_to_expected_byte_beebasm(m):
         == (key & 0xFF)
     assert _assemble_beebasm(render(parse_expression(_hash_string(m, "hi")), None)) \
         == (key >> 8)
-    # The DSL-built tree assembles to the same bytes as the parsed string.
-    assert _assemble_beebasm(render(_hash_dsl(m, "lo"), None)) == (key & 0xFF)
-    assert _assemble_beebasm(render(_hash_dsl(m, "hi"), None)) == (key >> 8)
+    # The DSL-built trees (char literals and string indexing) assemble to
+    # the same bytes as the parsed string.
+    for build in (_hash_dsl, _hash_str_dsl):
+        assert _assemble_beebasm(render(build(m, "lo"), None)) == (key & 0xFF)
+        assert _assemble_beebasm(render(build(m, "hi"), None)) == (key >> 8)
 
 
 @pytest.mark.tass64
@@ -155,5 +168,6 @@ def test_hash_assembles_to_expected_byte_tass64(m):
         == (key & 0xFF)
     assert _assemble_tass64(render(parse_expression(_hash_string(m, "hi")), None)) \
         == (key >> 8)
-    assert _assemble_tass64(render(_hash_dsl(m, "lo"), None)) == (key & 0xFF)
-    assert _assemble_tass64(render(_hash_dsl(m, "hi"), None)) == (key >> 8)
+    for build in (_hash_dsl, _hash_str_dsl):
+        assert _assemble_tass64(render(build(m, "lo"), None)) == (key & 0xFF)
+        assert _assemble_tass64(render(build(m, "hi"), None)) == (key >> 8)

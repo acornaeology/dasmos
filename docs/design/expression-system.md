@@ -297,3 +297,163 @@ from string to object.
 - **65816 bank byte / `^` power**: included in the enum for
   expressiveness though unused by current 6502 ROMs; costs nothing and
   avoids a future schema change.
+
+---
+
+# Addendum: string operations and the path to backend-agnostic macros
+
+Motivated by the BBC BASIC 2 inline-assembler mnemonic-hash tables, whose
+driver renders each table byte as the *expression* that recomputes it
+(low 5 bits of each of a mnemonic's three letters, packed MSB-first):
+
+    (('L' AND &1F) * &400 + ('D' AND &1F) * &20 + ('A' AND &1F)) AND &FF   ; lo
+    (...) DIV &100                                                         ; hi
+
+## A. What already works (validated)
+
+These now parse, render, and **assemble to the identical hash byte on
+both backends** (`tests/test_mnemonic_hash.py`):
+
+| Capability | beebasm | 64tass |
+|---|---|---|
+| low / high byte select | `<(x)` / `>(x)` (or `LO`/`HI`) | `<(x)` / `>(x)` |
+| character literal | `'L'` | `'L'` |
+| bitwise AND mask | `AND &1F` | `& $1f` |
+| multiply / add | `*` / `+` | `*` / `+` |
+| **integer** division | `DIV &100` | `/ $100` |
+| grouping | `( … )` | `( … )` |
+
+The key point: `DIV` (integer) is a *distinct semantic operator* from
+real division, and its spelling differs per assembler — the neutral
+`BinOp.DIV` renders `DIV` for beebasm, `/` for 64tass, and would render
+`DIV` for acme. A regex could never get this right; a typed tree does.
+
+## B. String operations *(implemented)*
+
+Landed: `Str` / `StrIndex` / `StrSlice` / `StrLen` nodes, the `string()`
+DSL with Python `[]` indexing/slicing, a `fold()` constant-folding pass,
+and native rendering (64tass `s[i]`, beebasm `ASC(MID$(s, i+1, 1))`). The
+hash tables can now be authored as `string("BRK")[0]`, which folds to the
+`'B'` character literal and assembles identically on both backends
+(`tests/test_mnemonic_hash.py`, `tests/test_expr.py::TestStringOps`).
+
+Low/high byte extraction is one projection of a value; **string indexing
+and slicing** are the same idea for text, and the hash example is the
+canonical driver. The three neutral leaf/operator nodes:
+
+- `Str(text)` — a string literal.
+- `StrIndex(s, i)` — the byte of `s` at index `i` (0-based). Value is an
+  integer (a character code), usable anywhere an `Int` is.
+- `StrSlice(s, i, j)` — a substring (value is a `Str`).
+- (plus `StrLen(s)` and an explicit `Ord`/`Chr` if needed.)
+
+**Rendering is two-mode, and constant-folding is what makes it portable:**
+
+1. **Constant-folded (the common case).** When the string and indices are
+   compile-time constants — which is *every* current use, because the
+   driver knows the mnemonic — dasmos folds `StrIndex(Str("LDA"), 0)` to
+   `Int(ord('L'), CHAR)` at render time. This is exactly what the driver
+   does by hand today (`c1, c2, c3 = mnemonic`), but now expressed once in
+   the neutral tree and folded for *every* backend, including assemblers
+   with no string support at all. Folding never fails.
+
+2. **Native (only when an argument is non-constant** — e.g. a macro
+   parameter, §C). Each backend renders its own string syntax:
+
+   | | `StrIndex(s, i)` | `StrSlice(s, i, j)` |
+   |---|---|---|
+   | 64tass | `s[i]` | `s[i:j]` |
+   | beebasm | `ASC(MID$(s, i+1, 1))` | `MID$(s, i+1, j-i)` |
+   | ca65 | `.strat(s, i)` | — (build from `.strat`) |
+   | acme | *(no native form → must stay folded)* | — |
+
+   A backend that cannot express a non-constant string op declares so;
+   dasmos then refuses to emit it symbolically and requires the fold
+   (i.e. the argument must be constant). This is the same
+   graceful-degradation contract as §C.
+
+So string indexing "just works" for the hash tables via folding, and the
+native forms are held in reserve for the macro case where the string is a
+parameter.
+
+## C. Backend-agnostic macros
+
+The hash expression is emitted ~100 times (once per mnemonic, two halves)
+with the *same shape* and a different three-letter string. That is a
+**macro**: `pack(mnem, half)`. Lifting it from a Python helper that emits
+strings to a dasmos-level macro is the natural next step, and the
+expression tree is already the macro *body language*.
+
+### C.1 Two kinds, because assemblers split them
+
+- **Value macro** — returns an expression, used where a value is expected
+  (`equb pack_lo("LDA")`). 64tass spells this `.function`; ca65 has no
+  true value-function; beebasm folds it into a data-emitting `MACRO`;
+  acme has none.
+- **Code macro** — emits statements (an instruction sequence). beebasm
+  `MACRO…ENDMACRO`, 64tass `.macro….endmacro`, ca65 `.macro….endmacro`,
+  acme `!macro`.
+
+dasmos models both as one neutral `Macro` (name, params, body) plus an
+`invoke(name, args)`; a `returns=` flag marks a value macro. The body is
+a list of emit-items (for code macros) or a single `Expr` (for value
+macros), authored with the same DSL and `Ref`/`Sym`/`StrIndex` nodes,
+where a `Param(name)` node stands for a formal parameter.
+
+### C.2 The load-bearing principle: native construct OR inline-expand
+
+A macro renders one of two ways per backend, chosen by capability:
+
+1. **Native**: emit the assembler's own macro/function definition once and
+   an invocation at each call site — when the backend supports the needed
+   construct *and* every operation in the body (e.g. non-constant string
+   indexing) has a native form there.
+2. **Inline-expanded**: substitute the arguments into the body tree,
+   **constant-fold**, and emit the resulting expression/statements at each
+   call site — with no definition at all.
+
+Inline expansion is always available (it is just tree substitution +
+folding), so **every macro works on every backend**, worst case by
+expansion. This is what lets a macro "work with beebasm and 64tass today
+and acme/ca65 in future" without per-backend authoring: a new backend
+starts by inlining everything, and gains native macro/function emission
+incrementally as its `TextRenderer` implements the hooks.
+
+For the hash tables specifically, the mnemonic is always a constant, so
+inline-expansion + folding reproduces today's output exactly on beebasm,
+and the correct `$`/`&`//`DIV` forms on 64tass — while a driver *could*
+opt into a native `.function` on 64tass for compactness.
+
+### C.3 Renderer hooks (refines the D-025 sketch)
+
+```
+macro_supported(kind) -> bool          # value | code — does this backend
+                                       #   have a native construct?
+macro_define(macro) -> list[str]       # the definition block
+macro_invoke(name, arg_texts) -> str   # a call site (value) or line(s)
+param_ref(name) -> str                 # how a formal param is referenced
+                                       #   in the body (beebasm by name,
+                                       #   64tass \1 or name, …)
+```
+
+When `macro_supported` is False, the shared layer inline-expands instead
+of calling these — so a backend implements *nothing* and still works,
+then overrides the hooks to go native. The argument-reference divergence
+(named vs `\1` vs `@1`) is owned entirely by `param_ref` + `macro_invoke`,
+the same lesson as `translate_expression`.
+
+### C.4 Recommended sequencing
+
+1. `Str` / `StrIndex` / `StrSlice` nodes + **constant-folding** (a pure
+   `fold(expr) -> expr` pass). Immediately lets the hash tables be
+   authored as `pack(mnem, half)` in the DSL with no macro machinery —
+   folding inlines them. Small, self-contained, no new renderer hooks.
+2. Native non-constant string rendering per backend (the §B table) —
+   needed only once a macro parameter feeds a string op.
+3. The `Macro` abstraction with inline-expansion as the default and the
+   §C.3 hooks for native emission — build against beebasm + 64tass, with
+   acme/ca65 riding the inline-expansion path from day one.
+
+Steps 1–2 are the "string indexing" capability; step 3 is macros proper.
+Each is independently landable and gated by the assemble-and-verify
+oracle.

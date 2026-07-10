@@ -206,6 +206,17 @@ class Tass64Renderer(AssemblerRenderer):
             BinOp.XOR: "^", BinOp.SHL: "<<", BinOp.SHR: ">>",
         }[op]
 
+    # 64tass has native string indexing/slicing/length, so a non-constant
+    # string op (e.g. a macro parameter) renders directly.
+    def render_string_index(self, s: str, i: str) -> str:
+        return f"{s}[{i}]"
+
+    def render_string_slice(self, s: str, i: str, j: "str | None") -> str:
+        return f"{s}[{i}:{j if j is not None else ''}]"
+
+    def render_string_length(self, s: str) -> str:
+        return f"len({s})"
+
     # No ``translate_expression`` override is needed: driver-authored
     # dialect strings are parsed into structured Expr trees at
     # registration time (dasmos.core.expr_parse) and rendered through the

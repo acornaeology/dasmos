@@ -302,6 +302,20 @@ class BeebasmRenderer(AssemblerRenderer):
             return chr(n)
         return None
 
+    # Beebasm string functions are 1-based (MID$); character code via
+    # ASC. Used only for a non-constant string op (a macro parameter) —
+    # constant ones are folded to character literals before rendering.
+    def render_string_index(self, s: str, i: str) -> str:
+        return f"ASC(MID$({s}, {i} + 1, 1))"
+
+    def render_string_slice(self, s: str, i: str, j: "str | None") -> str:
+        if j is None:
+            return f"MID$({s}, {i} + 1)"
+        return f"MID$({s}, {i} + 1, {j} - {i})"
+
+    def render_string_length(self, s: str) -> str:
+        return f"LEN({s})"
+
     def fill_directive(self, value: int, length: int) -> list[str]:
         # Beebasm has no native fill-with-value; a FOR/NEXT loop
         # produces exactly N copies at assembly time. The loop

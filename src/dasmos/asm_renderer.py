@@ -39,9 +39,14 @@ from dasmos.core.expr import (
     Radix,
     Raw,
     Ref,
+    Str,
+    StrIndex,
+    StrLen,
+    StrSlice,
     Sym,
     Unary,
     UnaryOp,
+    fold,
 )
 from dasmos.core.format_hint import FormatHint
 from dasmos.core.markdown_asm import markdown_to_asm_text, strip_address_uri_links
@@ -1942,8 +1947,14 @@ class AssemblerRenderer(TextRenderer):
 
     def render_expression(self, e: Expr, ir, *, active_move=None) -> str:
         """Render an :class:`~dasmos.core.expr.Expr` to this backend's
-        operand/data syntax."""
-        text, _ = self._emit_expr(e, ir, active_move)
+        operand/data syntax.
+
+        Constant string operations are folded first (``string("BRK")[0]``
+        → the ``'B'`` character literal), so a backend never sees a string
+        op whose operands are constant. Any residual (non-constant) string
+        op is rendered through this backend's own string syntax.
+        """
+        text, _ = self._emit_expr(fold(e), ir, active_move)
         return text
 
     def _emit_expr(self, e: Expr, ir, active_move) -> tuple[str, int]:
@@ -1966,6 +1977,10 @@ class AssemblerRenderer(TextRenderer):
         if isinstance(e, Group):
             inner, _ = self._emit_expr(e.inner, ir, active_move)
             return f"({inner})", self._ATOM_PRECEDENCE
+        if isinstance(e, Str):
+            return f'"{e.text}"', self._ATOM_PRECEDENCE
+        if isinstance(e, (StrIndex, StrSlice, StrLen)):
+            return self._emit_string_op(e, ir, active_move), self._ATOM_PRECEDENCE
         if isinstance(e, Unary):
             return self._emit_unary(e, ir, active_move)
         if isinstance(e, Binary):
@@ -1973,6 +1988,41 @@ class AssemblerRenderer(TextRenderer):
         raise TypeError(
             f"{type(self).__name__} cannot render expression node "
             f"{type(e).__name__}"
+        )
+
+    def _emit_string_op(self, e, ir, active_move) -> str:
+        """Render a non-constant string operation via this backend's
+        string syntax. (Constant ones are folded away before we get
+        here.) A backend that lacks the needed string primitive raises,
+        signalling that the operand must be made constant so it can fold
+        — the graceful-degradation contract for the coming macro layer.
+        """
+        s_of = lambda x: self._emit_expr(x, ir, active_move)[0]
+        if isinstance(e, StrIndex):
+            return self.render_string_index(s_of(e.string), s_of(e.index))
+        if isinstance(e, StrLen):
+            return self.render_string_length(s_of(e.string))
+        stop = None if e.stop is None else s_of(e.stop)
+        return self.render_string_slice(s_of(e.string), s_of(e.start), stop)
+
+    def render_string_index(self, s: str, i: str) -> str:
+        """Character code of string ``s`` at index ``i`` (0-based).
+        Default: unsupported — a backend with no string indexing needs
+        the operands constant so :func:`~dasmos.core.expr.fold` handles
+        them. Backends override with their own syntax."""
+        raise NotImplementedError(
+            f"{type(self).__name__} cannot render non-constant string "
+            f"indexing; the string and index must be constant so they fold"
+        )
+
+    def render_string_slice(self, s: str, i: str, j: "str | None") -> str:
+        raise NotImplementedError(
+            f"{type(self).__name__} cannot render non-constant string slicing"
+        )
+
+    def render_string_length(self, s: str) -> str:
+        raise NotImplementedError(
+            f"{type(self).__name__} cannot render non-constant string length"
         )
 
     def _render_int_node(self, node: Int) -> str:

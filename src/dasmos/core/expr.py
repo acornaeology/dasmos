@@ -110,6 +110,16 @@ class Expr:
     def __pos__(self): return Unary(UnaryOp.POS, self)
     def __invert__(self): return Unary(UnaryOp.INVERT, self)
 
+    # -- string indexing / slicing ---------------------------------------
+    def __getitem__(self, key):
+        if isinstance(key, slice):
+            if key.step is not None:
+                raise TypeError("expression slices cannot have a step")
+            start = Int(0) if key.start is None else _coerce(key.start)
+            stop = None if key.stop is None else _coerce(key.stop)
+            return StrSlice(self, start, stop)
+        return StrIndex(self, _coerce(key))
+
 
 @dataclass(frozen=True)
 class Int(Expr):
@@ -178,6 +188,91 @@ class Raw(Expr):
     text: str
 
 
+@dataclass(frozen=True)
+class Str(Expr):
+    """A string literal. Not a numeric value on its own — it is the
+    operand of a string operation (:class:`StrIndex`, :class:`StrSlice`,
+    :class:`StrLen`) or a string-typed data value.
+    """
+
+    text: str
+
+
+@dataclass(frozen=True)
+class StrIndex(Expr):
+    """The character code of ``string`` at ``index`` (0-based) — an
+    integer value. When both operands are constant it folds to a
+    character-literal :class:`Int`; otherwise each backend renders its
+    own string-indexing syntax (64tass ``s[i]``, beebasm
+    ``ASC(MID$(s, i+1, 1))``).
+    """
+
+    string: Expr
+    index: Expr
+
+
+@dataclass(frozen=True)
+class StrSlice(Expr):
+    """A substring of ``string`` from ``start`` to ``stop`` (exclusive;
+    ``stop`` ``None`` means "to the end") — a string value. Folds to a
+    :class:`Str` when its operands are constant.
+    """
+
+    string: Expr
+    start: Expr
+    stop: "Expr | None" = None
+
+
+@dataclass(frozen=True)
+class StrLen(Expr):
+    """The length of ``string`` — an integer. Folds to an :class:`Int`
+    when ``string`` is constant."""
+
+    string: Expr
+
+
+def fold(e: Expr) -> Expr:
+    """Constant-fold string operations (and their sub-trees) as far as
+    possible.
+
+    ``StrIndex(Str("BRK"), Int(0))`` → ``Int(ord("B"), CHAR)``;
+    ``StrSlice(Str("BRK"), 0, 2)`` → ``Str("BR")``;
+    ``StrLen(Str("BRK"))`` → ``Int(3)``. A string op whose operands are
+    not all constant is returned with its children folded but otherwise
+    intact (a backend then renders it natively). Non-string nodes are
+    returned with their children folded so a string op nested inside
+    arithmetic still collapses. Idempotent.
+    """
+    if isinstance(e, StrIndex):
+        s, i = fold(e.string), fold(e.index)
+        if isinstance(s, Str) and isinstance(i, Int):
+            return Int(ord(s.text[i.value]), Radix.CHAR)
+        return StrIndex(s, i)
+    if isinstance(e, StrSlice):
+        s = fold(e.string)
+        start = fold(e.start)
+        stop = None if e.stop is None else fold(e.stop)
+        if (
+            isinstance(s, Str) and isinstance(start, Int)
+            and (stop is None or isinstance(stop, Int))
+        ):
+            end = None if stop is None else stop.value
+            return Str(s.text[start.value:end])
+        return StrSlice(s, start, stop)
+    if isinstance(e, StrLen):
+        s = fold(e.string)
+        if isinstance(s, Str):
+            return Int(len(s.text))
+        return StrLen(s)
+    if isinstance(e, Group):
+        return Group(fold(e.inner))
+    if isinstance(e, Unary):
+        return Unary(e.op, fold(e.operand))
+    if isinstance(e, Binary):
+        return Binary(e.op, fold(e.left), fold(e.right))
+    return e
+
+
 # ---------------------------------------------------------------------------
 # Driver-facing DSL (re-exported from ``dasmos.expr``)
 # ---------------------------------------------------------------------------
@@ -227,6 +322,23 @@ def group(operand) -> Group:
     return Group(_coerce(operand))
 
 
+def string(text: str) -> Str:
+    """A string literal — index it (``string("BRK")[0]``) or slice it to
+    build character/substring expressions."""
+    return Str(text)
+
+
+def str_len(s) -> StrLen:
+    """The length of a string expression."""
+    return StrLen(_coerce_str(s))
+
+
+def _coerce_str(value) -> Expr:
+    if isinstance(value, str):
+        return Str(value)
+    return _coerce(value)
+
+
 def raw(text: str) -> Raw:
     """Wrap a pre-formatted dialect string as an opaque expression."""
     return Raw(text)
@@ -247,10 +359,20 @@ def canonical_text(e: Expr) -> str:
     here); resolved names come from a renderer's
     ``render_expression`` instead.
     """
+    e = fold(e)
     if isinstance(e, Raw):
         return e.text
     if isinstance(e, Sym):
         return e.name
+    if isinstance(e, Str):
+        return f'"{e.text}"'
+    if isinstance(e, StrIndex):
+        return f"{canonical_text(e.string)}[{canonical_text(e.index)}]"
+    if isinstance(e, StrSlice):
+        stop = "" if e.stop is None else canonical_text(e.stop)
+        return f"{canonical_text(e.string)}[{canonical_text(e.start)}:{stop}]"
+    if isinstance(e, StrLen):
+        return f"len({canonical_text(e.string)})"
     if isinstance(e, Ref):
         a = e.runtime_addr
         return f"&{a:02x}" if a <= 0xFF else f"&{a:04x}"

@@ -67,6 +67,11 @@ Emits a JSON-serialisable dictionary:
           #   {"sym": str}                       # bare name
           #   {"ref": int, "name": str|null}     # label at a runtime addr
           #   {"raw": str}                       # unparsed dialect string
+          #   {"str": str}                       # string literal
+          #   {"op": "str_index", "string": <expr>, "index": <expr>}
+          #   {"op": "str_slice", "string": <expr>,
+          #    "start": <expr>, "stop": <expr>|null}
+          #   {"op": "str_len", "string": <expr>}
           #   {"group": <expr>}                  # explicit parentheses
           #   {"op": "lowbyte"|"highbyte"|"neg"|"pos"|"invert"|"bankbyte",
           #    "operand": <expr>}
@@ -107,10 +112,15 @@ from dasmos.core.expr import (
     Radix,
     Raw,
     Ref,
+    Str,
+    StrIndex,
+    StrLen,
+    StrSlice,
     Sym,
     Unary,
     UnaryOp,
     canonical_text,
+    fold,
 )
 from dasmos.core.format_hint import FormatHint
 from dasmos.core.markdown_asm import markdown_normalize_headings
@@ -912,12 +922,24 @@ class JsonRenderer(Renderer[StructuredOutput]):
         JSON keeps the historical beebasm-flavoured operand spelling
         (``&`` hex, ``AND``/``EOR``, ``<(...)`` byte-select). A
         :class:`~dasmos.core.expr.Raw` node — a legacy dialect string —
-        is emitted verbatim. Structured nodes are fully parenthesised;
-        JSON text is descriptive, not assembled, so minimal-paren
-        precedence handling is unnecessary here.
+        is emitted verbatim. Constant string operations are folded to
+        their value; the ``tree`` field preserves the full structure.
         """
+        e = fold(e)
         if isinstance(e, Raw):
             return e.text
+        if isinstance(e, Str):
+            return f'"{e.text}"'
+        if isinstance(e, StrIndex):
+            return f"{self._expr_text(e.string, ir)}[{self._expr_text(e.index, ir)}]"
+        if isinstance(e, StrSlice):
+            stop = "" if e.stop is None else self._expr_text(e.stop, ir)
+            return (
+                f"{self._expr_text(e.string, ir)}"
+                f"[{self._expr_text(e.start, ir)}:{stop}]"
+            )
+        if isinstance(e, StrLen):
+            return f"len({self._expr_text(e.string, ir)})"
         if isinstance(e, Sym):
             return e.name
         if isinstance(e, Ref):
@@ -998,10 +1020,25 @@ class JsonRenderer(Renderer[StructuredOutput]):
         """The structured form of ``e`` — a small tagged tree mirroring
         :mod:`dasmos.core.expr`. Leaves: ``{"int": v, "radix": r}``,
         ``{"sym": name}``, ``{"ref": addr, "name": name_or_null}``,
-        ``{"raw": text}``. Composites carry an ``op`` tag plus operands.
+        ``{"raw": text}``, ``{"str": text}``. Composites carry an ``op``
+        tag plus operands. Constant string ops are folded first.
         """
+        e = fold(e)
         if isinstance(e, Raw):
             return {"raw": e.text}
+        if isinstance(e, Str):
+            return {"str": e.text}
+        if isinstance(e, StrIndex):
+            return {"op": "str_index",
+                    "string": self._expr_tree(e.string, ir),
+                    "index": self._expr_tree(e.index, ir)}
+        if isinstance(e, StrSlice):
+            return {"op": "str_slice",
+                    "string": self._expr_tree(e.string, ir),
+                    "start": self._expr_tree(e.start, ir),
+                    "stop": None if e.stop is None else self._expr_tree(e.stop, ir)}
+        if isinstance(e, StrLen):
+            return {"op": "str_len", "string": self._expr_tree(e.string, ir)}
         if isinstance(e, Sym):
             return {"sym": e.name}
         if isinstance(e, Ref):

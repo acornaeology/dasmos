@@ -16,17 +16,23 @@ from dasmos.expr import (
     Radix,
     Raw,
     Ref,
+    Str,
+    StrIndex,
+    StrSlice,
     Sym,
     Unary,
     UnaryOp,
+    as_expr,
     char,
     declit,
+    fold,
     hexlit,
     hi,
     lo,
     ref,
+    str_len,
+    string,
     sym,
-    as_expr,
 )
 from dasmos.ext.renderers.beebasm import BeebasmRenderer
 from dasmos.ext.renderers.tass64 import Tass64Renderer
@@ -146,6 +152,43 @@ class TestRendering:
 # ---------------------------------------------------------------------------
 # Ref resolution against a real IR
 # ---------------------------------------------------------------------------
+
+class TestStringOps:
+    def setup_method(self):
+        self.bee = BeebasmRenderer()
+        self.tass = Tass64Renderer()
+
+    def test_indexing_builds_strindex(self):
+        assert string("BRK")[0] == StrIndex(Str("BRK"), Int(0))
+
+    def test_slicing_builds_strslice(self):
+        assert string("BRK")[0:2] == StrSlice(Str("BRK"), Int(0), Int(2))
+        assert string("BRK")[1:] == StrSlice(Str("BRK"), Int(1), None)
+
+    def test_constant_index_folds_to_char(self):
+        assert fold(string("BRK")[0]) == Int(ord("B"), Radix.CHAR)
+
+    def test_constant_slice_folds_to_str(self):
+        assert fold(string("BRK")[0:2]) == Str("BR")
+
+    def test_constant_len_folds_to_int(self):
+        assert fold(str_len(string("BRK"))) == Int(3)
+
+    def test_nested_fold_inside_arithmetic(self):
+        # (string("BRK")[0] AND 0x1F) folds the index to a char.
+        e = string("BRK")[0] & 0x1F
+        assert fold(e) == Binary(BinOp.AND, Int(ord("B"), Radix.CHAR), Int(0x1F))
+
+    def test_constant_index_renders_as_char_both_backends(self):
+        e = string("LDA")[0]
+        assert self.bee.render_expression(e, None) == "'L'"
+        assert self.tass.render_expression(e, None) == "'L'"
+
+    def test_non_constant_index_renders_natively(self):
+        e = sym("mnem")[2]
+        assert self.bee.render_expression(e, None) == "ASC(MID$(mnem, 2 + 1, 1))"
+        assert self.tass.render_expression(e, None) == "mnem[2]"
+
 
 class TestRefResolution:
     def _ir(self, tmp_path, configure):
