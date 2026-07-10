@@ -519,3 +519,117 @@ resolve the symbol via the single inline anchor.
   label's emission with the move whose body walk reaches it
   first. No downstream consumer cares about which move "owns"
   the inline anchor.
+
+
+## 2026-07-09 — multi-backend renderer split
+
+### D-024: Shared rendering walk on `AssemblerRenderer`; 64tass as the second backend
+
+**Status**: accepted, implemented.
+
+**Context**: dasmos claimed multiple assembler backends "in
+principle" but shipped exactly one text backend (beebasm). The
+lexical protocol on `TextRenderer` (`hex2`, `byte_prefix`,
+`comment_prefix`, the `pseudopc_*` hooks, …) was clean, but the
+entire ~1800-line rendering *walk* — the IR traversal, move
+emission, operand resolution, and every label / xref / stats /
+annotation block — lived as concrete methods on `BeebasmRenderer`.
+A second text backend would have had to re-implement all of it, and
+`JsonRenderer` already re-implemented the operand/addressing logic
+independently: live proof of a missing shared layer. Two further
+tells: the `pseudopc_start` / `pseudopc_end` relocation hooks were
+dead code (beebasm returned `[]` and did relocation its own way via
+a moves-first `copyblock` walk), and `core/markdown_asm.py` hardcoded
+beebasm's `&` hex sigil in cross-reference link text. The interface
+was half-generic and untested against a second backend.
+
+**Decision**: Introduce a concrete intermediate class
+`AssemblerRenderer(TextRenderer)` (`src/dasmos/asm_renderer.py`)
+holding the whole shared walk, driven entirely through the abstract
+lexical protocol and the relocation hooks. `BeebasmRenderer` and the
+new `Tass64Renderer` both subclass it. Concretely:
+
+- **Relocation goes through the hooks.** The walk calls
+  `set_origin(addr)` (plain PC set) and `pseudopc_start` /
+  `pseudopc_end` (enter/leave a relocated block). Beebasm implements
+  the latter with its `copyblock` / `clear` / restore-`org` idiom;
+  64tass with native `.logical` / `.here`. The asymmetry — beebasm
+  needs an explicit copy-back, 64tass does not — is exactly what the
+  hook boundary is for. The hooks carry the full move context
+  (`dest`, `src`, `length`, `move_id`, `src_label`, `dest_label`).
+- **Syntax seams.** `address_link_hex(hex_str)` formats a `?hex`
+  cross-reference link (routed into `markdown_asm.py` via a
+  `hex_format` parameter); `translate_expression(text)` adapts
+  driver-authored expression strings; `_string_line_directive(...)`
+  chooses the directive for a mixed string/byte data line;
+  `binary_literal` / the FormatHint methods provide generic defaults.
+  Every seam defaults to beebasm's existing behaviour, so beebasm
+  output is byte-identical (pinned by a new golden-snapshot test over
+  all seven fixture ROMs — `tests/test_golden_asm.py`).
+- **64tass is the second backend** (`ext/renderers/tass64/`,
+  registered as `64tass`). It was chosen for being standalone and
+  flat-file-friendly and — decisively — because its `.logical` /
+  `.here` finally exercises the previously-dead relocation hooks.
+
+**Consequences**:
+
+- Six of the seven sibling-repo ROMs round-trip byte-identically
+  through 64tass (`binary → dasmos → 64tass → binary`), including
+  every ROM with relocations, banners, and driver expressions — the
+  genericity proof. The interface is now validated against two real
+  backends, not one.
+- **A leak was surfaced, not hidden:** driver scripts author operand
+  expressions in beebasm's dialect (`&HH` hex, `HI`/`LO` byte
+  functions, `AND`/`EOR`/`OR` keywords). These are assembler-specific
+  and can't be rendered verbatim for 64tass. `translate_expression`
+  adapts the known closed set (safe because in the py8dis dialect `&`
+  is only ever hex, never bitwise-AND). The clean long-term fix is
+  assembler-neutral expressions in the IR; until then the translation
+  seam is where a backend adapts them.
+- **One documented limitation:** the 6502 Tube Client ROM's 4 KB
+  region at `$F800` crosses the 64 KB boundary (`$F800 + $1000 =
+  $10800`). Beebasm's linear 32-bit `save` handles this; 64tass wraps
+  its PC at `$FFFF`. Its 64tass round-trip is `xfail(strict=True)` —
+  an address-space-representation difference, not an interface gap.
+- `JsonRenderer` still re-implements operand logic independently
+  (it is a `StructuredRenderer`, not a `TextRenderer`); unifying that
+  across the text/structured divide is deliberately out of scope.
+- The porter (`scripts/py8dis2dasmos.py`) gained an optional
+  `assembler_name` override so the same drivers can be exercised
+  through 64tass in tests; the default (beebasm) is unchanged.
+
+### D-025: Reserve a macro protocol designed against two backends (not yet built)
+
+**Status**: proposed (no implementation yet).
+
+**Context**: Macro definition is a planned feature. If it is
+designed and implemented against beebasm alone it will bake in
+beebasm's spelling, re-creating exactly the single-backend coupling
+D-024 unpicked. D-024 landed 64tass specifically so the next feature
+is designed against two backends from the start.
+
+**Decision**: When macros land, express them as abstract hooks on
+`TextRenderer` / `AssemblerRenderer` alongside the existing lexical
+protocol — sketch:
+
+- `macro_start(name, params) -> list[str]` — beebasm `MACRO name a, b`;
+  64tass `name .macro a, b`; ca65 `.macro name, a, b`.
+- `macro_end() -> list[str]` — beebasm `ENDMACRO`; 64tass `.endmacro`;
+  ca65 `.endmacro`.
+- `macro_invoke(name, args) -> str` — the call site.
+
+The **argument-reference syntax is the divergence to design around**:
+beebasm references parameters by their declared names, 64tass by
+`\1`…`\9` (or names), ca65 by name, laxasm by `@1`…`@9`. So
+`macro_start` must own how a parameter is *declared* and `macro_invoke`
+how an argument is *passed*, and the macro *body* must reference
+parameters through a renderer-provided formatter rather than embedding
+one assembler's convention — the same lesson as
+`translate_expression` in D-024.
+
+**Consequences**:
+
+- No macro code ships yet; this records the intended shape so the
+  feature is built generic-first.
+- Validates the D-024 thesis prospectively: the second backend earns
+  its keep by shaping the *next* feature, not just the current one.
