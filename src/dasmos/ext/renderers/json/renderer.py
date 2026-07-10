@@ -55,6 +55,27 @@ Emits a JSON-serialisable dictionary:
           # type-specific: mnemonic/operand/target/target_label,
           #                values/expressions, value/length, string,
           #                format_hints, format_hint
+          #
+          # A driver-authored operand/data expression is emitted as an
+          # object carrying BOTH a ready text rendering and a structured
+          # tree, so a consumer can use the text directly or build its
+          # own from the tree:
+          #   {"text": str,
+          #    "tree": <expr>}
+          # where <expr> is one of:
+          #   {"int": int, "radix": "auto"|"dec"|"hex"|"bin"|"char"}
+          #   {"sym": str}                       # bare name
+          #   {"ref": int, "name": str|null}     # label at a runtime addr
+          #   {"raw": str}                       # unparsed dialect string
+          #   {"group": <expr>}                  # explicit parentheses
+          #   {"op": "lowbyte"|"highbyte"|"neg"|"pos"|"invert"|"bankbyte",
+          #    "operand": <expr>}
+          #   {"op": "add"|"sub"|"mul"|"div"|"mod"|"and"|"or"|"xor"|
+          #          "shl"|"shr",
+          #    "left": <expr>, "right": <expr>}
+          # Code items carry it as "expr" (operand keeps the full text
+          # incl. #/,X); word/byte items as the "expressions" array
+          # (element null where no expression at that value).
         }
       ]
     }
@@ -587,6 +608,15 @@ class JsonRenderer(Renderer[StructuredOutput]):
         operand = self._operand_text(ir, binary_addr, opcode)
         if operand is not None:
             entry["operand"] = operand
+        # When the operand value came from a driver-registered
+        # expression, also surface it structurally (text + tree) so a
+        # consumer can re-render it to any assembler or evaluate it,
+        # rather than parse the ``operand`` string. ``operand`` keeps the
+        # full ready text (with ``#`` / ``,X`` mode punctuation); the
+        # ``expr`` object carries just the expression.
+        operand_expr = ir.expressions.get_or_none(binary_addr + 1)
+        if operand_expr is not None:
+            entry["expr"] = self._expr_object(operand_expr, ir)
         # Surface any FormatHint registered at the operand byte as
         # structured metadata. Consumers (e.g. the acornaeology site
         # generator) get the abstract semantic alongside the rendered
@@ -859,19 +889,19 @@ class JsonRenderer(Renderer[StructuredOutput]):
 
     def _collect_expressions(
         self, ir, binary_addr: int, length: int, element_size: int,
-    ) -> list[str | None] | None:
-        """List of expression strings parallel to the values, with
-        ``None`` where no expression exists. Returns ``None`` when no
-        element has an expression — the caller omits the
+    ) -> list[dict | None] | None:
+        """List of expression objects (``{"text", "tree"}``) parallel to
+        the values, with ``None`` where no expression exists. Returns
+        ``None`` when no element has an expression — the caller omits the
         ``expressions`` key entirely in that case.
         """
-        out: list[str | None] = []
+        out: list[dict | None] = []
         has_any = False
         for i in range(0, length, element_size):
             e = ir.expressions.get_or_none(binary_addr + i)
             if e is not None:
                 has_any = True
-                out.append(self._expr_text(e, ir))
+                out.append(self._expr_object(e, ir))
             else:
                 out.append(None)
         return out if has_any else None
@@ -905,16 +935,20 @@ class JsonRenderer(Renderer[StructuredOutput]):
                 return f">({inner})"
             token = {UnaryOp.NEG: "-", UnaryOp.POS: "+",
                      UnaryOp.INVERT: "~"}.get(e.op, "")
-            return f"{token}({inner})"
+            return f"{token}{inner}"
         if isinstance(e, Binary):
             token = {
                 BinOp.ADD: "+", BinOp.SUB: "-", BinOp.MUL: "*", BinOp.DIV: "/",
                 BinOp.MOD: "MOD", BinOp.AND: "AND", BinOp.OR: "OR",
                 BinOp.XOR: "EOR", BinOp.SHL: "<<", BinOp.SHR: ">>",
             }[e.op]
+            # No auto-parenthesisation: an explicit Group node carries the
+            # author's parens (matching dasmos.core.expr.canonical_text).
+            # The structured ``tree`` is authoritative; this is a readable
+            # rendering, not something re-parsed.
             return (
-                f"({self._expr_text(e.left, ir)} {token} "
-                f"{self._expr_text(e.right, ir)})"
+                f"{self._expr_text(e.left, ir)} {token} "
+                f"{self._expr_text(e.right, ir)}"
             )
         raise TypeError(f"cannot render expression node {type(e).__name__}")
 
@@ -933,6 +967,64 @@ class JsonRenderer(Renderer[StructuredOutput]):
         if 0 <= v <= 9:
             return str(v)
         return f"&{v:02x}" if v <= 0xFF else f"&{v:04x}"
+
+    # -- structured expression serialisation ------------------------------
+
+    _UNARY_OP_NAME = {
+        UnaryOp.NEG: "neg", UnaryOp.POS: "pos", UnaryOp.INVERT: "invert",
+        UnaryOp.LOWBYTE: "lowbyte", UnaryOp.HIGHBYTE: "highbyte",
+        UnaryOp.BANKBYTE: "bankbyte",
+    }
+    _BINARY_OP_NAME = {
+        BinOp.ADD: "add", BinOp.SUB: "sub", BinOp.MUL: "mul",
+        BinOp.DIV: "div", BinOp.MOD: "mod", BinOp.AND: "and",
+        BinOp.OR: "or", BinOp.XOR: "xor", BinOp.SHL: "shl", BinOp.SHR: "shr",
+    }
+    _RADIX_NAME = {
+        Radix.AUTO: "auto", Radix.DEC: "dec", Radix.HEX: "hex",
+        Radix.BIN: "bin", Radix.CHAR: "char",
+    }
+
+    def _expr_object(self, e: Expr, ir) -> dict:
+        """An expression as a JSON object carrying both a ready-to-use
+        ``text`` rendering and a ``tree`` a consumer can walk to build
+        its own. Every operand/data expression is emitted this way so no
+        consumer is forced to parse text, yet none has to walk the tree
+        just to display something.
+        """
+        return {"text": self._expr_text(e, ir), "tree": self._expr_tree(e, ir)}
+
+    def _expr_tree(self, e: Expr, ir) -> dict:
+        """The structured form of ``e`` — a small tagged tree mirroring
+        :mod:`dasmos.core.expr`. Leaves: ``{"int": v, "radix": r}``,
+        ``{"sym": name}``, ``{"ref": addr, "name": name_or_null}``,
+        ``{"raw": text}``. Composites carry an ``op`` tag plus operands.
+        """
+        if isinstance(e, Raw):
+            return {"raw": e.text}
+        if isinstance(e, Sym):
+            return {"sym": e.name}
+        if isinstance(e, Ref):
+            addr = int(e.runtime_addr)
+            label = ir.labels.get_label(addr)
+            name = self._first_registered_name(label) if label else None
+            return {"ref": addr, "name": name}
+        if isinstance(e, Int):
+            return {"int": e.value, "radix": self._RADIX_NAME[e.radix]}
+        if isinstance(e, Group):
+            return {"group": self._expr_tree(e.inner, ir)}
+        if isinstance(e, Unary):
+            return {
+                "op": self._UNARY_OP_NAME[e.op],
+                "operand": self._expr_tree(e.operand, ir),
+            }
+        if isinstance(e, Binary):
+            return {
+                "op": self._BINARY_OP_NAME[e.op],
+                "left": self._expr_tree(e.left, ir),
+                "right": self._expr_tree(e.right, ir),
+            }
+        raise TypeError(f"cannot serialise expression node {type(e).__name__}")
 
     def _collect_format_hints(
         self, ir, binary_addr: int, length: int, element_size: int,

@@ -680,7 +680,10 @@ falls back to a `Raw` node (verbatim).
 - `code_ptr`'s deferred-string mechanism
   (`_register/_resolve_deferred_expressions`) is deleted — a `Ref`
   resolves its name at render time, which is inherently late-bound.
-- `JsonRenderer` still stringifies expressions (beebasm-flavoured
-  `operand` text) rather than emitting the structured tree as a new JSON
-  field; upgrading the JSON schema to carry the tree is a deliberate
-  follow-up, not done here.
+- `JsonRenderer` emits each expression as an object with **both** a
+  ready `text` rendering and a structured `tree` (a tagged form mirroring
+  the AST, with `Ref` addresses resolved to names), so a consumer can use
+  the text directly or build its own from the tree without parsing.
+  Code items carry it as `expr` (with `operand` keeping the full ready
+  text incl. mode punctuation); word/byte items as the `expressions`
+  array.

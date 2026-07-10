@@ -411,7 +411,37 @@ class TestByteWordFormatHints:
         items = d.disassemble().render(JsonRenderer()).data["items"]
         assert items[0]["values"] == [0x82, 0x10]
         assert items[0]["format_hints"] == ["binary", None]
-        assert items[0]["expressions"] == [None, "version"]
+        # Each expression is now an object carrying ready text plus a
+        # structured tree; None where no expression exists.
+        assert items[0]["expressions"] == [
+            None,
+            {"text": "version", "tree": {"sym": "version"}},
+        ]
+
+    def test_code_operand_carries_structured_expr(self, tmp_path):
+        # lda #<value>; the operand expression is surfaced structurally
+        # alongside the ready operand text.
+        from dasmos.expr import lo, ref
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0xA9, 0x00, 0x60]))  # lda #0 : rts
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.entry(0x8000)
+        d.label(0x8002, "handler")
+        d.expr(0x8001, lo(ref(0x8002) - 1))
+        item = d.disassemble().render(JsonRenderer()).data["items"][0]
+        assert item["operand"] == "#<(handler - 1)"      # ready text
+        assert item["expr"] == {
+            "text": "<(handler - 1)",
+            "tree": {
+                "op": "lowbyte",
+                "operand": {
+                    "op": "sub",
+                    "left": {"ref": 0x8002, "name": "handler"},
+                    "right": {"int": 1, "radix": "auto"},
+                },
+            },
+        }
 
 
 class TestExternalLabels:
