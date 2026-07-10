@@ -44,7 +44,7 @@ class TestArithmeticSlotRendering:
         d.index_region(0x0E00, "fsm_sector0", window=(-6, 3),
                        description="FSM sector-0 table")
         text = str(d.disassemble().render("beebasm"))
-        assert "lda fsm_sector0-3,x" in text
+        assert "lda fsm_sector0 - 3,x" in text
         # The gap must NOT get a bare auto-label like l0dfd.
         assert "l0dfd" not in text
 
@@ -58,7 +58,7 @@ class TestArithmeticSlotRendering:
         d = _fsm_program(tmp_path)
         d.index_region(0x0E00, "fsm_sector0", window=(-6, 3))
         text = str(d.disassemble().render("beebasm"))
-        assert "sta fsm_sector0+3,x" in text
+        assert "sta fsm_sector0 + 3,x" in text
 
 
 class TestExplicitLabelPrecedence:
@@ -71,7 +71,7 @@ class TestExplicitLabelPrecedence:
         text = str(d.disassemble().render("beebasm"))
         assert "sta fsm_s0_start_1,x" in text
         # The region form must not compete with the explicit name.
-        assert "fsm_sector0+3" not in text
+        assert "fsm_sector0 + 3" not in text
 
 
 class TestNamedSlots:
@@ -114,4 +114,4 @@ class TestJsonRegionsSection:
         d.index_region(0x0E00, "fsm_sector0", window=(-6, 3))
         data = d.disassemble().render(JsonRenderer()).data
         operands = [it.get("operand") for it in data["items"]]
-        assert "fsm_sector0-3,x" in operands
+        assert "fsm_sector0 - 3,x" in operands

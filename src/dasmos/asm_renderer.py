@@ -34,6 +34,7 @@ from dasmos.core.expr import (
     BinOp,
     Binary,
     Expr,
+    Group,
     Int,
     Radix,
     Raw,
@@ -1460,10 +1461,15 @@ class AssemblerRenderer(TextRenderer):
                 stacklevel=2,
             )
             return self.hex2(value)
-        # ``EOR`` is beebasm's XOR keyword; route through
-        # translate_expression so a backend with different operator
-        # syntax (64tass ``^``) adapts it.
-        return self.translate_expression(f"(255 - {name}) EOR 128")
+        # ``(255 - inkey_key) EOR 128`` as an assembler-neutral tree, so
+        # each backend renders its own XOR token (beebasm ``EOR``, 64tass
+        # ``^``). The Group keeps the readability parens.
+        e = Binary(
+            BinOp.XOR,
+            Group(Int(255, Radix.DEC) - Sym(name)),
+            Int(128, Radix.DEC),
+        )
+        return self.render_expression(e, None)
 
     def _render_operand(
         self, ir, binary_addr, opcode: Opcode, *, active_move=None,
@@ -1653,7 +1659,7 @@ class AssemblerRenderer(TextRenderer):
                 if expr_list:
                     if not self._label_address_is_in_range(ir, addr):
                         self._used_external_labels.add(addr)
-                    return self.translate_expression(expr_list[0])
+                    return self.render_expression(expr_list[0], ir)
         return self.hex2(addr) if width == 8 else self.hex4(addr)
 
     @staticmethod
@@ -1874,21 +1880,17 @@ class AssemblerRenderer(TextRenderer):
         return self.string_prefix() if first_is_string else self.byte_prefix()
 
     def translate_expression(self, expr: str) -> str:
-        """Translate a driver-supplied operand/data expression into this
-        assembler's syntax.
+        """Render a :class:`~dasmos.core.expr.Raw` node's text.
 
-        Driver scripts author expressions (via ``expr`` / ``expr_label``
-        / ``code_ptr``) in the beebasm/py8dis convention they were
-        written against — most notably ``&HH`` for hex. Default: emit
-        verbatim (beebasm). Backends whose literal syntax differs
-        override this (64tass rewrites ``&HH`` to ``$HH``). This is the
-        one place a driver's assembler-specific expression text is
-        adapted, so a second backend doesn't mis-assemble it.
-
-        Applies only to :class:`~dasmos.core.expr.Raw` nodes (legacy
-        dialect strings); structured :class:`~dasmos.core.expr.Expr`
-        trees are rendered by :meth:`render_expression`, which needs no
-        dialect translation.
+        ``Raw`` is the fallback for a driver string that
+        :mod:`dasmos.core.expr_parse` could not parse into a structured
+        tree — it is emitted verbatim in the beebasm/py8dis dialect it
+        was authored in. Structured trees never reach here; they go
+        through :meth:`render_expression`, which emits each backend's own
+        syntax directly. Default is verbatim; a backend could override to
+        best-effort-adapt an unparseable string, but in practice the
+        parser covers the whole dialect grammar, so this is rarely (if
+        ever) exercised.
         """
         return expr
 
@@ -1956,6 +1958,9 @@ class AssemblerRenderer(TextRenderer):
                 self._render_ref_node(ir, e, active_move),
                 self._ATOM_PRECEDENCE,
             )
+        if isinstance(e, Group):
+            inner, _ = self._emit_expr(e.inner, ir, active_move)
+            return f"({inner})", self._ATOM_PRECEDENCE
         if isinstance(e, Unary):
             return self._emit_unary(e, ir, active_move)
         if isinstance(e, Binary):
@@ -1995,8 +2000,11 @@ class AssemblerRenderer(TextRenderer):
         prec = self._UNARY_PRECEDENCE[e.op]
         if e.op in (UnaryOp.LOWBYTE, UnaryOp.HIGHBYTE):
             # Byte-selects always parenthesise their operand, so its own
-            # precedence is irrelevant and no ambiguity can arise.
-            inner, _ = self._emit_expr(e.operand, ir, active_move)
+            # precedence is irrelevant and no ambiguity can arise. An
+            # explicit Group directly inside would double the parens —
+            # unwrap one level.
+            operand = e.operand.inner if isinstance(e.operand, Group) else e.operand
+            inner, _ = self._emit_expr(operand, ir, active_move)
             render = (
                 self.render_lowbyte if e.op is UnaryOp.LOWBYTE
                 else self.render_highbyte

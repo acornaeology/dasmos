@@ -1683,7 +1683,7 @@ class TestCodePtr:
 
         text = roundtrip_via_beebasm(source, 0x8000, configure)
         # Rendered expression includes the -1 offset.
-        assert "equw target-1" in text
+        assert "equw target - 1" in text
 
 
 @pytest.mark.beebasm

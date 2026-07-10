@@ -33,29 +33,8 @@ validated the same way beebasm's is; see ``tests/test_tass64.py``.
 
 from __future__ import annotations
 
-import re
-
 from dasmos.asm_renderer import AssemblerRenderer
 from dasmos.core.expr import BinOp
-
-# Beebasm/py8dis hex literal (``&HH``) as it appears embedded in a
-# driver-authored expression string. In that dialect ``&`` is *always*
-# the hex sigil (bitwise-AND is the ``AND`` keyword), so rewriting every
-# ``&<hexdigits>`` to 64tass's ``$<hexdigits>`` is unambiguous.
-_BEEBASM_HEX_IN_EXPR_RE = re.compile(r"&([0-9A-Fa-f]+)")
-
-# Beebasm's expression operators / functions and their 64tass spellings.
-# Applied after the hex rewrite. Word-boundaried so they only match
-# whole tokens (``\bOR\b`` does not fire inside ``EOR``). ``HI(``/``LO(``
-# are beebasm's hi/lo-byte functions; 64tass uses the ``>``/``<`` unary
-# operators, which keep the parentheses that follow.
-_BEEBASM_EXPR_SUBS = (
-    (re.compile(r"\bHI\("), ">("),
-    (re.compile(r"\bLO\("), "<("),
-    (re.compile(r"\bAND\b"), "&"),
-    (re.compile(r"\bEOR\b"), "^"),
-    (re.compile(r"\bOR\b"), "|"),
-)
 
 
 class Tass64Renderer(AssemblerRenderer):
@@ -227,13 +206,10 @@ class Tass64Renderer(AssemblerRenderer):
             BinOp.XOR: "^", BinOp.SHL: "<<", BinOp.SHR: ">>",
         }[op]
 
-    def translate_expression(self, expr: str) -> str:
-        # Driver-authored (and INKEY-derived) expressions use beebasm's
-        # dialect: ``&HH`` hex, ``HI``/``LO`` byte functions, and the
-        # ``AND`` / ``EOR`` / ``OR`` bitwise-operator keywords. Rewrite
-        # each to 64tass syntax. Hex first (so ``&FF`` → ``$FF`` before
-        # any operator pass), then the operators/functions.
-        expr = _BEEBASM_HEX_IN_EXPR_RE.sub(r"$\1", expr)
-        for pattern, repl in _BEEBASM_EXPR_SUBS:
-            expr = pattern.sub(repl, expr)
-        return expr
+    # No ``translate_expression`` override is needed: driver-authored
+    # dialect strings are parsed into structured Expr trees at
+    # registration time (dasmos.core.expr_parse) and rendered through the
+    # tokens/precedence above, so nothing beebasm-flavoured reaches this
+    # backend. A Raw node (an unparseable string) falls back to the base
+    # verbatim behaviour, which the round-trip oracle confirms is never
+    # exercised by the sibling ROMs.

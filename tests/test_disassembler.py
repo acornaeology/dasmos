@@ -14,7 +14,7 @@ import pytest
 
 from dasmos.core.annotations import Align, DecodedAnnotation
 from dasmos.core.classification import Byte, Fill, String, Word
-from dasmos.core.expr import Raw
+from dasmos.core.expr import canonical_text
 from dasmos.core.data_type import DataType, DecodedValue
 from dasmos.core.memory import BinaryAddr, RuntimeAddr
 from dasmos.core.move import BASE_MOVE_ID
@@ -203,7 +203,8 @@ class TestLabelDelegation:
         d = Disassembler(cpu=_StubCpu())
         d.expr_label(0x8000, "base + 4")
         label = d.labels.get_label(0x8000)
-        assert "base + 4" in label.expressions[BASE_MOVE_ID]
+        stored = label.expressions[BASE_MOVE_ID]
+        assert [canonical_text(e) for e in stored] == ["base + 4"]
 
 
 # ---------------------------------------------------------------------------
@@ -253,7 +254,9 @@ class TestExpressions:
     def test_expr_records_per_address(self):
         d = Disassembler(cpu=_StubCpu())
         d.expr(0x8001, "num_lives + 1")
-        assert d.expressions.get(0x8001) == Raw("num_lives + 1")
+        # The string is parsed into a structured tree; canonicalising
+        # it round-trips to the original text.
+        assert canonical_text(d.expressions.get(0x8001)) == "num_lives + 1"
 
 
 # ---------------------------------------------------------------------------

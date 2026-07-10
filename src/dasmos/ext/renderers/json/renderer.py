@@ -81,6 +81,7 @@ from dasmos.core.expr import (
     BinOp,
     Binary,
     Expr,
+    Group,
     Int,
     Radix,
     Raw,
@@ -88,6 +89,7 @@ from dasmos.core.expr import (
     Sym,
     Unary,
     UnaryOp,
+    canonical_text,
 )
 from dasmos.core.format_hint import FormatHint
 from dasmos.core.markdown_asm import markdown_normalize_headings
@@ -818,7 +820,7 @@ class JsonRenderer(Renderer[StructuredOutput]):
             return name
         for expr_list in label.expressions.values():
             for expr in expr_list:
-                return expr
+                return canonical_text(expr)
         return None
 
     @staticmethod
@@ -892,8 +894,11 @@ class JsonRenderer(Renderer[StructuredOutput]):
             return self._addr_label_or_hex(ir, int(e.runtime_addr), width=16)
         if isinstance(e, Int):
             return self._expr_int_text(e)
+        if isinstance(e, Group):
+            return f"({self._expr_text(e.inner, ir)})"
         if isinstance(e, Unary):
-            inner = self._expr_text(e.operand, ir)
+            operand = e.operand.inner if isinstance(e.operand, Group) else e.operand
+            inner = self._expr_text(operand, ir)
             if e.op is UnaryOp.LOWBYTE:
                 return f"<({inner})"
             if e.op is UnaryOp.HIGHBYTE:

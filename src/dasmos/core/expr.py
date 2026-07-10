@@ -155,6 +155,17 @@ class Binary(Expr):
 
 
 @dataclass(frozen=True)
+class Group(Expr):
+    """Explicit parenthesisation the author wrote for readability, even
+    where operator precedence makes it redundant. Always renders its
+    parentheses, so ``(255 - x) EOR 128`` keeps its grouping rather than
+    collapsing to ``255 - x EOR 128``.
+    """
+
+    inner: Expr
+
+
+@dataclass(frozen=True)
 class Raw(Expr):
     """A pre-formatted expression string in the beebasm/py8dis dialect.
 
@@ -211,9 +222,67 @@ def hi(operand) -> Unary:
     return Unary(UnaryOp.HIGHBYTE, _coerce(operand))
 
 
+def group(operand) -> Group:
+    """Force explicit parentheses around ``operand``."""
+    return Group(_coerce(operand))
+
+
 def raw(text: str) -> Raw:
     """Wrap a pre-formatted dialect string as an opaque expression."""
     return Raw(text)
+
+
+_CANONICAL_BINOP = {
+    BinOp.ADD: "+", BinOp.SUB: "-", BinOp.MUL: "*", BinOp.DIV: "/",
+    BinOp.MOD: "MOD", BinOp.AND: "AND", BinOp.OR: "OR", BinOp.XOR: "EOR",
+    BinOp.SHL: "<<", BinOp.SHR: ">>",
+}
+
+
+def canonical_text(e: Expr) -> str:
+    """A neutral, IR-free string form of ``e`` for name tables,
+    dedup, and the JSON ``text`` field. Uses the historical
+    beebasm-flavoured spelling (``&`` hex, ``AND``/``EOR``). A
+    :class:`Ref` renders as a bare hex address (no labels to consult
+    here); resolved names come from a renderer's
+    ``render_expression`` instead.
+    """
+    if isinstance(e, Raw):
+        return e.text
+    if isinstance(e, Sym):
+        return e.name
+    if isinstance(e, Ref):
+        a = e.runtime_addr
+        return f"&{a:02x}" if a <= 0xFF else f"&{a:04x}"
+    if isinstance(e, Int):
+        v = e.value
+        if e.radix is Radix.DEC:
+            return str(v)
+        if e.radix is Radix.HEX:
+            return f"&{v:02x}" if v <= 0xFF else f"&{v:04x}"
+        if e.radix is Radix.BIN:
+            return f"%{v:08b}"
+        if e.radix is Radix.CHAR and 0x20 <= v <= 0x7E:
+            return f"'{chr(v)}'"
+        return str(v) if 0 <= v <= 9 else (
+            f"&{v:02x}" if v <= 0xFF else f"&{v:04x}"
+        )
+    if isinstance(e, Group):
+        return f"({canonical_text(e.inner)})"
+    if isinstance(e, Unary):
+        inner = canonical_text(e.operand)
+        if e.op is UnaryOp.LOWBYTE:
+            return f"<({inner})"
+        if e.op is UnaryOp.HIGHBYTE:
+            return f">({inner})"
+        token = {UnaryOp.NEG: "-", UnaryOp.POS: "+", UnaryOp.INVERT: "~"}[e.op]
+        return f"{token}{inner}"
+    if isinstance(e, Binary):
+        return (
+            f"{canonical_text(e.left)} {_CANONICAL_BINOP[e.op]} "
+            f"{canonical_text(e.right)}"
+        )
+    raise TypeError(f"cannot canonicalise expression node {type(e).__name__}")
 
 
 def as_expr(value) -> Expr:

@@ -633,3 +633,54 @@ one assembler's convention — the same lesson as
   feature is built generic-first.
 - Validates the D-024 thesis prospectively: the second backend earns
   its keep by shaping the *next* feature, not just the current one.
+
+
+### D-026: Assembler-neutral driver expressions (Expr trees)
+
+**Status**: accepted, implemented. Full design in
+`docs/design/expression-system.md`.
+
+**Context**: Drivers authored operand/data values as pre-formatted
+beebasm-dialect strings (`"imm_op_dispatch_lo-&81"`,
+`"(a - b - 1) AND &FF"`) stored verbatim in the IR. The 64tass backend
+could only cope via a regex rewrite (`translate_expression`) — a
+heuristic that cannot handle operator-precedence differences, radix
+intent, or structural analysis, and that every new backend would have to
+re-implement. This was the leak D-024 flagged.
+
+**Decision**: Represent an expression as an assembler-neutral **tree**
+(`dasmos.core.expr`: `Int`, `Ref`, `Sym`, `Unary`, `Binary`, `Group`,
+`Raw`) with an ergonomic DSL (`dasmos.expr`: `ref`/`sym`/`lo`/`hi`/
+`hexlit` plus Python operator overloads). `AssemblerRenderer`
+`render_expression` walks the tree and emits each backend's own tokens
+and — via a per-backend precedence table — its own **minimal
+parenthesisation**, so beebasm and 64tass render the one tree correctly
+regardless of how their grammars rank operators (a `Group` node
+preserves author parens for readability). JSON emits the tree through the
+same walk. Legacy strings are **parsed at registration time**
+(`dasmos.core.expr_parse`, a precedence-climbing parser over the closed
+dialect grammar) inside `Disassembler.expr`/`expr_label`; `code_ptr` and
+the INKEY path build `Ref`-based trees directly. Anything unparseable
+falls back to a `Raw` node (verbatim).
+
+**Consequences**:
+
+- The `translate_expression` regex is **retired**: with the parser
+  covering the whole dialect, the sibling-ROM 64tass round-trips pass
+  byte-identically with the regex neutered, proving no dialect string
+  reaches the backend unstructured.
+- Every existing string-based driver migrated with **no edits** — the
+  parser runs in the disassembler, not the porter (a deliberate
+  deviation from the memo, which proposed a porter pass). New drivers use
+  the DSL directly.
+- Rendered text gained consistent operator spacing (`evntv+1` →
+  `evntv + 1`, `<(name-1)` → `<(name - 1)`); the goldens were regenerated
+  once and the **binary** round-trip oracle confirmed the assembled bytes
+  are unchanged for both backends.
+- `code_ptr`'s deferred-string mechanism
+  (`_register/_resolve_deferred_expressions`) is deleted — a `Ref`
+  resolves its name at render time, which is inherently late-bound.
+- `JsonRenderer` still stringifies expressions (beebasm-flavoured
+  `operand` text) rather than emitting the structured tree as a new JSON
+  field; upgrading the JSON schema to carry the tree is a deliberate
+  follow-up, not done here.

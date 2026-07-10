@@ -9,6 +9,7 @@ follows the assembler abstraction.
 
 import pytest
 
+from dasmos.core.expr import Raw, canonical_text
 from dasmos.core.labels import (
     ExplicitName,
     Label,
@@ -104,13 +105,15 @@ class TestLabel:
         lab = Label(RuntimeAddr(0x8000))
         lab.add_expression("base + 4", move_id=0)
         lab.add_expression("base + 8", move_id=0)
-        assert lab.expressions[0] == ["base + 4", "base + 8"]
+        # Strings are coerced to Raw nodes (the manager parses dialect
+        # strings; the low-level Label just wraps).
+        assert lab.expressions[0] == [Raw("base + 4"), Raw("base + 8")]
 
     def test_add_expression_is_idempotent_on_duplicate(self):
         lab = Label(RuntimeAddr(0x8000))
         lab.add_expression("base + 4", move_id=0)
         lab.add_expression("base + 4", move_id=0)
-        assert lab.expressions[0] == ["base + 4"]
+        assert lab.expressions[0] == [Raw("base + 4")]
 
     def test_add_reference_collects_binary_locations(self):
         lab = Label(RuntimeAddr(0x8000))
@@ -278,7 +281,10 @@ class TestLabelManagerExpression:
     def test_add_expression(self, lm):
         lm.add_expression(0x8000, "base + 4")
         lab = lm.get_label(RuntimeAddr(0x8000))
-        assert "base + 4" in lab.expressions[BASE_MOVE_ID]
+        # The manager parses the dialect string into a tree; its
+        # canonical form round-trips to the original text.
+        stored = lab.expressions[BASE_MOVE_ID]
+        assert [canonical_text(e) for e in stored] == ["base + 4"]
 
     def test_add_expression_rejects_simple_identifier(self, lm):
         # An identifier is a name, not an expression.

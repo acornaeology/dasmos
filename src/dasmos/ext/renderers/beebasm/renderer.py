@@ -360,36 +360,6 @@ class BeebasmRenderer(AssemblerRenderer):
             f"BeebasmRenderer doesn't yet handle FormatHint.{hint.name}"
         )
 
-    def _render_inkey_immediate(self, value: int, operand_addr: int) -> str:
-        """Translate a :class:`FormatHint.INKEY` byte to its symbolic
-        beebasm form.
-
-        The byte the disassembler sees is ``X = (255 - inkey_key_<n>)
-        EOR 128`` (mod 256), where ``inkey_key_<n>`` is the unsigned-
-        byte form of the BBC's negative key number — e.g.
-        ``inkey_key_ctrl`` is registered as the constant ``254`` so
-        that ``(255 - 254) EOR 128 = &81`` is the byte the OS expects
-        for "scan for ctrl". To recover the symbol, invert:
-        ``inkey_key = (255 - byte) EOR 128``.
-
-        Lazy-imports the BBC INKEY table from the ``acorn_mos`` env
-        so the renderer stays machine-agnostic. Bytes that don't
-        decode to a named INKEY key fall back to a hex literal with a
-        one-time warning.
-        """
-        from dasmos.ext.environments.acorn_mos.enums import INKEY_ENUM
-        inkey_key = (255 - value) ^ 0x80
-        name = INKEY_ENUM.get(inkey_key)
-        if name is None:
-            warnings.warn(
-                f"FormatHint.INKEY at &{operand_addr:04x} — byte "
-                f"&{value:02x} doesn't decode to a named BBC INKEY "
-                f"scan code; falling back to a hex literal.",
-                stacklevel=2,
-            )
-            return self.hex2(value)
-        return f"(255 - {name}) EOR 128"
-
     def _render_char_for_explicit_hint(self, value: int) -> str | None:
         """Best-effort beebasm character literal for an explicitly-
         marked ``CHAR`` byte. Returns ``None`` when the byte has no

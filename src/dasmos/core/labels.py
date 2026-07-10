@@ -33,6 +33,8 @@ from dasmos.core.memory import (
     ReferenceKind,
     RuntimeAddr,
 )
+from dasmos.core.expr import Expr, as_expr, canonical_text
+from dasmos.core.expr_parse import parse_or_raw
 from dasmos.core.move import BASE_MOVE_ID, MoveManager
 from dasmos.exceptions import DasmosError
 
@@ -92,7 +94,7 @@ class Label:
         # Per-move-id collections.
         self.explicit_names: dict[int, list[ExplicitName]] = defaultdict(list)
         self.local_labels: dict[int, list[LocalLabel]] = defaultdict(list)
-        self.expressions: dict[int, list[str]] = defaultdict(list)
+        self.expressions: dict[int, list[Expr]] = defaultdict(list)
         # Move-ids at which this label could be emitted inline.
         self.emit_opportunities: set[int] = set()
         # Whether the label can appear inline (vs. as an EQU at the top).
@@ -112,9 +114,10 @@ class Label:
     def add_local_label(self, local_label: LocalLabel, move_id: int) -> None:
         self.local_labels[move_id].append(local_label)
 
-    def add_expression(self, expression: str, move_id: int) -> None:
-        if expression not in self.all_names():
-            self.expressions[move_id].append(expression)
+    def add_expression(self, expression: "Expr | str", move_id: int) -> None:
+        expr = as_expr(expression)
+        if canonical_text(expr) not in self.all_names():
+            self.expressions[move_id].append(expr)
 
     def add_reference(
         self,
@@ -162,7 +165,7 @@ class Label:
         result.update(self.explicit_name_texts())
         result.update(self.local_label_names())
         for expr_list in self.expressions.values():
-            result.update(expr_list)
+            result.update(canonical_text(e) for e in expr_list)
         return result
 
     def explicit_name_texts(self) -> set[str]:
@@ -218,7 +221,7 @@ class Label:
             for ll in ll_list:
                 result[move_id].add(ll.name)
         for move_id, expr_list in self.expressions.items():
-            result[move_id].update(expr_list)
+            result[move_id].update(canonical_text(e) for e in expr_list)
         return dict(result)
 
     def is_only_an_expression(self) -> bool:
@@ -371,15 +374,17 @@ class LabelManager:
     def add_expression(
         self,
         runtime_addr,
-        expression: str,
+        expression: "Expr | str",
         *,
         move_id: int | None = None,
     ) -> Label:
-        if _is_identifier(expression):
-            raise LabelError(
-                f"{expression!r} looks like an identifier, not an expression — "
-                f"use add_label() for plain names"
-            )
+        if isinstance(expression, str):
+            if _is_identifier(expression):
+                raise LabelError(
+                    f"{expression!r} looks like an identifier, not an "
+                    f"expression — use add_label() for plain names"
+                )
+            expression = parse_or_raw(expression)
         move_id = self._resolve_move_id(move_id)
         label = self._get_or_create(runtime_addr)
         label.add_expression(expression, move_id=move_id)

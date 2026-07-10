@@ -133,11 +133,14 @@ class TestRendering:
         e = sym("a") - sym("b") - sym("c")   # (a - b) - c
         assert self.r_bee(e) == "a - b - c"
 
-    def test_raw_node_passes_through_dialect_adapter(self):
-        # Raw is the legacy escape hatch: beebasm verbatim, 64tass
-        # dialect-translated.
+    def test_raw_node_renders_verbatim(self):
+        # Raw is the rare fallback for a string the dialect parser could
+        # not structure. It is emitted verbatim by both backends (the old
+        # 64tass regex adapter was retired once the parser covered the
+        # whole grammar); real driver strings parse to structured nodes
+        # and never hit this path.
         assert self.r_bee(Raw("x-&81")) == "x-&81"
-        assert self.r_tass(Raw("x-&81")) == "x-$81"
+        assert self.r_tass(Raw("x-&81")) == "x-&81"
 
 
 # ---------------------------------------------------------------------------

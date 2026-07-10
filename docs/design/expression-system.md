@@ -1,8 +1,12 @@
 # Design memo: assembler-neutral driver expressions
 
-**Status**: proposal (not yet implemented). Supersedes the string-based
+**Status**: implemented (see decision D-026). Supersedes the string-based
 `expr` / `expr_label` / `code_ptr` text and the `translate_expression`
-regex adapter introduced in D-024.
+regex adapter introduced in D-024. One deviation from the plan below: the
+dialect parser runs at *registration time* inside `Disassembler.expr` /
+`expr_label` (`dasmos.core.expr_parse`) rather than in the porter, so
+every existing string-based driver migrated with no edits and the porter
+needed no changes.
 
 ## 1. Motivation
 

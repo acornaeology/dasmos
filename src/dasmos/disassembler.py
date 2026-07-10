@@ -43,7 +43,10 @@ from dasmos.core.annotations import (
 )
 from dasmos.core.classification import Byte, ExpressionRegistry, Fill, String, Word
 from dasmos.core.data_type import DataType, DecodedValue
-from dasmos.core.expr import Expr
+from dasmos.core.expr import Expr, Ref
+from dasmos.core.expr import hi as expr_hi
+from dasmos.core.expr import lo as expr_lo
+from dasmos.core.expr_parse import parse_or_raw
 from dasmos.core.format_hint import FormatHint, FormatHintRegistry
 from dasmos.core.config import Config
 from dasmos.core.disassembly import (
@@ -219,14 +222,6 @@ class Disassembler:
         # CPU plug-in opts out of state tracking
         # (``Cpu.initial_state`` returns None).
         self._cpu_state_at: dict[int, object] = {}
-        # Deferred expressions: a list of ``(binary_addr,
-        # target_runtime_addr, build_text)`` triples registered by
-        # ``code_ptr`` / ``rts_code_ptr`` (and any future caller that
-        # wants to resolve the target's label name AFTER the trace
-        # has filled out the auto-label store). Resolved by
-        # :meth:`_resolve_deferred_expressions` after auto-label
-        # generation.
-        self._deferred_expressions: list[tuple[int, int, object]] = []
         # Post-trace JSR analyzers registered by Environment plug-ins
         # (or driver scripts). Each maps a target runtime address to
         # a callable ``analyzer(disassembler, jsr_binary_addr,
@@ -709,31 +704,23 @@ class Disassembler:
             | (self._memory.get_u8(binary_hi) << 8)
         ) + offset
         self.entry(target, name=label_name)
-        # Format: ``label-offset`` for adjacent equw,
-        # ``<(label-offset)`` / ``>(label-offset)`` for split lo/hi
-        # tables (no space — matches the standard 6502 lo/hi
-        # operator notation). The label name is resolved LAZILY at
-        # render time via :meth:`_register_deferred_expression` so
-        # subroutines registered LATER in the driver script still
-        # surface symbolically.
-        offset_str = "" if offset == 0 else f"-{offset}"
+        # Build an assembler-neutral expression tree referencing the
+        # target: ``Ref(target) [- offset]`` for an adjacent equw, and
+        # its low/high byte for split lo/hi tables. A ``Ref`` resolves
+        # its name at render time, so a subroutine registered LATER in
+        # the driver script still surfaces symbolically (this replaces
+        # the old deferred-string mechanism).
+        base: Expr = Ref(target)
+        if offset:
+            base = base - offset
         if int(binary_hi) == int(binary_lo) + 1:
             self.word(runtime_addr_lo)
-            self._register_deferred_expression(
-                int(binary_lo), target,
-                lambda name: f"{name}{offset_str}",
-            )
+            self._expressions.add(int(binary_lo), base)
         else:
             self.byte(runtime_addr_lo, 1)
-            self._register_deferred_expression(
-                int(binary_lo), target,
-                lambda name: f"<({name}{offset_str})",
-            )
+            self._expressions.add(int(binary_lo), expr_lo(base))
             self.byte(runtime_addr_hi, 1)
-            self._register_deferred_expression(
-                int(binary_hi), target,
-                lambda name: f">({name}{offset_str})",
-            )
+            self._expressions.add(int(binary_hi), expr_hi(base))
 
     def rts_code_ptr(
         self,
@@ -1101,6 +1088,8 @@ class Disassembler:
         """
         self._raise_if_disassembled("expr")
         binary_addr = self._resolve_to_binary_addr(runtime_addr, move)
+        if isinstance(expression, str):
+            expression = parse_or_raw(expression)
         self._expressions.add(binary_addr, expression)
 
     def format_hint(
@@ -1439,10 +1428,6 @@ class Disassembler:
         if self.auto_labels_enabled:
             self._generate_auto_labels(refs_by_addr)
             self._synthesise_offset_bases()
-        # Now that all labels are known (driver-supplied + auto-
-        # generated), resolve the deferred expressions registered
-        # earlier (by ``code_ptr`` / ``rts_code_ptr``).
-        self._resolve_deferred_expressions()
         self._disassembled = True
         return IntermediateRepresentation(self)
 
@@ -1825,55 +1810,6 @@ class Disassembler:
                     addr, Byte(run_end - addr),
                 )
                 addr = run_end
-
-    # -- internals: deferred expressions -------------------------------
-
-    def _register_deferred_expression(
-        self, binary_addr: int, target_runtime_addr: int, build_text,
-    ) -> None:
-        """Record a callable that builds the expression text for
-        ``binary_addr`` based on the label name at
-        ``target_runtime_addr``. Resolved by
-        :meth:`_resolve_deferred_expressions` after the trace +
-        auto-label pass, so labels registered LATER in the driver
-        script (e.g. ``rts_code_ptr`` at line 1769 referencing a
-        ``subroutine`` at line 3087) still surface symbolically.
-
-        ``build_text`` is a callable taking the resolved label name
-        and returning the final expression text — see callers in
-        :meth:`code_ptr` for the typical lambdas
-        (``lambda n: f"<({n}-1)"`` etc.).
-        """
-        self._deferred_expressions.append(
-            (int(binary_addr), int(target_runtime_addr), build_text),
-        )
-
-    def _resolve_deferred_expressions(self) -> None:
-        """Iterate :attr:`_deferred_expressions`, resolve each
-        target's label name (now that auto-label generation is done),
-        and write the final text to :attr:`_expressions`. Falls back
-        to the literal hex address only when no name exists at all
-        for the target.
-        """
-        for binary_addr, target, build_text in self._deferred_expressions:
-            label = self._labels.get_label(target)
-            if label is not None:
-                # Match the JsonRenderer's "first registered name"
-                # tie-break (insertion order, NOT alphabetical) so
-                # the deferred-expression text agrees with operand
-                # rendering at the same target.
-                name = None
-                for name_list in label.explicit_names.values():
-                    for explicit in name_list:
-                        name = explicit.text
-                        break
-                    if name is not None:
-                        break
-                if name is None:
-                    name = f"&{target:04x}"
-            else:
-                name = f"&{target:04x}"
-            self._expressions.add(binary_addr, build_text(name))
 
     # -- internals: post-trace CPU-state pass ---------------------------
 

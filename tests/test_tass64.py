@@ -110,27 +110,6 @@ class TestRelocationHooks:
         assert lines == ["    .here", ""]
 
 
-class TestExpressionTranslation:
-    def setup_method(self):
-        self.r = Tass64Renderer()
-
-    def test_ampersand_hex_becomes_dollar(self):
-        assert self.r.translate_expression("label-&81") == "label-$81"
-        assert self.r.translate_expression("&FFEE") == "$FFEE"
-
-    def test_hi_lo_functions_become_operators(self):
-        assert self.r.translate_expression("HI(star_run-1)") == ">(star_run-1)"
-        assert self.r.translate_expression("LO(star_run-1)") == "<(star_run-1)"
-
-    def test_bitwise_keywords(self):
-        assert self.r.translate_expression("x AND &FF") == "x & $FF"
-        assert self.r.translate_expression("(255 - k) EOR 128") == "(255 - k) ^ 128"
-
-    def test_or_does_not_match_inside_eor(self):
-        # \bOR\b must not corrupt EOR.
-        assert self.r.translate_expression("a EOR b") == "a ^ b"
-
-
 class TestStringDirective:
     def setup_method(self):
         self.r = Tass64Renderer()
