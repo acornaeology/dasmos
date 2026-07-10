@@ -77,6 +77,18 @@ from dasmos.core.annotations import (
     DecodedAnnotation,
 )
 from dasmos.core.classification import Byte, Fill, String, Word
+from dasmos.core.expr import (
+    BinOp,
+    Binary,
+    Expr,
+    Int,
+    Radix,
+    Raw,
+    Ref,
+    Sym,
+    Unary,
+    UnaryOp,
+)
 from dasmos.core.format_hint import FormatHint
 from dasmos.core.markdown_asm import markdown_normalize_headings
 from dasmos.core.memory import INDEXED_BASE_ACCESS, BinaryAddr, RuntimeAddr
@@ -632,7 +644,11 @@ class JsonRenderer(Renderer[StructuredOutput]):
         expr = ir.expressions.get_or_none(operand_addr)
         symbol: str
         if expr is not None:
-            symbol = ("#" + expr) if kind is OperandKind.IMMEDIATE else expr
+            expr_text = self._expr_text(expr, ir)
+            symbol = (
+                ("#" + expr_text) if kind is OperandKind.IMMEDIATE
+                else expr_text
+            )
         elif kind is OperandKind.IMMEDIATE:
             value = ir.memory.get_u8(operand_addr)
             hint = ir.format_hints.get_or_none(operand_addr)
@@ -853,8 +869,65 @@ class JsonRenderer(Renderer[StructuredOutput]):
             e = ir.expressions.get_or_none(binary_addr + i)
             if e is not None:
                 has_any = True
-            out.append(e)
+                out.append(self._expr_text(e, ir))
+            else:
+                out.append(None)
         return out if has_any else None
+
+    def _expr_text(self, e: Expr, ir) -> str:
+        """Render an :class:`~dasmos.core.expr.Expr` as JSON operand text.
+
+        JSON keeps the historical beebasm-flavoured operand spelling
+        (``&`` hex, ``AND``/``EOR``, ``<(...)`` byte-select). A
+        :class:`~dasmos.core.expr.Raw` node — a legacy dialect string —
+        is emitted verbatim. Structured nodes are fully parenthesised;
+        JSON text is descriptive, not assembled, so minimal-paren
+        precedence handling is unnecessary here.
+        """
+        if isinstance(e, Raw):
+            return e.text
+        if isinstance(e, Sym):
+            return e.name
+        if isinstance(e, Ref):
+            return self._addr_label_or_hex(ir, int(e.runtime_addr), width=16)
+        if isinstance(e, Int):
+            return self._expr_int_text(e)
+        if isinstance(e, Unary):
+            inner = self._expr_text(e.operand, ir)
+            if e.op is UnaryOp.LOWBYTE:
+                return f"<({inner})"
+            if e.op is UnaryOp.HIGHBYTE:
+                return f">({inner})"
+            token = {UnaryOp.NEG: "-", UnaryOp.POS: "+",
+                     UnaryOp.INVERT: "~"}.get(e.op, "")
+            return f"{token}({inner})"
+        if isinstance(e, Binary):
+            token = {
+                BinOp.ADD: "+", BinOp.SUB: "-", BinOp.MUL: "*", BinOp.DIV: "/",
+                BinOp.MOD: "MOD", BinOp.AND: "AND", BinOp.OR: "OR",
+                BinOp.XOR: "EOR", BinOp.SHL: "<<", BinOp.SHR: ">>",
+            }[e.op]
+            return (
+                f"({self._expr_text(e.left, ir)} {token} "
+                f"{self._expr_text(e.right, ir)})"
+            )
+        raise TypeError(f"cannot render expression node {type(e).__name__}")
+
+    @staticmethod
+    def _expr_int_text(node: Int) -> str:
+        v = node.value
+        if node.radix is Radix.DEC:
+            return str(v)
+        if node.radix is Radix.HEX:
+            return f"&{v:02x}" if v <= 0xFF else f"&{v:04x}"
+        if node.radix is Radix.BIN:
+            return f"%{v:08b}"
+        if node.radix is Radix.CHAR and 0x20 <= v <= 0x7E:
+            return f"'{chr(v)}'"
+        # AUTO / CHAR fallback: small decimals bare, else hex.
+        if 0 <= v <= 9:
+            return str(v)
+        return f"&{v:02x}" if v <= 0xFF else f"&{v:04x}"
 
     def _collect_format_hints(
         self, ir, binary_addr: int, length: int, element_size: int,

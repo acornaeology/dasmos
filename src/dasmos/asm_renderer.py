@@ -30,6 +30,18 @@ from dasmos.core.annotations import (
     DecodedAnnotation,
 )
 from dasmos.core.classification import Byte, Fill, String, Word
+from dasmos.core.expr import (
+    BinOp,
+    Binary,
+    Expr,
+    Int,
+    Radix,
+    Raw,
+    Ref,
+    Sym,
+    Unary,
+    UnaryOp,
+)
 from dasmos.core.format_hint import FormatHint
 from dasmos.core.markdown_asm import markdown_to_asm_text, strip_address_uri_links
 from dasmos.core.memory import BinaryAddr
@@ -1536,7 +1548,7 @@ class AssemblerRenderer(TextRenderer):
         # 1. User-supplied expression takes precedence over everything.
         expr = ir.expressions.get_or_none(operand_addr)
         if expr is not None:
-            return self.translate_expression(expr)
+            return self.render_expression(expr, ir, active_move=active_move)
 
         kind = opcode.addressing_mode.operand_kind
         using_addr = int(binary_addr)
@@ -1771,7 +1783,7 @@ class AssemblerRenderer(TextRenderer):
                 addr = int(binary_addr) + i
                 expr = ir.expressions.get_or_none(addr)
                 if expr is not None:
-                    parts.append(self.translate_expression(expr))
+                    parts.append(self.render_expression(expr, ir))
                     continue
                 value = ir.memory.get_u8(addr)
                 hint = ir.format_hints.get_or_none(addr)
@@ -1803,7 +1815,7 @@ class AssemblerRenderer(TextRenderer):
                 word_binary = int(binary_addr) + i * 2
                 expr = ir.expressions.get_or_none(word_binary)
                 if expr is not None:
-                    parts.append(self.translate_expression(expr))
+                    parts.append(self.render_expression(expr, ir))
                 else:
                     w = ir.memory.get_u16_le(word_binary)
                     parts.append(self._addr_text(ir, w, width=16))
@@ -1872,5 +1884,150 @@ class AssemblerRenderer(TextRenderer):
         override this (64tass rewrites ``&HH`` to ``$HH``). This is the
         one place a driver's assembler-specific expression text is
         adapted, so a second backend doesn't mis-assemble it.
+
+        Applies only to :class:`~dasmos.core.expr.Raw` nodes (legacy
+        dialect strings); structured :class:`~dasmos.core.expr.Expr`
+        trees are rendered by :meth:`render_expression`, which needs no
+        dialect translation.
         """
         return expr
+
+    # -- structured expression rendering ----------------------------------
+    #
+    # A driver-authored expression is an assembler-neutral
+    # :class:`~dasmos.core.expr.Expr` tree. ``render_expression`` walks it
+    # and emits this backend's syntax, inserting parentheses per this
+    # backend's own operator precedence so the emitted text evaluates to
+    # the tree's meaning regardless of how the assembler's grammar ranks
+    # its operators. Token spellings and precedence come from overridable
+    # tables; a backend usually only sets those two.
+
+    #: Sentinel precedence for atoms (literals, names) — binds tighter
+    #: than any operator, so an atom child never gets wrapped.
+    _ATOM_PRECEDENCE = 1000
+
+    #: Binary-operator precedence (higher binds tighter). Default is
+    #: beebasm's table (from ``beebasm/src/expression.cpp``). 64tass
+    #: overrides with its C-like ranking.
+    _BINARY_PRECEDENCE = {
+        BinOp.MUL: 6, BinOp.DIV: 6, BinOp.MOD: 6,
+        BinOp.SHL: 6, BinOp.SHR: 6,
+        BinOp.ADD: 5, BinOp.SUB: 5,
+        BinOp.AND: 3,
+        BinOp.OR: 2, BinOp.XOR: 2,
+    }
+
+    #: Unary-operator precedence. Byte-selects bind tighter than
+    #: arithmetic negation in both beebasm and 64tass.
+    _UNARY_PRECEDENCE = {
+        UnaryOp.NEG: 8, UnaryOp.POS: 8, UnaryOp.INVERT: 8,
+        UnaryOp.LOWBYTE: 10, UnaryOp.HIGHBYTE: 10, UnaryOp.BANKBYTE: 10,
+    }
+
+    def _binary_token(self, op: BinOp) -> str:
+        """This backend's spelling of a binary operator (beebasm form by
+        default; 64tass overrides the bitwise operators)."""
+        return {
+            BinOp.ADD: "+", BinOp.SUB: "-", BinOp.MUL: "*", BinOp.DIV: "/",
+            BinOp.MOD: "MOD", BinOp.AND: "AND", BinOp.OR: "OR",
+            BinOp.XOR: "EOR", BinOp.SHL: "<<", BinOp.SHR: ">>",
+        }[op]
+
+    def render_expression(self, e: Expr, ir, *, active_move=None) -> str:
+        """Render an :class:`~dasmos.core.expr.Expr` to this backend's
+        operand/data syntax."""
+        text, _ = self._emit_expr(e, ir, active_move)
+        return text
+
+    def _emit_expr(self, e: Expr, ir, active_move) -> tuple[str, int]:
+        """Return ``(text, precedence)`` for ``e`` — precedence is that of
+        the top operator, or :attr:`_ATOM_PRECEDENCE` for a leaf, so the
+        caller knows whether to parenthesise it."""
+        if isinstance(e, Raw):
+            # Legacy dialect string — dialect-translate, treat as opaque
+            # atom (it already carries its own parenthesisation).
+            return self.translate_expression(e.text), self._ATOM_PRECEDENCE
+        if isinstance(e, Int):
+            return self._render_int_node(e), self._ATOM_PRECEDENCE
+        if isinstance(e, Sym):
+            return e.name, self._ATOM_PRECEDENCE
+        if isinstance(e, Ref):
+            return (
+                self._render_ref_node(ir, e, active_move),
+                self._ATOM_PRECEDENCE,
+            )
+        if isinstance(e, Unary):
+            return self._emit_unary(e, ir, active_move)
+        if isinstance(e, Binary):
+            return self._emit_binary(e, ir, active_move)
+        raise TypeError(
+            f"{type(self).__name__} cannot render expression node "
+            f"{type(e).__name__}"
+        )
+
+    def _render_int_node(self, node: Int) -> str:
+        v = node.value
+        if node.radix is Radix.CHAR:
+            lit = self.char_literal(v)
+            return lit if lit is not None else self._auto_int(v)
+        if node.radix is Radix.DEC:
+            return str(v)
+        if node.radix is Radix.HEX:
+            return self.hex(v)
+        if node.radix is Radix.BIN:
+            return self.binary_literal(v)
+        return self._auto_int(v)
+
+    def _auto_int(self, v: int) -> str:
+        """AUTO radix: small non-negative ints decimal, else hex — the
+        same heuristic as :meth:`_format_immediate_byte`, extended to
+        16-bit via :meth:`hex`."""
+        if 0 <= v <= 9:
+            return str(v)
+        return self.hex(v)
+
+    def _render_ref_node(self, ir, node: Ref, active_move) -> str:
+        """Resolve a :class:`Ref` to its label's best name, or a hex
+        literal when the address has no name."""
+        return self._addr_text(ir, int(node.runtime_addr), width=16)
+
+    def _emit_unary(self, e: Unary, ir, active_move) -> tuple[str, int]:
+        prec = self._UNARY_PRECEDENCE[e.op]
+        if e.op in (UnaryOp.LOWBYTE, UnaryOp.HIGHBYTE):
+            # Byte-selects always parenthesise their operand, so its own
+            # precedence is irrelevant and no ambiguity can arise.
+            inner, _ = self._emit_expr(e.operand, ir, active_move)
+            render = (
+                self.render_lowbyte if e.op is UnaryOp.LOWBYTE
+                else self.render_highbyte
+            )
+            return render(inner), self._ATOM_PRECEDENCE
+        inner = self._emit_child(e.operand, ir, active_move, prec, right=True)
+        token = {
+            UnaryOp.NEG: "-", UnaryOp.POS: "+", UnaryOp.INVERT: "~",
+        }[e.op]
+        return f"{token}{inner}", prec
+
+    def _emit_binary(self, e: Binary, ir, active_move) -> tuple[str, int]:
+        prec = self._BINARY_PRECEDENCE[e.op]
+        # All supported binary operators are left-associative: a left
+        # child of equal precedence needs no parens, a right child of
+        # equal precedence does.
+        left = self._emit_child(e.left, ir, active_move, prec, right=False)
+        right = self._emit_child(e.right, ir, active_move, prec, right=True)
+        return f"{left} {self._binary_token(e.op)} {right}", prec
+
+    def _emit_child(self, child, ir, active_move, parent_prec, *, right) -> str:
+        text, child_prec = self._emit_expr(child, ir, active_move)
+        needs = child_prec < parent_prec or (right and child_prec == parent_prec)
+        return f"({text})" if needs else text
+
+    def render_lowbyte(self, inner_text: str) -> str:
+        """Low byte of an already-rendered sub-expression. Default form
+        ``<(...)`` (valid in beebasm and 64tass); a backend may override
+        (e.g. beebasm ``LO(...)``)."""
+        return f"<({inner_text})"
+
+    def render_highbyte(self, inner_text: str) -> str:
+        """High byte of an already-rendered sub-expression."""
+        return f">({inner_text})"

@@ -18,6 +18,7 @@ from dasmos.core.classification import (
     String,
     Word,
 )
+from dasmos.core.expr import Raw
 from dasmos.core.memory import BinaryAddr
 
 
@@ -161,7 +162,8 @@ class TestExpressionRegistry:
         reg = ExpressionRegistry()
         reg.add(BinaryAddr(0x8000), "foo + 1")
         assert BinaryAddr(0x8000) in reg
-        assert reg.get(BinaryAddr(0x8000)) == "foo + 1"
+        # A plain string is coerced to a Raw node for back-compat.
+        assert reg.get(BinaryAddr(0x8000)) == Raw("foo + 1")
 
     def test_add_does_not_overwrite_existing(self):
         # Behaviour preserved from py8dis: the first add wins; later
@@ -171,7 +173,7 @@ class TestExpressionRegistry:
         reg = ExpressionRegistry()
         reg.add(BinaryAddr(0x8000), "first")
         reg.add(BinaryAddr(0x8000), "second")
-        assert reg.get(BinaryAddr(0x8000)) == "first"
+        assert reg.get(BinaryAddr(0x8000)) == Raw("first")
 
     def test_get_unknown_raises_key_error(self):
         reg = ExpressionRegistry()
@@ -185,7 +187,7 @@ class TestExpressionRegistry:
     def test_get_or_none_known_returns_expression(self):
         reg = ExpressionRegistry()
         reg.add(BinaryAddr(0x8000), "foo + 1")
-        assert reg.get_or_none(BinaryAddr(0x8000)) == "foo + 1"
+        assert reg.get_or_none(BinaryAddr(0x8000)) == Raw("foo + 1")
 
     def test_two_registries_are_independent(self):
         # The justification for the rewrite — module-level expressions

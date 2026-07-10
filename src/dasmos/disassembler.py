@@ -43,6 +43,7 @@ from dasmos.core.annotations import (
 )
 from dasmos.core.classification import Byte, ExpressionRegistry, Fill, String, Word
 from dasmos.core.data_type import DataType, DecodedValue
+from dasmos.core.expr import Expr
 from dasmos.core.format_hint import FormatHint, FormatHintRegistry
 from dasmos.core.config import Config
 from dasmos.core.disassembly import (
@@ -1060,24 +1061,37 @@ class Disassembler:
     def expr(
         self,
         runtime_addr,
-        expression: str,
+        expression: "Expr | str",
         *,
         move: Move | None = None,
     ):
         """Override the rendered operand at ``runtime_addr`` with the
         given ``expression``.
 
+        ``expression`` is preferably an assembler-neutral
+        :class:`~dasmos.expr.Expr` built with the DSL::
+
+            from dasmos.expr import ref, lo
+            d.expr(0x8001, ref(num_lives) + 1)
+            d.expr(0x8020, lo(ref(dispatch_lo) - 1))
+
+        Each renderer then emits its own syntax (``&``/``$`` hex,
+        ``AND``/``&``, correct parenthesisation). A plain ``str`` is
+        still accepted for backward compatibility — it is wrapped as a
+        :class:`~dasmos.expr.Raw` node and emitted verbatim (via the
+        renderer's dialect adapter), exactly as before.
+
         ``runtime_addr`` is the runtime address of the **operand byte**
         — typically one past the opcode for a single-byte-opcode CPU
         like the 6502. For example, an ``LDA #$03`` instruction at
         ``&8000`` has its operand byte at ``&8001``; calling
-        ``d.expr(0x8001, "num_lives + 1")`` makes the renderer emit
+        ``d.expr(0x8001, ref(num_lives) + 1)`` makes the renderer emit
         ``lda #num_lives + 1`` for that instruction.
 
-        The expression is emitted verbatim — the driver is responsible
-        for ensuring any names it references are valid in the rendered
-        output (typically by also defining them via :meth:`label` or
-        an external constant the assembler resolves).
+        With a raw string the driver is responsible for ensuring any
+        names it references are valid in the rendered output (typically
+        by also defining them via :meth:`label` or an external constant
+        the assembler resolves).
 
         For renderer-agnostic semantic markers (e.g. "render this byte
         as an ASCII character / decimal / hex / binary"), use

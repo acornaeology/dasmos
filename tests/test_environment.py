@@ -10,6 +10,7 @@ exercise both the abstract plug-in plumbing and the concrete
 
 import pytest
 
+from dasmos.core.expr import Raw
 from dasmos.disassembler import Disassembler
 from dasmos.exceptions import DasmosError
 from dasmos.environment import (
@@ -1555,7 +1556,7 @@ class TestAcornMosOsCallHooks:
         # The auto-expression at the LDA's operand byte resolves to
         # the constant name (so the rendered ``lda #&7c`` becomes
         # ``lda #osbyte_clear_escape``).
-        assert ir.expressions.get_or_none(0x1001) == "osbyte_clear_escape"
+        assert ir.expressions.get_or_none(0x1001) == Raw("osbyte_clear_escape")
 
     def test_osbyte_hook_unknown_value_does_nothing(self, tmp_path):
         # LDA #&20 (not in osbyte_enum) ; JSR osbyte ; RTS
@@ -1593,7 +1594,7 @@ class TestAcornMosOsCallHooks:
             c.name == "osword_read_io_memory" and c.value == 0x05
             for c in ir.constants
         )
-        assert ir.expressions.get_or_none(0x1001) == "osword_read_io_memory"
+        assert ir.expressions.get_or_none(0x1001) == Raw("osword_read_io_memory")
 
     def test_osword_hook_recognises_xy_param_block_address(self, tmp_path):
         # OSWORD calling convention: LDA #call ; LDX #lo ; LDY #hi ;
@@ -1613,9 +1614,9 @@ class TestAcornMosOsCallHooks:
         d.optional_label(0x1280, "myblock")
         ir = d.disassemble()
         # The LDX's operand at &1003 carries ``<(myblock)``.
-        assert ir.expressions.get_or_none(0x1003) == "<(myblock)"
+        assert ir.expressions.get_or_none(0x1003) == Raw("<(myblock)")
         # The LDY's operand at &1005 carries ``>(myblock)``.
-        assert ir.expressions.get_or_none(0x1005) == ">(myblock)"
+        assert ir.expressions.get_or_none(0x1005) == Raw(">(myblock)")
 
     def test_osword_hook_xy_no_label_does_nothing(self, tmp_path):
         # Same shape but no label at &1280 — the analyzer should

@@ -36,6 +36,7 @@ from __future__ import annotations
 import re
 
 from dasmos.asm_renderer import AssemblerRenderer
+from dasmos.core.expr import BinOp
 
 # Beebasm/py8dis hex literal (``&HH``) as it appears embedded in a
 # driver-authored expression string. In that dialect ``&`` is *always*
@@ -204,6 +205,27 @@ class Tass64Renderer(AssemblerRenderer):
         # a mix of strings and bytes. So prefer ``.text`` whenever any
         # part is a string, even when the line leads with a raw byte.
         return self.string_prefix() if has_string else self.byte_prefix()
+
+    # 64tass operator spellings and C-like precedence (higher binds
+    # tighter): `* / %` > `+ -` > `<< >>` > `&` > `^` > `|`. This differs
+    # from beebasm's table (where shifts share MUL's level and AND/OR/EOR
+    # rank differently), which is exactly why the shared expression walker
+    # parenthesises per backend.
+    _BINARY_PRECEDENCE = {
+        BinOp.MUL: 8, BinOp.DIV: 8, BinOp.MOD: 8,
+        BinOp.ADD: 7, BinOp.SUB: 7,
+        BinOp.SHL: 6, BinOp.SHR: 6,
+        BinOp.AND: 4,
+        BinOp.XOR: 3,
+        BinOp.OR: 2,
+    }
+
+    def _binary_token(self, op: BinOp) -> str:
+        return {
+            BinOp.ADD: "+", BinOp.SUB: "-", BinOp.MUL: "*", BinOp.DIV: "/",
+            BinOp.MOD: "%", BinOp.AND: "&", BinOp.OR: "|",
+            BinOp.XOR: "^", BinOp.SHL: "<<", BinOp.SHR: ">>",
+        }[op]
 
     def translate_expression(self, expr: str) -> str:
         # Driver-authored (and INKEY-derived) expressions use beebasm's

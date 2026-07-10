@@ -35,6 +35,7 @@ Design points:
 
 from abc import ABC, abstractmethod
 
+from dasmos.core.expr import Expr, as_expr
 from dasmos.core.memory import BinaryAddr
 from dasmos.exceptions import DasmosError
 
@@ -184,16 +185,23 @@ class ExpressionRegistry:
     Used to render an instruction like ``LDA #3`` as
     ``LDA #initial_lives + 1`` when the user has registered the
     expression at the operand address.
+
+    Values are :class:`~dasmos.core.expr.Expr` trees. A plain ``str`` (or
+    ``int``) passed to :meth:`add` is coerced via
+    :func:`~dasmos.core.expr.as_expr` — a string becomes a
+    :class:`~dasmos.core.expr.Raw` node so legacy dialect strings keep
+    rendering exactly as before.
     """
 
     def __init__(self):
-        self._expressions: dict[BinaryAddr, str] = {}
+        self._expressions: dict[BinaryAddr, Expr] = {}
 
     def __contains__(self, binary_addr) -> bool:
         return BinaryAddr(binary_addr) in self._expressions
 
-    def add(self, binary_addr, expression: str) -> None:
-        """Register ``expression`` at ``binary_addr``.
+    def add(self, binary_addr, expression) -> None:
+        """Register ``expression`` (an :class:`Expr`, ``str`` or ``int``)
+        at ``binary_addr``.
 
         Silently ignored if an expression is already registered at
         that address — registration is idempotent so that multi-pass
@@ -202,9 +210,9 @@ class ExpressionRegistry:
         """
         binary_addr = BinaryAddr(binary_addr)
         if binary_addr not in self._expressions:
-            self._expressions[binary_addr] = expression
+            self._expressions[binary_addr] = as_expr(expression)
 
-    def get(self, binary_addr) -> str:
+    def get(self, binary_addr) -> Expr:
         """Return the expression registered at ``binary_addr``.
 
         Raises ``KeyError`` if there is none — use
@@ -212,5 +220,5 @@ class ExpressionRegistry:
         """
         return self._expressions[BinaryAddr(binary_addr)]
 
-    def get_or_none(self, binary_addr) -> str | None:
+    def get_or_none(self, binary_addr) -> "Expr | None":
         return self._expressions.get(BinaryAddr(binary_addr))
