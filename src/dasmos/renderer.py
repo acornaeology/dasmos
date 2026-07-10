@@ -150,12 +150,59 @@ class TextRenderer(Renderer[TextOutput]):
         """Lines emitted when ending a code block."""
 
     @abstractmethod
-    def pseudopc_start(self, dest, source, length, move_id) -> list[str]:
-        """Lines emitted when entering a pseudopc (relocated) block."""
+    def set_origin(self, addr: int) -> list[str]:
+        """Lines that set the assembly program counter to ``addr``.
+
+        Used by the shared walk whenever emission needs to (re)position
+        the PC at a plain address outside a code block — resuming after
+        a skipped (move-source) range, positioning a move's source
+        bytes, or advancing to the loaded range's end before the
+        boundary marker. Beebasm emits ``org &<addr>``; 64tass ``*=``.
+        The list may include surrounding blank lines for layout.
+        """
 
     @abstractmethod
-    def pseudopc_end(self, dest, source, length, move_id) -> list[str]:
-        """Lines emitted when leaving a pseudopc block."""
+    def pseudopc_start(
+        self,
+        *,
+        dest: int,
+        src: int,
+        length: int,
+        move_id: int,
+        src_label: str | None,
+        dest_label: str | None,
+    ) -> list[str]:
+        """Lines entering a relocated (pseudo-PC) block.
+
+        The shared move walk has already positioned the PC at ``src``
+        and emitted ``src_label`` (if any); this switches the PC into
+        the relocated destination range so the block's bytes resolve as
+        if running at ``dest``. Beebasm emits an ``org &<dest>``;
+        64tass ``.logical $<dest>``. The full move context is passed so
+        each backend uses what its idiom needs (beebasm labels a
+        descriptive comment; 64tass needs only ``dest``).
+        """
+
+    @abstractmethod
+    def pseudopc_end(
+        self,
+        *,
+        dest: int,
+        src: int,
+        length: int,
+        move_id: int,
+        src_label: str | None,
+        dest_label: str | None,
+    ) -> list[str]:
+        """Lines leaving a relocated block and restoring the PC.
+
+        Beebasm emits the ``copyblock`` / ``clear`` / restore-``org``
+        idiom that copies the assembled bytes back to their file
+        position; 64tass emits ``.here`` (which restores the compile
+        offset implicitly). This asymmetry — beebasm needs an explicit
+        restore, 64tass does not — is exactly why relocation lives
+        behind this hook rather than in the shared walk.
+        """
 
     @abstractmethod
     def char_literal(self, n: int) -> str | None:
@@ -216,6 +263,19 @@ class TextRenderer(Renderer[TextOutput]):
     def format_comment(self, s: str, indent: int = 1) -> str:
         indent_str = " " * (indent * 4) if indent else ""
         return f"{indent_str}{self.comment_prefix()} {s}"
+
+    def address_link_hex(self, hex_str: str) -> str:
+        """Format the hex from an ``address:`` cross-reference URI (see
+        :mod:`dasmos.core.markdown_asm`) as this assembler's literal
+        when the ``?hex`` flag flattens a link into comment text.
+
+        Defaults to beebasm's ``&``-prefixed uppercase form; override
+        for a different sigil (64tass ``$``). Note this deliberately
+        preserves the URI's hex width and uppercases it, rather than
+        going through :meth:`hex2`/:meth:`hex4`, to match the
+        established comment-link convention.
+        """
+        return f"&{hex_str.upper()}"
 
 
 class StructuredRenderer(Renderer[StructuredOutput]):

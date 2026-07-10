@@ -66,10 +66,15 @@ class _MinimalTextRenderer(TextRenderer):
     def code_end(self):
         return []
 
-    def pseudopc_start(self, dest, source, length, move_id):
+    def set_origin(self, addr):
+        return [f"org {addr}"]
+
+    def pseudopc_start(self, *, dest, src, length, move_id,
+                       src_label, dest_label):
         return [f"pseudopc {dest}"]
 
-    def pseudopc_end(self, dest, source, length, move_id):
+    def pseudopc_end(self, *, dest, src, length, move_id,
+                     src_label, dest_label):
         return ["end pseudopc"]
 
     def char_literal(self, n):

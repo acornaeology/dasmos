@@ -72,7 +72,19 @@ _ADDRESS_URI_TARGET_RE = re.compile(
 _warned_flags: set[str] = set()
 
 
-def strip_address_uri_links(text: str) -> str:
+def _default_address_link_hex(hex_str: str) -> str:
+    """Default assembler literal for an ``address:`` URI's hex, matching
+    beebasm's ``&``-prefixed uppercase form (e.g. ``E000`` → ``&E000``).
+
+    Renderers whose hex sigil differs (64tass's ``$``) pass their own
+    formatter via the ``hex_format`` parameter of the public functions.
+    """
+    return f"&{hex_str.upper()}"
+
+
+def strip_address_uri_links(
+    text: str, *, hex_format=None,
+) -> str:
     """Replace ``[label](address:HEX[?hex])`` with plain text — no
     markdown parser involved, just the regex.
 
@@ -93,6 +105,8 @@ def strip_address_uri_links(text: str) -> str:
     decoration).
     """
 
+    fmt = hex_format or _default_address_link_hex
+
     def rewrite(match: re.Match[str]) -> str:
         label = match.group("label").replace("`", "")
         hex_str = match.group("hex")
@@ -100,7 +114,7 @@ def strip_address_uri_links(text: str) -> str:
         if not flag:
             return label
         if flag == "hex":
-            return f"{label} (&{hex_str.upper()})"
+            return f"{label} ({fmt(hex_str)})"
         if flag not in _warned_flags:
             _warned_flags.add(flag)
             warnings.warn(
@@ -190,6 +204,7 @@ def markdown_to_asm_text(
     *,
     inline: bool = False,
     wrap_width: int | None = None,
+    hex_format=None,
 ) -> str:
     """Render ``text`` (CommonMark + GFM tables) as plaintext for asm.
 
@@ -203,7 +218,9 @@ def markdown_to_asm_text(
     no trailing newline.
     """
     import mistletoe
-    with _AsmTextRenderer(wrap_width=wrap_width, inline=inline) as renderer:
+    with _AsmTextRenderer(
+        wrap_width=wrap_width, inline=inline, hex_format=hex_format,
+    ) as renderer:
         doc = mistletoe.Document(text)
         return renderer.render(doc)
 
@@ -222,10 +239,12 @@ class _AsmTextRenderer(BaseRenderer):
     class is the mistletoe-side machinery.
     """
 
-    def __init__(self, wrap_width: int | None = None, inline: bool = False):
+    def __init__(self, wrap_width: int | None = None, inline: bool = False,
+                 hex_format=None):
         super().__init__()
         self.wrap_width = wrap_width
         self.inline = inline
+        self._hex_format = hex_format or _default_address_link_hex
         self._indent = ""
         self._list_markers: list[tuple[str, int | None]] = []
 
@@ -396,7 +415,7 @@ class _AsmTextRenderer(BaseRenderer):
             flag = (match.group("flag") or "").lower()
             hex_str = match.group("hex")
             if flag == "hex":
-                return f"{label} (&{hex_str.upper()})"
+                return f"{label} ({self._hex_format(hex_str)})"
             if flag and flag not in _warned_flags:
                 _warned_flags.add(flag)
                 warnings.warn(
