@@ -206,6 +206,18 @@ class Tass64Renderer(AssemblerRenderer):
             BinOp.XOR: "^", BinOp.SHL: "<<", BinOp.SHR: ">>",
         }[op]
 
+    # 64tass has a value-returning function (.sfunction) usable inside a
+    # data directive, so a macro invocation is a value: ``.byte
+    # pack("LDA")``.
+    @property
+    def macro_calls_are_values(self) -> bool:
+        return True
+
+    def render_macro_definition(self, macro, ir) -> list[str]:
+        body = self.render_expression(macro.body, ir)
+        params = ", ".join(macro.params)
+        return [f"{macro.name} .sfunction {params}, {body}"]
+
     # 64tass has native string indexing/slicing/length, so a non-constant
     # string op (e.g. a macro parameter) renders directly.
     def render_string_index(self, string_node, index_node, render) -> str:

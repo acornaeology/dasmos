@@ -9,6 +9,8 @@ Emits a JSON-serialisable dictionary:
       # docs from dasmos <= 1.14.0 (treat as 1: references were [int]).
       "meta": {"schema_version": int, "load_addr": int, "end_addr": int},
       "constants": [{"name": str, "value": int, "comment": str?}, ...],
+      "macros": [{"name": str, "params": [str, ...], "emit": str,
+                  "body": {"text": str, "tree": <expr>}}, ...],
       "subroutines": [{"addr": int, "name": str?, ..., "fall_through": True?,
                        "align": "before_label"|...?}],
       # banners[] carries each Banner annotation as its own record;
@@ -72,6 +74,8 @@ Emits a JSON-serialisable dictionary:
           #   {"op": "str_slice", "string": <expr>,
           #    "start": <expr>, "stop": <expr>|null}
           #   {"op": "str_len", "string": <expr>}
+          #   {"param": str}                     # macro formal parameter
+          #   {"macro_call": str, "args": [<expr>, ...]}
           #   {"group": <expr>}                  # explicit parentheses
           #   {"op": "lowbyte"|"highbyte"|"neg"|"pos"|"invert"|"bankbyte",
           #    "operand": <expr>}
@@ -109,6 +113,8 @@ from dasmos.core.expr import (
     Expr,
     Group,
     Int,
+    MacroCall,
+    Param,
     Radix,
     Raw,
     Ref,
@@ -159,6 +165,7 @@ class JsonRenderer(Renderer[StructuredOutput]):
         data = {
             "meta": self._build_meta(ir),
             "constants": self._build_constants(ir),
+            "macros": self._build_macros(ir),
             "subroutines": self._build_subroutines(ir),
             "banners": self._build_banners(ir),
             "external_labels": self._build_external_labels(ir),
@@ -170,6 +177,23 @@ class JsonRenderer(Renderer[StructuredOutput]):
         return StructuredOutput(data, indent=self._indent)
 
     # -- top-level sections ---------------------------------------------
+
+    def _build_macros(self, ir) -> list[dict]:
+        """Driver-defined macros: name, parameter names, the emitted data
+        kind, and the body as both ready text and a structured tree
+        (parameters appear as ``{"param": name}`` leaves)."""
+        out = []
+        for macro in ir.macros.values():
+            out.append({
+                "name": macro.name,
+                "params": list(macro.params),
+                "emit": macro.emit,
+                "body": {
+                    "text": self._expr_text(macro.body, ir),
+                    "tree": self._expr_tree(macro.body, ir),
+                },
+            })
+        return out
 
     def _build_meta(self, ir) -> dict[str, int]:
         try:
@@ -927,6 +951,11 @@ class JsonRenderer(Renderer[StructuredOutput]):
         """
         if isinstance(e, Raw):
             return e.text
+        if isinstance(e, Param):
+            return e.name
+        if isinstance(e, MacroCall):
+            args = ", ".join(self._expr_text(a, ir) for a in e.args)
+            return f"{e.name}({args})"
         if isinstance(e, Str):
             return f'"{e.text}"'
         if isinstance(e, StrIndex):
@@ -1025,6 +1054,11 @@ class JsonRenderer(Renderer[StructuredOutput]):
         """
         if isinstance(e, Raw):
             return {"raw": e.text}
+        if isinstance(e, Param):
+            return {"param": e.name}
+        if isinstance(e, MacroCall):
+            return {"macro_call": e.name,
+                    "args": [self._expr_tree(a, ir) for a in e.args]}
         if isinstance(e, Str):
             return {"str": e.text}
         if isinstance(e, StrIndex):

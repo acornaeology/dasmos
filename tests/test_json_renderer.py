@@ -62,7 +62,7 @@ class TestTopLevelSchema:
     """
 
     EXPECTED_KEYS = (
-        "meta", "constants", "subroutines", "banners",
+        "meta", "constants", "macros", "subroutines", "banners",
         "external_labels", "memory_map", "index_bases", "regions", "items",
     )
 

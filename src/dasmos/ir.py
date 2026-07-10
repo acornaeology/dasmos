@@ -79,6 +79,11 @@ class IntermediateRepresentation:
         return self._disassembler.expressions
 
     @property
+    def macros(self) -> dict:
+        """Driver-defined macros (see :meth:`Disassembler.define_macro`)."""
+        return self._disassembler.macros
+
+    @property
     def format_hints(self) -> "FormatHintRegistry":
         """Renderer-agnostic format hints registered via
         :meth:`Disassembler.format_hint` /

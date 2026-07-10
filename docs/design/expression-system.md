@@ -385,7 +385,42 @@ So the hash tables show `("BRK"[0] & $1f) …` on 64tass and
 right there in the listing — and still assemble to the correct hash byte
 (`tests/test_mnemonic_hash.py`).
 
-## C. Backend-agnostic macros
+## C. Backend-agnostic macros *(implemented for beebasm + 64tass)*
+
+Landed: `Param` / `MacroCall` / `MacroDef` nodes, `d.define_macro(name,
+params, body, emit="byte")` returning a call-builder, an `ir.macros`
+store, a macro-definitions section in the output, and native rendering on
+both shipped backends. The mnemonic table is authored once —
+
+```python
+m = param("mnem")
+pack_lo = d.define_macro("pack_lo", ["mnem"],
+    group((m[0] & 0x1F) * 0x400 + (m[1] & 0x1F) * 0x20 + (m[2] & 0x1F)) & 0xFF)
+for i, mn in enumerate(MNEMONICS):
+    d.expr(BASE + i, pack_lo(mn))
+```
+
+— and renders as a **64tass value function** used inline in the data:
+
+```
+pack_lo .sfunction mnem, ((mnem[0] & $1f) * $0400 + …) & $ff
+    .byte pack_lo("LDA"), pack_lo("STA"), pack_lo("BRK")
+```
+
+or a **beebasm code macro** that emits the byte, invoked per line:
+
+```
+MACRO pack_lo mnem
+    equb ((ASC(MID$(mnem, 1, 1)) AND &1f) * &0400 + …) AND &ff
+ENDMACRO
+    pack_lo "LDA"
+    pack_lo "STA"
+```
+
+Both assemble to identical bytes (`tests/test_macros.py`). JSON emits a
+`macros` section plus `{"macro_call": …}` / `{"param": …}` tree nodes.
+The split below is what makes one definition render two ways; acme/ca65
+are designed here for when those backends land.
 
 The hash expression is emitted ~100 times (once per mnemonic, two halves)
 with the *same shape* and a different three-letter string. That is a

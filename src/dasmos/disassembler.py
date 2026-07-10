@@ -43,7 +43,7 @@ from dasmos.core.annotations import (
 )
 from dasmos.core.classification import Byte, ExpressionRegistry, Fill, String, Word
 from dasmos.core.data_type import DataType, DecodedValue
-from dasmos.core.expr import Expr, Ref
+from dasmos.core.expr import Expr, MacroCall, MacroDef, Ref, macro_arg
 from dasmos.core.expr import hi as expr_hi
 from dasmos.core.expr import lo as expr_lo
 from dasmos.core.expr_parse import parse_or_raw
@@ -200,6 +200,10 @@ class Disassembler:
         # unchanged from the legacy ``constant() → optional_label``
         # porter rename.
         self._constants: list[Constant] = []
+        # Driver-defined macros, keyed by name and emitted once as
+        # definitions; each :class:`~dasmos.core.expr.MacroCall` refers
+        # to one by name. Insertion order preserved for stable output.
+        self._macros: dict[str, MacroDef] = {}
         # Deprecated → replacement constant-name aliases registered by
         # environments via :meth:`register_deprecated_constant_name`.
         # When a driver calls :meth:`constant` with a key in this dict,
@@ -315,6 +319,41 @@ class Disassembler:
         in :attr:`labels` (for asm equate emission).
         """
         return self._constants
+
+    @property
+    def macros(self) -> dict[str, MacroDef]:
+        """Driver-defined macros, keyed by name (see :meth:`define_macro`)."""
+        return self._macros
+
+    def define_macro(self, name, params, body, *, emit: str = "byte"):
+        """Define a macro computing a value from ``params`` and return a
+        callable that builds invocations of it.
+
+        ``params`` is a list of parameter names; inside ``body`` refer to
+        them with :func:`dasmos.expr.param`. ``emit`` is the data kind the
+        value is emitted as (``"byte"`` / ``"word"``) — used by backends
+        without value-functions (beebasm) to wrap the body in the right
+        data directive. The value is rendered natively per backend: a
+        64tass ``.sfunction`` used inline in ``.byte pack("LDA")``, or a
+        beebasm ``MACRO`` emitting the byte, invoked ``pack "LDA"`` per
+        line.
+
+        Example::
+
+            m = param("mnem")
+            pack_lo = d.define_macro("pack_lo", ["mnem"],
+                (((m[0] & 0x1F) << 10) + ((m[1] & 0x1F) << 5)
+                 + (m[2] & 0x1F)) & 0xFF)
+            d.expr(addr, pack_lo("LDA"))
+        """
+        self._raise_if_disassembled("define_macro")
+        md = MacroDef(name, tuple(params), body, emit)
+        self._macros[name] = md
+
+        def call(*args):
+            return MacroCall(name, tuple(macro_arg(a) for a in args))
+
+        return call
 
     @property
     def subroutines(self) -> list[SubroutineEntry]:

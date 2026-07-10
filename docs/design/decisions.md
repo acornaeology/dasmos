@@ -687,3 +687,49 @@ falls back to a `Raw` node (verbatim).
   Code items carry it as `expr` (with `operand` keeping the full ready
   text incl. mode punctuation); word/byte items as the `expressions`
   array.
+
+### D-027: Backend-agnostic macros (value function vs code macro)
+
+**Status**: accepted, implemented for beebasm + 64tass. See
+`docs/design/expression-system.md` §C.
+
+**Context**: Repeated computed data — canonically BBC BASIC 2's inline-
+assembler mnemonic-hash tables, ~100 bytes of the same expression shape
+over a different 3-letter string — is a macro. dasmos should render actual
+*macro definitions and invocations* (not inline expansion), but assemblers
+differ fundamentally: only 64tass (`.sfunction`) and ca65 (`.define`) have
+a value-returning function usable inside a data directive; beebasm and
+acme have only code macros that emit a statement, and acme additionally
+has no string indexing at all.
+
+**Decision**: Model a macro as `MacroDef(name, params, body, emit)` with
+`body` an assembler-neutral `Expr` (parameters are `Param` nodes) and a
+`MacroCall` value node. `d.define_macro()` registers it and returns a
+call-builder. The renderer emits definitions once and each call per its
+backend, split by a `macro_calls_are_values` capability:
+
+- **Value backends** (64tass `.sfunction`, ca65 `.define`): the definition
+  returns the body value; a `MacroCall` renders inline in the data
+  directive — `.byte pack("LDA"), pack("STA")`.
+- **Statement backends** (beebasm `MACRO`, acme `!macro`): the definition
+  wraps the body in the `emit` data directive (`EQUB`/`!byte`); the data-
+  block renderer emits each `MacroCall` as its own invocation line —
+  `pack "LDA"`. String indexing in the body renders natively
+  (`ASC(MID$(mnem,1,1))`), reusing the string-op layer.
+
+**Consequences**:
+
+- One driver-level macro renders as a 64tass value function used inline in
+  `.byte`, or a beebasm code macro emitting the byte per line; both
+  assemble to identical bytes (`tests/test_macros.py`). The mnemonic is
+  visible in every invocation — maximally readable.
+- JSON gains a `macros` section and `{"macro_call": …}` / `{"param": …}`
+  tree nodes, so a consumer can re-expand or re-render macros.
+- acme (no value function *and* no string indexing) and ca65 (`.define`)
+  are designed but not built — dasmos ships only beebasm + 64tass. When
+  added, acme rides the statement path and must receive pre-split char
+  args (or dasmos folds the byte); this is the graceful-degradation
+  contract, driven by capability flags rather than per-driver authoring.
+- Supersedes the D-025 sketch (which proposed inline-expansion as the
+  default); native emission is the default here, because the whole point
+  is to see macros in the listing.

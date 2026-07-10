@@ -302,6 +302,27 @@ class BeebasmRenderer(AssemblerRenderer):
             return chr(n)
         return None
 
+    # Beebasm has no value-returning function, so a macro is a code macro
+    # that EMITS the datum (``EQUB``/``EQUW``); each invocation is its own
+    # statement line (``pack "LDA"``). ``macro_calls_are_values`` stays
+    # False (the base default), so the byte-block renderer emits the
+    # invocations as statements.
+    def render_macro_definition(self, macro, ir) -> list[str]:
+        body = self.render_expression(macro.body, ir)
+        directive = {"byte": self.byte_prefix(), "word": self.word_prefix()}.get(
+            macro.emit, self.byte_prefix()
+        )
+        params = ", ".join(macro.params)
+        return [
+            f"MACRO {macro.name} {params}",
+            f"    {directive}{body}",
+            "ENDMACRO",
+        ]
+
+    def render_macro_statement(self, call, ir) -> list[str]:
+        args = ", ".join(self._macro_arg_texts(call, ir))
+        return [f"    {call.name} {args}"]
+
     # Beebasm string functions are 1-based (MID$); character code via
     # ASC. Used only for a non-constant string op (a macro parameter) —
     # constant ones are folded to character literals before rendering.

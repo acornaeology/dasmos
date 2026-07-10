@@ -231,6 +231,46 @@ class StrLen(Expr):
     string: Expr
 
 
+@dataclass(frozen=True)
+class Param(Expr):
+    """A macro formal parameter, referenced inside a macro body. Renders
+    as the backend's parameter reference (both beebasm and 64tass
+    functions use the bare name; 64tass *macros* would use ``\\name``).
+    Being non-constant, string operations on a ``Param`` render natively
+    rather than folding — which is exactly how a macro keeps the string
+    argument symbolic in its body.
+    """
+
+    name: str
+
+
+@dataclass(frozen=True)
+class MacroCall(Expr):
+    """An invocation of a macro, ``name(args…)`` — a value expression.
+    Backends with value macros/functions (64tass ``.sfunction``, ca65
+    ``.define``) render it inline in a data directive; those without
+    (beebasm, acme) render each call as its own statement line (handled
+    by the data-block renderer).
+    """
+
+    name: str
+    args: tuple
+
+
+@dataclass(frozen=True)
+class MacroDef:
+    """A macro definition: ``name(params) -> body``, whose value is
+    emitted as ``emit`` (``"byte"`` / ``"word"``). Not an expression — a
+    top-level definition the renderer emits once and each
+    :class:`MacroCall` refers to.
+    """
+
+    name: str
+    params: tuple
+    body: Expr
+    emit: str = "byte"
+
+
 def fold(e: Expr) -> Expr:
     """Constant-fold string operations (and their sub-trees) as far as
     possible.
@@ -264,6 +304,8 @@ def fold(e: Expr) -> Expr:
         if isinstance(s, Str):
             return Int(len(s.text))
         return StrLen(s)
+    if isinstance(e, MacroCall):
+        return MacroCall(e.name, tuple(fold(a) for a in e.args))
     if isinstance(e, Group):
         return Group(fold(e.inner))
     if isinstance(e, Unary):
@@ -328,6 +370,20 @@ def string(text: str) -> Str:
     return Str(text)
 
 
+def param(name: str) -> Param:
+    """A macro formal parameter, for use inside a macro body."""
+    return Param(name)
+
+
+def macro_arg(value) -> Expr:
+    """Coerce a macro-call argument: a ``str`` becomes a string literal
+    :class:`Str` (macro args are values, not dialect expressions), an
+    ``int`` an :class:`Int`, and an :class:`Expr` passes through."""
+    if isinstance(value, str):
+        return Str(value)
+    return _coerce(value)
+
+
 def str_len(s) -> StrLen:
     """The length of a string expression."""
     return StrLen(_coerce_str(s))
@@ -364,6 +420,10 @@ def canonical_text(e: Expr) -> str:
         return e.text
     if isinstance(e, Sym):
         return e.name
+    if isinstance(e, Param):
+        return e.name
+    if isinstance(e, MacroCall):
+        return f"{e.name}({', '.join(canonical_text(a) for a in e.args)})"
     if isinstance(e, Str):
         return f'"{e.text}"'
     if isinstance(e, StrIndex):

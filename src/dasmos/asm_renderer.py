@@ -36,6 +36,8 @@ from dasmos.core.expr import (
     Expr,
     Group,
     Int,
+    MacroCall,
+    Param,
     Radix,
     Raw,
     Ref,
@@ -368,6 +370,12 @@ class AssemblerRenderer(TextRenderer):
         if constant_lines:
             header = [f"{self.comment_prefix()} Constants"]
             lines = header + constant_lines + [""] + lines
+
+        # Macro definitions sit at the very top, above their uses.
+        macro_lines = self._build_macro_definitions(ir)
+        if macro_lines:
+            header = [f"{self.comment_prefix()} Macros", ""]
+            lines = header + macro_lines + lines
 
         return TextOutput("\n".join(lines) + "\n")
 
@@ -1799,23 +1807,34 @@ class AssemblerRenderer(TextRenderer):
         cols = c.cols() or self.default_byte_cols
         n = c.length()
         lines: list[str] = []
-        for chunk_start in range(0, n, cols):
-            parts: list[str] = []
-            for i in range(chunk_start, min(chunk_start + cols, n)):
-                addr = int(binary_addr) + i
-                expr = ir.expressions.get_or_none(addr)
-                if expr is not None:
-                    parts.append(self.render_expression(expr, ir))
-                    continue
-                value = ir.memory.get_u8(addr)
-                hint = ir.format_hints.get_or_none(addr)
-                if hint is not None:
-                    parts.append(
-                        self._render_hinted_immediate(hint, value, addr)
-                    )
-                else:
-                    parts.append(self.hex2(value))
-            lines.append(f"    {self.byte_prefix()}{', '.join(parts)}")
+        run: list[str] = []  # accumulated ``equb`` value parts
+
+        def flush() -> None:
+            for cs in range(0, len(run), cols):
+                lines.append(
+                    f"    {self.byte_prefix()}{', '.join(run[cs:cs + cols])}"
+                )
+            run.clear()
+
+        for i in range(n):
+            addr = int(binary_addr) + i
+            expr = ir.expressions.get_or_none(addr)
+            # A macro invocation on a backend without value macros is a
+            # statement, not a value — flush the run and emit its line(s).
+            if isinstance(expr, MacroCall) and not self.macro_calls_are_values:
+                flush()
+                lines.extend(self.render_macro_statement(expr, ir))
+                continue
+            if expr is not None:
+                run.append(self.render_expression(expr, ir))
+                continue
+            value = ir.memory.get_u8(addr)
+            hint = ir.format_hints.get_or_none(addr)
+            if hint is not None:
+                run.append(self._render_hinted_immediate(hint, value, addr))
+            else:
+                run.append(self.hex2(value))
+        flush()
         return lines
 
     def _render_word(self, ir, binary_addr, c: Word) -> list[str]:
@@ -1994,6 +2013,13 @@ class AssemblerRenderer(TextRenderer):
             return f"({inner})", self._ATOM_PRECEDENCE
         if isinstance(e, Str):
             return f'"{e.text}"', self._ATOM_PRECEDENCE
+        if isinstance(e, Param):
+            return self.param_ref(e.name), self._ATOM_PRECEDENCE
+        if isinstance(e, MacroCall):
+            return (
+                self.render_macro_value_call(e, ir, active_move),
+                self._ATOM_PRECEDENCE,
+            )
         if isinstance(e, (StrIndex, StrSlice, StrLen)):
             return self._emit_string_op(e, ir, active_move), self._ATOM_PRECEDENCE
         if isinstance(e, Unary):
@@ -2050,6 +2076,72 @@ class AssemblerRenderer(TextRenderer):
         raise NotImplementedError(
             f"{type(self).__name__} cannot render non-constant string length"
         )
+
+    # -- macros -----------------------------------------------------------
+    #
+    # A driver-defined macro (dasmos.core.expr.MacroDef) is emitted once as
+    # a definition; each MacroCall refers to it. Backends split on whether
+    # a macro invocation is a *value* (usable inside a data directive —
+    # 64tass .sfunction, ca65 .define) or a *statement* (its own line —
+    # beebasm, acme). ``macro_calls_are_values`` selects the path; the
+    # data-block renderer emits per-line invocations for the statement
+    # case.
+
+    @property
+    def macro_calls_are_values(self) -> bool:
+        """True iff a macro invocation can appear inside a data directive
+        / expression (a value function). False when each invocation must
+        be its own statement line."""
+        return False
+
+    def param_ref(self, name: str) -> str:
+        """How a macro formal parameter is referenced in a body. Default:
+        the bare name (beebasm; 64tass functions). A backend whose macro
+        params use sigils (64tass ``.macro`` ``\\name``) overrides."""
+        return name
+
+    def render_macro_value_call(self, call, ir, active_move) -> str:
+        """A macro invocation used as a value. Only valid when
+        :attr:`macro_calls_are_values`; otherwise the data-block renderer
+        must intercept and emit a statement instead."""
+        if not self.macro_calls_are_values:
+            raise NotImplementedError(
+                f"{type(self).__name__} has no value macros; a MacroCall "
+                f"must be emitted as a statement line"
+            )
+        args = ", ".join(
+            self.render_expression(a, ir, active_move=active_move)
+            for a in call.args
+        )
+        return f"{call.name}({args})"
+
+    def _macro_arg_texts(self, call, ir) -> list[str]:
+        return [self.render_expression(a, ir) for a in call.args]
+
+    def render_macro_statement(self, call, ir) -> list[str]:
+        """A macro invocation as its own statement line(s). Backends
+        without value macros (beebasm, acme) override this."""
+        raise NotImplementedError(
+            f"{type(self).__name__} cannot render a macro invocation as a "
+            f"statement"
+        )
+
+    def render_macro_definition(self, macro, ir) -> list[str]:
+        """The definition block for a macro. Each backend emits its own
+        construct (64tass ``.sfunction``; beebasm ``MACRO``…``ENDMACRO``)."""
+        raise NotImplementedError(
+            f"{type(self).__name__} cannot render macro definitions"
+        )
+
+    def _build_macro_definitions(self, ir) -> list[str]:
+        """The macro-definitions block, emitted once above the body."""
+        lines: list[str] = []
+        for macro in ir.macros.values():
+            block = self.render_macro_definition(macro, ir)
+            if block:
+                lines.extend(block)
+                lines.append("")
+        return lines
 
     def _render_int_node(self, node: Int) -> str:
         v = node.value
