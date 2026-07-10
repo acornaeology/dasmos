@@ -205,8 +205,18 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
     :meth:`visit_Module`.
     """
 
-    def __init__(self, extra_envs: tuple[str, ...] = ()):
-        self.assembler_name = "beebasm"
+    def __init__(
+        self,
+        extra_envs: tuple[str, ...] = (),
+        assembler_name: str | None = None,
+    ):
+        # ``assembler_name`` forces the text renderer the ported driver
+        # emits, overriding both the ``beebasm`` default and anything
+        # the source's ``go(assembler_name=...)`` requests. Used by the
+        # multi-backend round-trip tests to drive the same drivers
+        # through 64tass; ``None`` keeps the original behaviour.
+        self._forced_assembler_name = assembler_name
+        self.assembler_name = assembler_name or "beebasm"
         # Opt-in environments the caller wants activated alongside
         # whatever the py8dis driver explicitly requests. Used for
         # axes the original driver took for granted but dasmos models
@@ -638,6 +648,8 @@ class Py8disToDasmosTransformer(ast.NodeTransformer):
         """Extract relevant settings from ``init(...)`` so we can use
         them later (e.g. the assembler name for the render call).
         """
+        if self._forced_assembler_name is not None:
+            return  # an explicit override wins over the driver's request
         for kw in call.keywords:
             if kw.arg == "assembler_name" and isinstance(kw.value, ast.Constant):
                 self.assembler_name = kw.value.value
@@ -1518,7 +1530,11 @@ def _is_d_call_at_same_addr(label_stmt, label_attr, ref_stmt) -> bool:
     return ast.dump(label_stmt.value.args[0]) == ast.dump(ref_stmt.value.args[0])
 
 
-def port(source: str, extra_envs: tuple[str, ...] = ()) -> str:
+def port(
+    source: str,
+    extra_envs: tuple[str, ...] = (),
+    assembler_name: str | None = None,
+) -> str:
     """Translate ``source`` (a py8dis driver script) to dasmos form.
 
     ``extra_envs`` is an optional list of dasmos environment names
@@ -1531,7 +1547,9 @@ def port(source: str, extra_envs: tuple[str, ...] = ()) -> str:
     """
     tree = ast.parse(source)
     _annotate_int_literals(source, tree)
-    transformer = Py8disToDasmosTransformer(extra_envs=extra_envs)
+    transformer = Py8disToDasmosTransformer(
+        extra_envs=extra_envs, assembler_name=assembler_name,
+    )
     new_tree = transformer.visit(tree)
     ast.fix_missing_locations(new_tree)
     if isinstance(new_tree, ast.Module):

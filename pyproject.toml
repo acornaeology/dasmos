@@ -64,6 +64,7 @@ Issues = "https://github.com/acornaeology/dasmos/issues"
 
 [project.entry-points."dasmos.renderer"]
 beebasm = "dasmos.ext.renderers.beebasm:Renderer"
+64tass = "dasmos.ext.renderers.tass64:Renderer"
 json = "dasmos.ext.renderers.json:Renderer"
 
 [project.entry-points."dasmos.environment"]

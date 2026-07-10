@@ -14,6 +14,12 @@ name: Test
 # (Econet Bridge full-driver round-trip, 6502 Tube Client round-trip,
 # py8dis annotation parity) are deselected, so dasmos in CI without
 # beebasm would be a hollow check.
+#
+# 64tass is installed from the OS package manager (apt / Homebrew) to
+# activate the ``@pytest.mark.tass64`` round-trip tests, which prove the
+# assembler-backend interface is generic by re-assembling the same ROMs
+# through a second backend. It is packaged only on Linux/macOS here, so
+# those tests auto-skip on the Windows cell.
 
 on:
   workflow_call:
@@ -135,6 +141,27 @@ jobs:
           fi
           echo "Configured beebasm; contents of \$HOME/bin:"
           ls -la "$HOME/bin"
+
+      # ---- 64tass: install from the OS package manager so the
+      # ---- ``@pytest.mark.tass64`` round-trip tests run for real.
+      # ---- Windows has no packaged 64tass here, so those tests
+      # ---- auto-skip there (conftest finds nothing on PATH/TASS64).
+
+      - name: Install 64tass (Linux/macOS)
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update
+            sudo apt-get install -y 64tass
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            brew install 64tass
+          else
+            echo "No packaged 64tass on Windows; tass64 tests will auto-skip."
+          fi
+          if command -v 64tass >/dev/null 2>&1; then
+            echo "TASS64=$(command -v 64tass)" >> "$GITHUB_ENV"
+            64tass --version | head -1
+          fi
 
       # ---- dasmos: build a wheel and test against the installed wheel.
 

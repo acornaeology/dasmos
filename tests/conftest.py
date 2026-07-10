@@ -39,28 +39,45 @@ def _find_beebasm() -> str | None:
 BEEBASM = _find_beebasm()
 
 
+def _find_tass64() -> str | None:
+    """Locate the ``64tass`` binary, honouring the ``TASS64`` env var
+    first (CI uses it), then ``PATH``.
+    """
+    env = os.environ.get("TASS64")
+    if env and os.path.isfile(env) and os.access(env, os.X_OK):
+        return env
+    return shutil.which("64tass")
+
+
+TASS64 = _find_tass64()
+
+
 def pytest_configure(config):
-    """Register the ``beebasm`` marker so tests can opt in via
-    ``@pytest.mark.beebasm`` and have the runner auto-skip them when
-    the binary isn't available.
+    """Register the assembler markers so tests can opt in via
+    ``@pytest.mark.<assembler>`` and have the runner auto-skip them when
+    the corresponding binary isn't available.
     """
     config.addinivalue_line(
         "markers",
         "beebasm: requires the beebasm binary "
         "(set BEEBASM env var or put it in PATH)",
     )
+    config.addinivalue_line(
+        "markers",
+        "tass64: requires the 64tass binary "
+        "(set TASS64 env var or put it in PATH)",
+    )
 
 
 def pytest_collection_modifyitems(config, items):
-    """Auto-skip ``@pytest.mark.beebasm`` tests when no beebasm binary
-    is found.
-    """
-    if BEEBASM is not None:
-        return
-    skip = pytest.mark.skip(reason="beebasm binary not found")
-    for item in items:
-        if "beebasm" in item.keywords:
-            item.add_marker(skip)
+    """Auto-skip assembler-marked tests when the binary isn't found."""
+    for marker, binary in (("beebasm", BEEBASM), ("tass64", TASS64)):
+        if binary is not None:
+            continue
+        skip = pytest.mark.skip(reason=f"{marker} binary not found")
+        for item in items:
+            if marker in item.keywords:
+                item.add_marker(skip)
 
 
 @pytest.fixture
