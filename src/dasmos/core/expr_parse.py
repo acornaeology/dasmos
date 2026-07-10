@@ -62,6 +62,7 @@ _TOKEN_RE = re.compile(
     \s*(?:
         (?P<hex>&[0-9A-Fa-f]+)
       | (?P<dec>\d+)
+      | (?P<char>'[^']')
       | (?P<ident>[A-Za-z_][A-Za-z0-9_]*)
       | (?P<shl><<)
       | (?P<shr>>>)
@@ -88,6 +89,8 @@ def _tokenize(text: str) -> list[tuple[str, str]]:
             tokens.append(("hex", m.group()))
         elif m.lastgroup == "dec":
             tokens.append(("dec", m.group()))
+        elif m.lastgroup == "char":
+            tokens.append(("char", m.group()))
         elif m.lastgroup == "ident":
             word = m.group()
             upper = word.upper()
@@ -184,6 +187,8 @@ class _Parser:
             return Int(int(value[1:], 16), Radix.HEX)
         if kind == "dec":
             return Int(int(value), Radix.DEC)
+        if kind == "char":
+            return Int(ord(value[1]), Radix.CHAR)
         if kind == "ident":
             return Sym(value)
         if kind == "kw" and value in ("HI", "LO"):

@@ -87,6 +87,18 @@ class TestParse:
         assert parse_expression("a OR b").op is BinOp.OR
         assert parse_expression("a AND b").op is BinOp.AND
 
+    def test_char_literal(self):
+        assert parse_expression("'L'") == Int(ord("L"), Radix.CHAR)
+        assert parse_expression("'L' AND &1F") == Binary(
+            BinOp.AND, Int(ord("L"), Radix.CHAR), Int(0x1F, Radix.HEX),
+        )
+
+    def test_mul_and_integer_division(self):
+        assert parse_expression("x * &400").op is BinOp.MUL
+        assert parse_expression("x DIV &100").op is BinOp.DIV
+        # `/` is the same neutral (integer) division operator as DIV.
+        assert parse_expression("x / &100").op is BinOp.DIV
+
     def test_precedence_and_binds_looser_than_minus(self):
         # a - b AND c  ==  (a - b) AND c  (AND has lower precedence)
         e = parse_expression("a - b AND c")

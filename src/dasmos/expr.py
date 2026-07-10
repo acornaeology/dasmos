@@ -28,6 +28,7 @@ from dasmos.core.expr import (
     as_expr,
     char,
     declit,
+    group,
     hexlit,
     hi,
     lit,
@@ -47,6 +48,7 @@ __all__ = [
     "char",
     "lo",
     "hi",
+    "group",
     "raw",
     "as_expr",
     # nodes / enums

@@ -1928,9 +1928,14 @@ class AssemblerRenderer(TextRenderer):
 
     def _binary_token(self, op: BinOp) -> str:
         """This backend's spelling of a binary operator (beebasm form by
-        default; 64tass overrides the bitwise operators)."""
+        default; 64tass overrides the bitwise/division operators).
+
+        ``BinOp.DIV`` is *integer* division — beebasm's ``DIV`` keyword,
+        not ``/`` (which is real division in beebasm). Assemblers that
+        spell integer division ``/`` (64tass, acme) override it.
+        """
         return {
-            BinOp.ADD: "+", BinOp.SUB: "-", BinOp.MUL: "*", BinOp.DIV: "/",
+            BinOp.ADD: "+", BinOp.SUB: "-", BinOp.MUL: "*", BinOp.DIV: "DIV",
             BinOp.MOD: "MOD", BinOp.AND: "AND", BinOp.OR: "OR",
             BinOp.XOR: "EOR", BinOp.SHL: "<<", BinOp.SHR: ">>",
         }[op]
