@@ -102,6 +102,7 @@ class AssemblerRenderer(TextRenderer):
         show_auto_label_footer: bool = True,
         comment_wrap_column: int = 87,
         lower_case: bool = True,
+        fold_string_ops: bool = False,
         **kwargs,
     ):
         super().__init__(name=name, **kwargs)
@@ -130,6 +131,16 @@ class AssemblerRenderer(TextRenderer):
         # When True, mnemonics and register-suffix letters render in
         # lowercase.
         self.lower_case = lower_case
+        # Readability vs terseness for string operations. Default False:
+        # keep the string visible by rendering the op in this assembler's
+        # native syntax (``"BRK"[0]`` / ``ASC(MID$("BRK",1,1))``), which
+        # is the whole point of a readable disassembly. Set True to
+        # constant-fold string ops to their value (``'B'``) for terse
+        # output. Either way, a string op the backend cannot express
+        # natively is folded as a fallback (and must be constant to do
+        # so). Drivers wanting per-expression control can fold selected
+        # expressions themselves before registering them.
+        self.fold_string_ops = fold_string_ops
 
     @property
     def emit_boundary_labels(self) -> bool:
@@ -1949,12 +1960,16 @@ class AssemblerRenderer(TextRenderer):
         """Render an :class:`~dasmos.core.expr.Expr` to this backend's
         operand/data syntax.
 
-        Constant string operations are folded first (``string("BRK")[0]``
-        → the ``'B'`` character literal), so a backend never sees a string
-        op whose operands are constant. Any residual (non-constant) string
-        op is rendered through this backend's own string syntax.
+        String operations render in this backend's native syntax so the
+        string stays visible (``"BRK"[0]``), keeping the disassembly
+        readable — unless ``fold_string_ops`` is set, in which case
+        constant string ops are folded to their value (``'B'``) for terse
+        output. A string op the backend can't express natively is folded
+        as a fallback (see :meth:`_emit_string_op`).
         """
-        text, _ = self._emit_expr(fold(e), ir, active_move)
+        if self.fold_string_ops:
+            e = fold(e)
+        text, _ = self._emit_expr(e, ir, active_move)
         return text
 
     def _emit_expr(self, e: Expr, ir, active_move) -> tuple[str, int]:
@@ -1991,28 +2006,39 @@ class AssemblerRenderer(TextRenderer):
         )
 
     def _emit_string_op(self, e, ir, active_move) -> str:
-        """Render a non-constant string operation via this backend's
-        string syntax. (Constant ones are folded away before we get
-        here.) A backend that lacks the needed string primitive raises,
-        signalling that the operand must be made constant so it can fold
-        — the graceful-degradation contract for the coming macro layer.
+        """Render a string operation in this backend's native syntax so
+        the string stays visible.
+
+        If this backend has no native form for it
+        (:class:`NotImplementedError` from the render hook), fall back to
+        constant-folding: a constant string op still renders (as its
+        value); a non-constant one that the backend can't express is a
+        genuine error — the driver must make the operand constant.
         """
         s_of = lambda x: self._emit_expr(x, ir, active_move)[0]
-        if isinstance(e, StrIndex):
-            return self.render_string_index(s_of(e.string), s_of(e.index))
-        if isinstance(e, StrLen):
-            return self.render_string_length(s_of(e.string))
-        stop = None if e.stop is None else s_of(e.stop)
-        return self.render_string_slice(s_of(e.string), s_of(e.start), stop)
+        try:
+            if isinstance(e, StrIndex):
+                return self.render_string_index(e.string, e.index, s_of)
+            if isinstance(e, StrLen):
+                return self.render_string_length(s_of(e.string))
+            stop = None if e.stop is None else s_of(e.stop)
+            return self.render_string_slice(s_of(e.string), s_of(e.start), stop)
+        except NotImplementedError:
+            folded = fold(e)
+            if folded is e or isinstance(folded, (StrIndex, StrSlice, StrLen)):
+                raise  # non-constant AND unsupported here — genuinely can't
+            return self._emit_expr(folded, ir, active_move)[0]
 
-    def render_string_index(self, s: str, i: str) -> str:
-        """Character code of string ``s`` at index ``i`` (0-based).
-        Default: unsupported — a backend with no string indexing needs
-        the operands constant so :func:`~dasmos.core.expr.fold` handles
-        them. Backends override with their own syntax."""
+    def render_string_index(self, string_node, index_node, render) -> str:
+        """Character code of ``string_node`` at ``index_node`` (0-based).
+
+        ``render`` renders a sub-expression to text. Given the nodes (not
+        just text) so a backend can adapt a constant index cleanly (e.g.
+        beebasm's 1-based ``MID$``). Default: unsupported — a backend with
+        no string indexing relies on :func:`~dasmos.core.expr.fold`.
+        """
         raise NotImplementedError(
-            f"{type(self).__name__} cannot render non-constant string "
-            f"indexing; the string and index must be constant so they fold"
+            f"{type(self).__name__} has no native string indexing"
         )
 
     def render_string_slice(self, s: str, i: str, j: "str | None") -> str:

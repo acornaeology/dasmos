@@ -95,15 +95,27 @@ class TestRendering:
         assert Tass64Renderer().render_expression(e, None).endswith("/ $0100")
 
     def test_dsl_and_parsed_render_identically(self):
+        bee = BeebasmRenderer()
+        bee_folded = BeebasmRenderer(fold_string_ops=True)
         for m in MNEMONICS:
             for half in ("lo", "hi"):
-                parsed = parse_expression(_hash_string(m, half))
-                bee = BeebasmRenderer()
-                base = bee.render_expression(parsed, None)
-                # Char-literal DSL and string-indexing DSL both fold to
-                # the same rendering as the parsed dialect string.
+                base = bee.render_expression(parse_expression(_hash_string(m, half)), None)
+                # The char-literal DSL matches the parsed dialect string.
                 assert bee.render_expression(_hash_dsl(m, half), None) == base
-                assert bee.render_expression(_hash_str_dsl(m, half), None) == base
+                # The string-indexing DSL keeps "BRK" visible by default,
+                # so it differs — but folds to the same char form.
+                readable = bee.render_expression(_hash_str_dsl(m, half), None)
+                assert f'"{m}"' in readable and readable != base
+                assert bee_folded.render_expression(_hash_str_dsl(m, half), None) == base
+
+    def test_string_form_keeps_mnemonic_visible(self):
+        # 64tass renders the readable native form with the string intact.
+        e = _hash_str_dsl("BRK", "lo")
+        text = Tass64Renderer().render_expression(e, None)
+        assert text == (
+            '(("BRK"[0] & $1f) * $0400 + ("BRK"[1] & $1f) * $20 '
+            '+ ("BRK"[2] & $1f)) & $ff'
+        )
 
 
 # ---------------------------------------------------------------------------

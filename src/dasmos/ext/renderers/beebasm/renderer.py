@@ -305,8 +305,15 @@ class BeebasmRenderer(AssemblerRenderer):
     # Beebasm string functions are 1-based (MID$); character code via
     # ASC. Used only for a non-constant string op (a macro parameter) —
     # constant ones are folded to character literals before rendering.
-    def render_string_index(self, s: str, i: str) -> str:
-        return f"ASC(MID$({s}, {i} + 1, 1))"
+    def render_string_index(self, string_node, index_node, render) -> str:
+        # MID$ is 1-based; fold a constant index to a clean literal
+        # position, otherwise render the ``+ 1`` arithmetically.
+        from dasmos.core.expr import Int
+        if isinstance(index_node, Int):
+            pos = str(index_node.value + 1)
+        else:
+            pos = f"{render(index_node)} + 1"
+        return f"ASC(MID$({render(string_node)}, {pos}, 1))"
 
     def render_string_slice(self, s: str, i: str, j: "str | None") -> str:
         if j is None:

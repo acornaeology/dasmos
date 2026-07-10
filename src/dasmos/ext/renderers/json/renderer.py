@@ -120,7 +120,6 @@ from dasmos.core.expr import (
     Unary,
     UnaryOp,
     canonical_text,
-    fold,
 )
 from dasmos.core.format_hint import FormatHint
 from dasmos.core.markdown_asm import markdown_normalize_headings
@@ -922,10 +921,10 @@ class JsonRenderer(Renderer[StructuredOutput]):
         JSON keeps the historical beebasm-flavoured operand spelling
         (``&`` hex, ``AND``/``EOR``, ``<(...)`` byte-select). A
         :class:`~dasmos.core.expr.Raw` node — a legacy dialect string —
-        is emitted verbatim. Constant string operations are folded to
-        their value; the ``tree`` field preserves the full structure.
+        is emitted verbatim. String operations keep the string visible
+        (``"BRK"[0]``), matching the readable assembler output and the
+        structural ``tree``.
         """
-        e = fold(e)
         if isinstance(e, Raw):
             return e.text
         if isinstance(e, Str):
@@ -1021,9 +1020,9 @@ class JsonRenderer(Renderer[StructuredOutput]):
         :mod:`dasmos.core.expr`. Leaves: ``{"int": v, "radix": r}``,
         ``{"sym": name}``, ``{"ref": addr, "name": name_or_null}``,
         ``{"raw": text}``, ``{"str": text}``. Composites carry an ``op``
-        tag plus operands. Constant string ops are folded first.
+        tag plus operands. String ops are preserved structurally so a
+        consumer can render or fold them itself.
         """
-        e = fold(e)
         if isinstance(e, Raw):
             return {"raw": e.text}
         if isinstance(e, Str):

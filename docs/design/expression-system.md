@@ -331,10 +331,13 @@ real division, and its spelling differs per assembler — the neutral
 ## B. String operations *(implemented)*
 
 Landed: `Str` / `StrIndex` / `StrSlice` / `StrLen` nodes, the `string()`
-DSL with Python `[]` indexing/slicing, a `fold()` constant-folding pass,
-and native rendering (64tass `s[i]`, beebasm `ASC(MID$(s, i+1, 1))`). The
-hash tables can now be authored as `string("BRK")[0]`, which folds to the
-`'B'` character literal and assembles identically on both backends
+DSL with Python `[]` indexing/slicing, native per-backend rendering
+(64tass `"BRK"[0]`, beebasm `ASC(MID$("BRK",1,1))`), and a `fold()` pass.
+The hash tables are authored as `string("BRK")[0]`; **by default the
+string stays visible** in the listing (readability first), rendering
+natively and still assembling to the correct hash byte on both backends.
+`fold_string_ops=True` collapses to `'B'` for terse output, and folding is
+also the fallback for a backend with no string support
 (`tests/test_mnemonic_hash.py`, `tests/test_expr.py::TestStringOps`).
 
 Low/high byte extraction is one projection of a value; **string indexing
@@ -347,34 +350,40 @@ canonical driver. The three neutral leaf/operator nodes:
 - `StrSlice(s, i, j)` — a substring (value is a `Str`).
 - (plus `StrLen(s)` and an explicit `Ord`/`Chr` if needed.)
 
-**Rendering is two-mode, and constant-folding is what makes it portable:**
+**Rendering: readable by default, fold as a fallback.** A disassembly
+exists to be *read*, so the default keeps the string visible by rendering
+the op in the backend's native syntax; folding to the bare value is a
+fallback (unsupported backend) or an opt-in (terseness). Three cases:
 
-1. **Constant-folded (the common case).** When the string and indices are
-   compile-time constants — which is *every* current use, because the
-   driver knows the mnemonic — dasmos folds `StrIndex(Str("LDA"), 0)` to
-   `Int(ord('L'), CHAR)` at render time. This is exactly what the driver
-   does by hand today (`c1, c2, c3 = mnemonic`), but now expressed once in
-   the neutral tree and folded for *every* backend, including assemblers
-   with no string support at all. Folding never fails.
-
-2. **Native (only when an argument is non-constant** — e.g. a macro
-   parameter, §C). Each backend renders its own string syntax:
+1. **Native (the default).** Each backend renders its own string syntax so
+   `"BRK"` stays in the listing:
 
    | | `StrIndex(s, i)` | `StrSlice(s, i, j)` |
    |---|---|---|
    | 64tass | `s[i]` | `s[i:j]` |
    | beebasm | `ASC(MID$(s, i+1, 1))` | `MID$(s, i+1, j-i)` |
    | ca65 | `.strat(s, i)` | — (build from `.strat`) |
-   | acme | *(no native form → must stay folded)* | — |
+   | acme | *(no native form → folds, see 3)* | — |
 
-   A backend that cannot express a non-constant string op declares so;
-   dasmos then refuses to emit it symbolically and requires the fold
-   (i.e. the argument must be constant). This is the same
-   graceful-degradation contract as §C.
+   beebasm's `MID$` is 1-based; a constant index folds to a clean literal
+   position (`MID$("BRK", 1, 1)`, not `… 0 + 1 …`).
 
-So string indexing "just works" for the hash tables via folding, and the
-native forms are held in reserve for the macro case where the string is a
-parameter.
+2. **Folded on request** — `TextRenderer(fold_string_ops=True)` folds
+   constant string ops to their value (`'B'`) for terse output. Per
+   *expression* control is already available: a driver can `fold()` a
+   specific expression before registering it.
+
+3. **Folded as a fallback** — when a backend has no native form for a
+   string op, dasmos folds it (which requires the operands be constant);
+   a non-constant string op an assembler can't express is a genuine
+   error. This is the same graceful-degradation contract as §C, and is
+   what lets acme/ca65 handle the constant hash tables even without full
+   string support.
+
+So the hash tables show `("BRK"[0] & $1f) …` on 64tass and
+`(ASC(MID$("BRK",1,1)) AND &1f) …` on beebasm by default — the mnemonic is
+right there in the listing — and still assemble to the correct hash byte
+(`tests/test_mnemonic_hash.py`).
 
 ## C. Backend-agnostic macros
 

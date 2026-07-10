@@ -208,8 +208,8 @@ class Tass64Renderer(AssemblerRenderer):
 
     # 64tass has native string indexing/slicing/length, so a non-constant
     # string op (e.g. a macro parameter) renders directly.
-    def render_string_index(self, s: str, i: str) -> str:
-        return f"{s}[{i}]"
+    def render_string_index(self, string_node, index_node, render) -> str:
+        return f"{render(string_node)}[{render(index_node)}]"
 
     def render_string_slice(self, s: str, i: str, j: "str | None") -> str:
         return f"{s}[{i}:{j if j is not None else ''}]"

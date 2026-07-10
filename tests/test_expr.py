@@ -179,14 +179,25 @@ class TestStringOps:
         e = string("BRK")[0] & 0x1F
         assert fold(e) == Binary(BinOp.AND, Int(ord("B"), Radix.CHAR), Int(0x1F))
 
-    def test_constant_index_renders_as_char_both_backends(self):
+    def test_constant_index_keeps_string_visible_by_default(self):
+        # Readability first: the string stays in the output.
         e = string("LDA")[0]
-        assert self.bee.render_expression(e, None) == "'L'"
-        assert self.tass.render_expression(e, None) == "'L'"
+        assert self.tass.render_expression(e, None) == '"LDA"[0]'
+        assert self.bee.render_expression(e, None) == 'ASC(MID$("LDA", 1, 1))'
 
-    def test_non_constant_index_renders_natively(self):
+    def test_fold_string_ops_flag_collapses_to_char(self):
+        # Opt-in terseness: fold constant string ops to the value.
+        e = string("LDA")[0]
+        assert Tass64Renderer(fold_string_ops=True) \
+            .render_expression(e, None) == "'L'"
+        assert BeebasmRenderer(fold_string_ops=True) \
+            .render_expression(e, None) == "'L'"
+
+    def test_non_constant_string_index_renders_natively(self):
+        # The string is a symbol (macro-parameter-like); the constant
+        # index folds to a clean 1-based position for beebasm's MID$.
         e = sym("mnem")[2]
-        assert self.bee.render_expression(e, None) == "ASC(MID$(mnem, 2 + 1, 1))"
+        assert self.bee.render_expression(e, None) == "ASC(MID$(mnem, 3, 1))"
         assert self.tass.render_expression(e, None) == "mnem[2]"
 
 
