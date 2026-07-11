@@ -19,24 +19,22 @@ An extensible tracing disassembler for classic CPUs, version `{{ version }}`.
 > *From Ancient Greek* δασμός *(dasmós, "division"), from* δαίω
 > *(daíō, "to divide, share").*
 
-*Dasmos* turns binary images — ROM dumps, cartridge contents, captured
-snapshots of memory — into readable, annotated assembly source.
+*Dasmos* helps turn binary images, such as ROM dumps, cartridge contents,
+or captured snapshots of memory, into readable, annotated assembly source.
 Starting from one or more entry points, the *tracing* core follows
 reachable code paths to classify which bytes are instructions and
 which are data, then renders the result via a chosen assembler-syntax
-back-end (or as structured JSON for downstream tooling). The
-round-trip property — binary → driver → assembly → binary where
-`binary == binary` — is checked in CI against real ROMs, so the
-disassembly is byte-faithful, not just plausible.
+back-end (such as beebasm or 64tass) or as structured JSON for downstream
+tooling.
 
-You drive *Dasmos* either as a one-shot CLI command or via a Python
-*driver script* that accretes labels, comments, data classifications,
+You drive *Dasmos* either as a one-shot CLI command or more usually via
+a Python *driver script* that accretes labels, comments, data classifications,
 subroutine banners, and cross-references as you grow your
 understanding of the code; re-running the script regenerates the
 listing. CPUs, assembler-syntax back-ends, and target environments
-all ship as composable plug-ins, so adding support for a new chip
-family or a new assembler dialect is a self-contained extension,
-without needing to modify the original code.
+all ship as composable plug-ins, so adding support for an instruction set
+architecture or a new assembler dialect is a self-contained extension,
+without needing to modify the core code.
 
 ## Install
 
@@ -65,11 +63,6 @@ Or with pip:
 pip install dasmos
 ```
 
-*Dasmos*'s round-trip / parity tests assemble back to bytes via
-[beebasm](https://github.com/stardot/beebasm); `beebasm` on `PATH`
-(or via the `BEEBASM` env var) activates them. CI builds beebasm
-from source per matrix cell so the round-trip is part of the gate.
-
 ## Programmatic API
 
 Every CLI capability is also reachable through the package. The
@@ -92,11 +85,7 @@ print(str(ir.render("beebasm")))
 ```
 
 That produces beebasm-assemblable source. Re-assembling it via the
-real `beebasm` binary yields a binary byte-identical to the input
-— the load-bearing **round-trip property** *Dasmos*'s test suite
-exercises against real Acorn ROMs (the 8 KB Econet Bridge and the
-2 KB-mapped 6502 Tube Client both round-trip end-to-end with full
-py8dis annotation-content parity).
+`beebasm` binary yields a binary byte-identical to the input.
 
 ## CLI
 
@@ -148,28 +137,6 @@ $ dasmos list-cpus --help
 {{ help_list_cpus }}
 ```
 
-## Migrating a py8dis driver
-
-`scripts/py8dis2dasmos.py` is an AST-based porter that translates a
-py8dis driver script into the equivalent *Dasmos* call shape:
-
-```sh
-uv run python scripts/py8dis2dasmos.py path/to/disasm_<rom>.py > ported.py
-```
-
-It rewrites the wildcard import, swaps `load(addr, file, cpu)` order,
-maps `move()` → `d.add_move(...)`, threads `inline=True` →
-`align=Align.INLINE`, recognises `subroutine(..., is_entry_point=False)`
-as a label-plus-banner pair, expands `hook_subroutine` and the bundled
-hooks (`stringhi_hook`, …) through `dasmos.hooks`, and configures the
-`render()` call so the output matches py8dis's defaults
-(`boundary_label_prefix='pydis_'`, `byte_column=True`).
-
-Every transformation is covered by unit tests, plus a load-bearing
-end-to-end test that ports the unmodified Econet Bridge driver and
-asserts the resulting beebasm source re-assembles to the original ROM
-bytes.
-
 ## Testing
 
 `pytest -v` runs the suite. Tests marked `@pytest.mark.beebasm`
@@ -219,22 +186,27 @@ tests/fixtures/             Vendored ROM + driver + reference output
 *Dasmos* is a ground-up rewrite and reimagining of a heavily modified
 [fork][py8dis-fork] of [py8dis][py8dis-original] — Steven Flintham's
 original programmable tracing disassembler for the 6502 family.
-*Dasmos* owes the whole core idea to Steven and to the py8dis project;
-this project organises a tracing disassembler as a core algorithm
-customised through plug-in extensions which provide knowledge of CPUs,
-different assembly syntaxes, and target environments. The core of the
-essential design vocabulary — driver scripts, traced classification,
-label/comment/banner annotations — is all inspired by py8dis.
+*Dasmos* owes the core idea of a scriptable disassembler to Steven
+and to the py8dis project. Unlike py8dis, Dasmos organises a tracing
+disassembler as a core algorithm customised through plug-in extensions
+which provide knowledge of CPUs, different assembly syntaxes, and target
+environments. The core of the essential design vocabulary — driver
+scripts, traced classification, label/comment/banner annotations — is
+all inspired by py8dis.
 
 py8dis was itself heavily influenced by Phill Harvey-Smith's
 [BeebDis][beebdis], an earlier 6502 disassembler for the BBC Micro
 ecosystem; py8dis modelled its command surface on BeebDis where it
-could. *Dasmos* therefore stands at the end of a chain of work —
-BeebDis → py8dis → the acornaeology fork → *Dasmos* — and gratefully
-acknowledges the contribution each step made to the next.
+could. *Dasmos* is therefore a link in a chain of work —
+BeebDis → py8dis → the acornaeology fork of py8dis → *Dasmos* — and
+gratefully acknowledges the contribution each step made to the next.
 
 Driver scripts written for py8dis can be ported automatically to
-*Dasmos* with the bundled `scripts/py8dis2dasmos.py`.
+*Dasmos* with the bundled `scripts/py8dis2dasmos.py`:
+
+```sh
+uv run python scripts/py8dis2dasmos.py path/to/disasm_<rom>.py > ported.py
+```
 
 [py8dis-original]: https://github.com/ZornsLemma/py8dis
 [py8dis-fork]: https://github.com/acornaeology/py8dis
