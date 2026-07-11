@@ -234,7 +234,7 @@ src/dasmos/core/            Memory / labels / moves / classifications
 src/dasmos/cpu.py           Cpu base + Opcode shape
 src/dasmos/renderer.py      Renderer base
 src/dasmos/ext/cpus/        Bundled CPU plug-ins (cpu6502, cpu65c02)
-src/dasmos/ext/renderers/   Bundled renderer plug-ins (beebasm)
+src/dasmos/ext/renderers/   Bundled renderer plug-ins (beebasm, 64tass)
 src/dasmos/hooks.py         Subroutine hooks (stringhi_hook, …)
 scripts/py8dis2dasmos.py    py8dis → dasmos AST porter
 scripts/generate_readme.py  This README's generator
