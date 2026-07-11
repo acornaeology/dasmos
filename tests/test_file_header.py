@@ -140,6 +140,20 @@ class TestBuildInstructions:
         text = str(_mk().disassemble().render(r))
         assert ";   beebasm -i out.asm -o <output.bin>" in text
 
+    def test_build_output_name_gives_concrete_o_without_save_filename(self):
+        # The decoupling: name the -o target for the command WITHOUT
+        # emitting a ``save "<file>"`` directive — so an external harness
+        # that captures via -o still works (a save filename makes beebasm
+        # ignore -o). All via render kwargs, no explicit instance.
+        text = str(_mk().disassemble().render(
+            "beebasm", boundary_label_prefix="",
+            include_build_instructions=True,
+            listing_filename="basic-2.asm", build_output_name="basic-2.rom"))
+        assert ";   beebasm -i basic-2.asm -o basic-2.rom" in text
+        # The save directive stays filename-less (so -o capture works).
+        assert 'save "basic-2.rom"' not in text
+        assert "save &2000" in text
+
     def test_tass64_command(self):
         r = Tass64Renderer(include_build_instructions=True,
                            listing_filename="basic-2.s")

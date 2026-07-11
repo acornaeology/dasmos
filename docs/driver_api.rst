@@ -448,10 +448,35 @@ renderer keyword:
 The command is the backend's own (64tass emits its
 ``64tass --nostart -o … …`` form); the driver only decides whether to
 include it. ``listing_filename`` names the ``.asm`` the command reads (the
-renderer doesn't otherwise know it); the output name comes from
-:meth:`~dasmos.Disassembler` / the renderer's ``output_filename``. Both
-the header and the build block are comment-only, so assembled bytes are
-unaffected and the round-trip still holds.
+renderer doesn't otherwise know it). Both the header and the build block
+are comment-only, so assembled bytes are unaffected and the round-trip
+still holds.
+
+.. note:: **Naming the output — and the beebasm** ``save`` **coupling.**
+
+   How the concrete output name appears in the beebasm command depends on
+   how the listing produces the binary, and the two interact:
+
+   - :meth:`set_output_filename <dasmos.Disassembler>` makes the beebasm
+     renderer emit a ``save "<file>", start, end`` directive; the command
+     is then ``beebasm -i <listing>`` (the ``save`` writes the file).
+     **But beebasm ignores** ``-o`` **when a** ``save`` **filename is
+     present** — so an external harness that captures the binary via
+     ``beebasm … -o out.rom`` (e.g. a verify/CI step) gets an empty
+     capture and the round-trip check fails.
+   - For an ``-o``-based harness, therefore, leave the output filename
+     unset (the ``save`` stays filename-less) and pass ``build_output_name``
+     to name the ``-o`` target *for the command comment only*, decoupled
+     from the ``save`` directive::
+
+        ir.render("beebasm", include_build_instructions=True,
+                  listing_filename="basic-2.asm",
+                  build_output_name="basic-2.rom")
+        # →  ;   beebasm -i basic-2.asm -o basic-2.rom
+        #    (and the emitted ``save`` remains filename-less)
+
+   64tass has no in-source ``save``, so it always uses ``-o`` and this
+   coupling doesn't arise; ``build_output_name`` simply names its target.
 
 
 Classifying data

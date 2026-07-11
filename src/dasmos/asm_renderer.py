@@ -109,6 +109,7 @@ class AssemblerRenderer(TextRenderer):
         fold_string_ops: bool = False,
         include_build_instructions: bool = False,
         listing_filename: str | None = None,
+        build_output_name: str | None = None,
         **kwargs,
     ):
         super().__init__(name=name, **kwargs)
@@ -143,6 +144,15 @@ class AssemblerRenderer(TextRenderer):
         # know it) — a placeholder is used when omitted.
         self.include_build_instructions = include_build_instructions
         self.listing_filename = listing_filename
+        # The concrete output name to show in the build command's ``-o``,
+        # *decoupled* from ``output_filename`` (which drives the in-source
+        # ``save "<file>"`` directive). Set this — and leave
+        # ``output_filename`` unset — when the binary is captured via the
+        # assembler's ``-o`` flag by an external harness (e.g. a verify
+        # step): a ``save`` filename would make beebasm ignore ``-o`` and
+        # the capture would come back empty. A placeholder is shown when
+        # omitted.
+        self.build_output_name = build_output_name
         # Readability vs terseness for string operations. Default False:
         # keep the string visible by rendering the op in this assembler's
         # native syntax (``"BRK"[0]`` / ``ASC(MID$("BRK",1,1))``), which

@@ -192,9 +192,11 @@ class BeebasmRenderer(AssemblerRenderer):
 
         When the listing carries a ``save "<file>", …`` directive (i.e.
         ``output_filename`` is set), ``beebasm -i <listing>`` writes that
-        file itself — no ``-o`` needed. Otherwise the output name is given
-        with ``-o``. (Note: ``-do`` is beebasm's *disc image* output, not
-        the raw binary — deliberately not used here.)
+        file itself — no ``-o`` needed, and beebasm would *ignore* a
+        ``-o`` in that case. Otherwise the output is captured with ``-o``,
+        named by ``build_output_name`` (or a placeholder). (Note: ``-do``
+        is beebasm's *disc image* output, not the raw binary — never used
+        here.)
         """
         listing = self.listing_filename or "<listing>.asm"
         if self.output_filename is not None:
@@ -202,9 +204,10 @@ class BeebasmRenderer(AssemblerRenderer):
                 "Assemble with beebasm:",
                 f"beebasm -i {listing}",
             ]
+        output = self.build_output_name or "<output.bin>"
         return [
             "Assemble with beebasm:",
-            f"beebasm -i {listing} -o <output.bin>",
+            f"beebasm -i {listing} -o {output}",
         ]
 
     def _save_directive(self, load_start, load_end) -> str:

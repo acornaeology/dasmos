@@ -61,10 +61,11 @@ class Tass64Renderer(AssemblerRenderer):
     def build_command(self) -> list[str] | None:
         """The 64tass invocation that assembles this listing to a raw
         binary. 64tass has no in-source save directive, so the output name
-        is always given with ``-o``; ``--nostart`` strips the load-address
-        header so the file is the raw ROM image."""
+        is always given with ``-o`` (``build_output_name``, else the save
+        ``output_filename``, else a placeholder); ``--nostart`` strips the
+        load-address header so the file is the raw ROM image."""
         listing = self.listing_filename or "<listing>.asm"
-        output = self.output_filename or "<output.bin>"
+        output = self.build_output_name or self.output_filename or "<output.bin>"
         return [
             "Assemble with 64tass:",
             f"64tass --nostart -o {output} {listing}",
