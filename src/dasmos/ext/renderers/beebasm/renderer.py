@@ -323,6 +323,11 @@ class BeebasmRenderer(AssemblerRenderer):
         args = ", ".join(self._macro_arg_texts(call, ir))
         return [f"    {call.name} {args}"]
 
+    def render_bitwise_not(self, inner_text: str) -> str:
+        # Beebasm spells bitwise complement as the function ``NOT(...)``,
+        # not the ``~`` operator (which it doesn't have).
+        return f"NOT({inner_text})"
+
     # Beebasm string functions are 1-based (MID$); character code via
     # ASC. Used only for a non-constant string op (a macro parameter) —
     # constant ones are folded to character literals before rendering.

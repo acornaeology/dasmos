@@ -1005,17 +1005,20 @@ class JsonRenderer(Renderer[StructuredOutput]):
         if isinstance(e, Group):
             return f"({self._expr_text(e.inner, ir)})", atom
         if isinstance(e, Unary):
-            if e.op in (UnaryOp.LOWBYTE, UnaryOp.HIGHBYTE):
-                # The byte-select brackets its own operand, so no extra
-                # wrapping (and unwrap a redundant Group inside).
+            # Function-like (bracketed) forms: byte-selects, bitwise NOT
+            # (beebasm-flavoured ``NOT(...)``), bank byte.
+            _bracket = {
+                UnaryOp.LOWBYTE: "<", UnaryOp.HIGHBYTE: ">",
+                UnaryOp.INVERT: "NOT", UnaryOp.BANKBYTE: "^",
+            }
+            if e.op in _bracket:
                 operand = (
                     e.operand.inner if isinstance(e.operand, Group)
                     else e.operand
                 )
                 inner = self._expr_text(operand, ir)
-                sel = "<" if e.op is UnaryOp.LOWBYTE else ">"
-                return f"{sel}({inner})", atom
-            token = {UnaryOp.NEG: "-", UnaryOp.POS: "+", UnaryOp.INVERT: "~"}[e.op]
+                return f"{_bracket[e.op]}({inner})", atom
+            token = {UnaryOp.NEG: "-", UnaryOp.POS: "+"}[e.op]
             inner, inner_prec = self._expr_text_prec(e.operand, ir)
             if inner_prec < 8:
                 inner = f"({inner})"

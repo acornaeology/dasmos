@@ -15,8 +15,9 @@ exotic strings.
 
 The grammar and precedence follow beebasm (``beebasm/src/expression.cpp``):
 ``* / MOD DIV << >>`` (tightest binary), then ``+ -``, then ``AND``, then
-``OR`` / ``EOR``; unary ``-`` and the byte-selects ``< > HI( LO(`` bind
-tighter than any binary operator.
+``OR`` / ``EOR``; unary ``-`` / ``+``, the byte-selects ``< > HI( LO(``,
+and the bitwise complement ``NOT(`` bind tighter than any binary
+operator.
 """
 
 from __future__ import annotations
@@ -55,7 +56,7 @@ _BINARY_OPS = {
     "OR": (BinOp.OR, 2), "EOR": (BinOp.XOR, 2),
 }
 
-_KEYWORDS = {"AND", "OR", "EOR", "MOD", "DIV", "HI", "LO"}
+_KEYWORDS = {"AND", "OR", "EOR", "MOD", "DIV", "HI", "LO", "NOT"}
 
 _TOKEN_RE = re.compile(
     r"""
@@ -198,6 +199,12 @@ class _Parser:
             self._expect_op(")")
             fn = hi if value == "HI" else lo
             return fn(inner)
+        if kind == "kw" and value == "NOT":
+            # Bitwise complement function: NOT( expr ) (beebasm form).
+            self._expect_op("(")
+            inner = self._parse_binary(0)
+            self._expect_op(")")
+            return Unary(UnaryOp.INVERT, inner)
         if tok == ("op", "("):
             inner = self._parse_binary(0)
             self._expect_op(")")

@@ -2169,24 +2169,29 @@ class AssemblerRenderer(TextRenderer):
         literal when the address has no name."""
         return self._addr_text(ir, int(node.runtime_addr), width=16)
 
+    #: Unary operators rendered as a *function-like* form that brackets
+    #: its own operand (so operand precedence is irrelevant and no
+    #: ambiguity can arise). The rest (NEG/POS) are prefix operators.
+    _UNARY_FUNCTION_OPS = frozenset(
+        {UnaryOp.LOWBYTE, UnaryOp.HIGHBYTE, UnaryOp.INVERT, UnaryOp.BANKBYTE}
+    )
+
     def _emit_unary(self, e: Unary, ir, active_move) -> tuple[str, int]:
-        prec = self._UNARY_PRECEDENCE[e.op]
-        if e.op in (UnaryOp.LOWBYTE, UnaryOp.HIGHBYTE):
-            # Byte-selects always parenthesise their operand, so its own
-            # precedence is irrelevant and no ambiguity can arise. An
-            # explicit Group directly inside would double the parens —
-            # unwrap one level.
+        if e.op in self._UNARY_FUNCTION_OPS:
+            # Bracketed forms: an explicit Group directly inside would
+            # double the parens — unwrap one level.
             operand = e.operand.inner if isinstance(e.operand, Group) else e.operand
             inner, _ = self._emit_expr(operand, ir, active_move)
-            render = (
-                self.render_lowbyte if e.op is UnaryOp.LOWBYTE
-                else self.render_highbyte
-            )
+            render = {
+                UnaryOp.LOWBYTE: self.render_lowbyte,
+                UnaryOp.HIGHBYTE: self.render_highbyte,
+                UnaryOp.INVERT: self.render_bitwise_not,
+                UnaryOp.BANKBYTE: self.render_bank_byte,
+            }[e.op]
             return render(inner), self._ATOM_PRECEDENCE
+        prec = self._UNARY_PRECEDENCE[e.op]
         inner = self._emit_child(e.operand, ir, active_move, prec, right=True)
-        token = {
-            UnaryOp.NEG: "-", UnaryOp.POS: "+", UnaryOp.INVERT: "~",
-        }[e.op]
+        token = {UnaryOp.NEG: "-", UnaryOp.POS: "+"}[e.op]
         return f"{token}{inner}", prec
 
     def _emit_binary(self, e: Binary, ir, active_move) -> tuple[str, int]:
@@ -2212,3 +2217,17 @@ class AssemblerRenderer(TextRenderer):
     def render_highbyte(self, inner_text: str) -> str:
         """High byte of an already-rendered sub-expression."""
         return f">({inner_text})"
+
+    def render_bitwise_not(self, inner_text: str) -> str:
+        """Bitwise complement of an already-rendered sub-expression.
+        Default ``~(...)`` (64tass, ca65, acme); beebasm overrides with
+        its function form ``NOT(...)``."""
+        return f"~({inner_text})"
+
+    def render_bank_byte(self, inner_text: str) -> str:
+        """Bank byte (bits 16-23) of an already-rendered sub-expression —
+        a 65816 concept. Unsupported by default; a backend targeting the
+        65816 overrides it (64tass ``^``)."""
+        raise NotImplementedError(
+            f"{type(self).__name__} has no bank-byte operator"
+        )

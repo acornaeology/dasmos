@@ -105,6 +105,25 @@ class TestParse:
         assert e.op is BinOp.AND
         assert e.left == Binary(BinOp.SUB, Sym("a"), Sym("b"))
 
+    @pytest.mark.parametrize("text,op", [
+        ("a + b", BinOp.ADD), ("a - b", BinOp.SUB), ("a * b", BinOp.MUL),
+        ("a / b", BinOp.DIV), ("a DIV b", BinOp.DIV), ("a MOD b", BinOp.MOD),
+        ("a AND b", BinOp.AND), ("a OR b", BinOp.OR), ("a EOR b", BinOp.XOR),
+        ("a << b", BinOp.SHL), ("a >> b", BinOp.SHR),
+    ])
+    def test_every_dialect_binary_operator(self, text, op):
+        e = parse_expression(text)
+        assert isinstance(e, Binary) and e.op is op
+
+    def test_unary_minus_and_plus(self):
+        assert parse_expression("-a").op is UnaryOp.NEG
+        assert parse_expression("+a").op is UnaryOp.POS
+
+    def test_not_function_is_bitwise_complement(self):
+        # beebasm spells bitwise NOT as NOT(...); parse to INVERT.
+        e = parse_expression("NOT(x)")
+        assert e.op is UnaryOp.INVERT and e.operand == Sym("x")
+
 
 class TestParseErrors:
     @pytest.mark.parametrize("bad", ["", "1 +", "(a", "@weird", "a b"])
