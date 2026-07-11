@@ -131,6 +131,17 @@ class TestJson:
         }
         assert item["expressions"][0]["text"] == 'pack_lo("LDA")'
 
+    def test_body_text_is_precedence_safe(self):
+        # Regression: the JSON body ``text`` must keep the inner
+        # (param AND mask) parentheses and spell integer division ``DIV``,
+        # so it re-parses to the same value (not ``AND &1f * &400`` or a
+        # real-division ``/``).
+        ir, _ = _build_ir("hi")   # hi half uses integer division
+        body_text = ir.render(JsonRenderer()).data["macros"][0]["body"]["text"]
+        assert "(mnem[0] AND &1f)" in body_text     # inner parens kept
+        assert " DIV " in body_text                 # integer division
+        assert " / " not in body_text
+
 
 # ---------------------------------------------------------------------------
 # Assemble-and-verify

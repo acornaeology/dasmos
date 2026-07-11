@@ -24,6 +24,14 @@ The DSL lives in :mod:`dasmos.expr`:
 
    from dasmos.expr import ref, sym, lo, hi, hexlit, char, string, param
 
+.. note::
+
+   ``ir.render("beebasm")`` returns a
+   :class:`~dasmos.output.TextOutput`, not a bare string — wrap it in
+   ``str(...)`` (or ``print``) to get the source text:
+   ``print(str(ir.render("beebasm")))``. The listings below are that
+   string.
+
 
 Recipe 1: an operand plus a constant
 ------------------------------------

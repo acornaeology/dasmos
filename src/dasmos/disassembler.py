@@ -1129,7 +1129,10 @@ class Disassembler:
         binary_addr = self._resolve_to_binary_addr(runtime_addr, move)
         if isinstance(expression, str):
             expression = parse_or_raw(expression)
-        self._expressions.add(binary_addr, expression)
+        # Explicit: a driver's override always wins over an
+        # auto-synthesised expression (e.g. a ``code_ptr`` hi/lo byte that
+        # collides at the same address), regardless of call order.
+        self._expressions.add(binary_addr, expression, explicit=True)
 
     def format_hint(
         self,

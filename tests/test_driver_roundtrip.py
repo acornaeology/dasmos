@@ -1685,6 +1685,26 @@ class TestCodePtr:
         # Rendered expression includes the -1 offset.
         assert "equw target - 1" in text
 
+    def test_explicit_expr_overrides_code_ptr_synthesised_byte(
+        self, disassemble_and_render,
+    ):
+        # Regression: a code_ptr split-table high byte auto-synthesises a
+        # ``>(target)`` expression at its address; an explicit d.expr at
+        # the same address must win (driver intent over auto), regardless
+        # of the order the two calls are made.
+        binary = bytes([0x04, 0x00, 0x80, 0x60])  # lo, filler, hi, rts
+
+        def configure(d):
+            d.code_ptr(0x8000, 0x8002, label_name="target")
+            # The high byte at &8002 auto-renders ``>(target)``; pin it.
+            d.expr(0x8002, "&80")
+
+        text, _ = disassemble_and_render(
+            binary=binary, load_addr=0x8000, configure=configure,
+        )
+        assert "equb &80" in text
+        assert ">(target)" not in text
+
 
 @pytest.mark.beebasm
 class TestStringz:

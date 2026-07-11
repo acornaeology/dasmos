@@ -195,21 +195,38 @@ class ExpressionRegistry:
 
     def __init__(self):
         self._expressions: dict[BinaryAddr, Expr] = {}
+        #: Addresses whose expression was registered *explicitly* by a
+        #: driver (``Disassembler.expr``), as opposed to auto-synthesised
+        #: (``code_ptr`` / ``rts_code_ptr``). Explicit registrations win
+        #: over auto ones regardless of call order.
+        self._explicit: set[BinaryAddr] = set()
 
     def __contains__(self, binary_addr) -> bool:
         return BinaryAddr(binary_addr) in self._expressions
 
-    def add(self, binary_addr, expression) -> None:
+    def add(self, binary_addr, expression, *, explicit: bool = False) -> None:
         """Register ``expression`` (an :class:`Expr`, ``str`` or ``int``)
         at ``binary_addr``.
 
-        Silently ignored if an expression is already registered at
-        that address — registration is idempotent so that multi-pass
-        classifiers can add expressions without special-casing
-        duplicates.
+        Precedence, independent of call order:
+
+        - An **explicit** registration (a driver's ``d.expr``) always wins
+          — it overwrites a previously auto-synthesised expression, and is
+          itself first-write-wins against other explicit registrations.
+        - An **auto** registration (``code_ptr`` and friends, default) is
+          idempotent and never overwrites anything — so a multi-pass
+          classifier can add freely, and a driver's explicit override at
+          the same address takes precedence whether it ran before or
+          after the auto one.
         """
         binary_addr = BinaryAddr(binary_addr)
-        if binary_addr not in self._expressions:
+        present = binary_addr in self._expressions
+        if explicit:
+            if binary_addr not in self._explicit:
+                # First explicit write wins over anything auto.
+                self._expressions[binary_addr] = as_expr(expression)
+                self._explicit.add(binary_addr)
+        elif not present:
             self._expressions[binary_addr] = as_expr(expression)
 
     def get(self, binary_addr) -> Expr:

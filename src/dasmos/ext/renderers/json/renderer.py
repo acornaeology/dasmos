@@ -939,68 +939,98 @@ class JsonRenderer(Renderer[StructuredOutput]):
                 out.append(None)
         return out if has_any else None
 
+    #: Beebasm-flavoured operator precedence (higher binds tighter), used
+    #: to parenthesise the JSON ``text`` rendering so it is unambiguous
+    #: and re-parseable — not merely decorative. Mirrors the beebasm text
+    #: renderer's table.
+    _TEXT_ATOM_PREC = 1000
+    _TEXT_BINARY_PREC = {
+        BinOp.MUL: 6, BinOp.DIV: 6, BinOp.MOD: 6, BinOp.SHL: 6, BinOp.SHR: 6,
+        BinOp.ADD: 5, BinOp.SUB: 5,
+        BinOp.AND: 3, BinOp.OR: 2, BinOp.XOR: 2,
+    }
+    _TEXT_BINARY_TOKEN = {
+        BinOp.ADD: "+", BinOp.SUB: "-", BinOp.MUL: "*", BinOp.DIV: "DIV",
+        BinOp.MOD: "MOD", BinOp.AND: "AND", BinOp.OR: "OR", BinOp.XOR: "EOR",
+        BinOp.SHL: "<<", BinOp.SHR: ">>",
+    }
+
     def _expr_text(self, e: Expr, ir) -> str:
         """Render an :class:`~dasmos.core.expr.Expr` as JSON operand text.
 
         JSON keeps the historical beebasm-flavoured operand spelling
-        (``&`` hex, ``AND``/``EOR``, ``<(...)`` byte-select). A
-        :class:`~dasmos.core.expr.Raw` node — a legacy dialect string —
-        is emitted verbatim. String operations keep the string visible
-        (``"BRK"[0]``), matching the readable assembler output and the
-        structural ``tree``.
+        (``&`` hex, ``AND``/``EOR``, ``DIV`` integer division, ``<(...)``
+        byte-select). A :class:`~dasmos.core.expr.Raw` node — a legacy
+        dialect string — is emitted verbatim. String operations keep the
+        string visible (``"BRK"[0]``). Parentheses are inserted per
+        operator precedence so the text is a faithful, re-parseable
+        rendering (the structured ``tree`` remains authoritative).
         """
+        return self._expr_text_prec(e, ir)[0]
+
+    def _expr_text_prec(self, e: Expr, ir) -> tuple[str, int]:
+        """``(text, precedence)`` for ``e`` — precedence is the top
+        operator's, or :attr:`_TEXT_ATOM_PREC` for a leaf, so the caller
+        knows whether to wrap it in parentheses."""
+        atom = self._TEXT_ATOM_PREC
         if isinstance(e, Raw):
-            return e.text
+            return e.text, atom
         if isinstance(e, Param):
-            return e.name
+            return e.name, atom
         if isinstance(e, MacroCall):
             args = ", ".join(self._expr_text(a, ir) for a in e.args)
-            return f"{e.name}({args})"
+            return f"{e.name}({args})", atom
         if isinstance(e, Str):
-            return f'"{e.text}"'
+            return f'"{e.text}"', atom
         if isinstance(e, StrIndex):
-            return f"{self._expr_text(e.string, ir)}[{self._expr_text(e.index, ir)}]"
+            return (
+                f"{self._expr_text(e.string, ir)}[{self._expr_text(e.index, ir)}]",
+                atom,
+            )
         if isinstance(e, StrSlice):
             stop = "" if e.stop is None else self._expr_text(e.stop, ir)
             return (
                 f"{self._expr_text(e.string, ir)}"
-                f"[{self._expr_text(e.start, ir)}:{stop}]"
+                f"[{self._expr_text(e.start, ir)}:{stop}]",
+                atom,
             )
         if isinstance(e, StrLen):
-            return f"len({self._expr_text(e.string, ir)})"
+            return f"len({self._expr_text(e.string, ir)})", atom
         if isinstance(e, Sym):
-            return e.name
+            return e.name, atom
         if isinstance(e, Ref):
-            return self._addr_label_or_hex(ir, int(e.runtime_addr), width=16)
+            return self._addr_label_or_hex(ir, int(e.runtime_addr), width=16), atom
         if isinstance(e, Int):
-            return self._expr_int_text(e)
+            return self._expr_int_text(e), atom
         if isinstance(e, Group):
-            return f"({self._expr_text(e.inner, ir)})"
+            return f"({self._expr_text(e.inner, ir)})", atom
         if isinstance(e, Unary):
-            operand = e.operand.inner if isinstance(e.operand, Group) else e.operand
-            inner = self._expr_text(operand, ir)
-            if e.op is UnaryOp.LOWBYTE:
-                return f"<({inner})"
-            if e.op is UnaryOp.HIGHBYTE:
-                return f">({inner})"
-            token = {UnaryOp.NEG: "-", UnaryOp.POS: "+",
-                     UnaryOp.INVERT: "~"}.get(e.op, "")
-            return f"{token}{inner}"
+            if e.op in (UnaryOp.LOWBYTE, UnaryOp.HIGHBYTE):
+                # The byte-select brackets its own operand, so no extra
+                # wrapping (and unwrap a redundant Group inside).
+                operand = (
+                    e.operand.inner if isinstance(e.operand, Group)
+                    else e.operand
+                )
+                inner = self._expr_text(operand, ir)
+                sel = "<" if e.op is UnaryOp.LOWBYTE else ">"
+                return f"{sel}({inner})", atom
+            token = {UnaryOp.NEG: "-", UnaryOp.POS: "+", UnaryOp.INVERT: "~"}[e.op]
+            inner, inner_prec = self._expr_text_prec(e.operand, ir)
+            if inner_prec < 8:
+                inner = f"({inner})"
+            return f"{token}{inner}", 8
         if isinstance(e, Binary):
-            token = {
-                BinOp.ADD: "+", BinOp.SUB: "-", BinOp.MUL: "*", BinOp.DIV: "/",
-                BinOp.MOD: "MOD", BinOp.AND: "AND", BinOp.OR: "OR",
-                BinOp.XOR: "EOR", BinOp.SHL: "<<", BinOp.SHR: ">>",
-            }[e.op]
-            # No auto-parenthesisation: an explicit Group node carries the
-            # author's parens (matching dasmos.core.expr.canonical_text).
-            # The structured ``tree`` is authoritative; this is a readable
-            # rendering, not something re-parsed.
-            return (
-                f"{self._expr_text(e.left, ir)} {token} "
-                f"{self._expr_text(e.right, ir)}"
-            )
+            prec = self._TEXT_BINARY_PREC[e.op]
+            left = self._text_child(e.left, ir, prec, right=False)
+            right = self._text_child(e.right, ir, prec, right=True)
+            return f"{left} {self._TEXT_BINARY_TOKEN[e.op]} {right}", prec
         raise TypeError(f"cannot render expression node {type(e).__name__}")
+
+    def _text_child(self, child, ir, parent_prec: int, *, right: bool) -> str:
+        text, child_prec = self._expr_text_prec(child, ir)
+        needs = child_prec < parent_prec or (right and child_prec == parent_prec)
+        return f"({text})" if needs else text
 
     @staticmethod
     def _expr_int_text(node: Int) -> str:

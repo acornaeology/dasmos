@@ -196,3 +196,25 @@ class TestExpressionRegistry:
         reg_b = ExpressionRegistry()
         reg_a.add(BinaryAddr(0x8000), "in_a")
         assert reg_b.get_or_none(BinaryAddr(0x8000)) is None
+
+    def test_explicit_wins_over_earlier_auto(self):
+        # An auto-synthesised expression (e.g. from code_ptr) is present;
+        # a later explicit driver override must replace it.
+        reg = ExpressionRegistry()
+        reg.add(BinaryAddr(0x8000), "auto_expr")          # auto (default)
+        reg.add(BinaryAddr(0x8000), "&be", explicit=True)  # driver override
+        assert reg.get(BinaryAddr(0x8000)) == Raw("&be")
+
+    def test_explicit_wins_over_later_auto(self):
+        # Order-independent: the explicit override still wins even when the
+        # auto registration happens afterwards.
+        reg = ExpressionRegistry()
+        reg.add(BinaryAddr(0x8000), "&be", explicit=True)
+        reg.add(BinaryAddr(0x8000), "auto_expr")           # must not clobber
+        assert reg.get(BinaryAddr(0x8000)) == Raw("&be")
+
+    def test_first_explicit_wins_over_later_explicit(self):
+        reg = ExpressionRegistry()
+        reg.add(BinaryAddr(0x8000), "first", explicit=True)
+        reg.add(BinaryAddr(0x8000), "second", explicit=True)
+        assert reg.get(BinaryAddr(0x8000)) == Raw("first")
