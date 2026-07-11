@@ -1,0 +1,273 @@
+{
+  "meta": {
+    "schema_version": 3,
+    "load_addr": 8192,
+    "end_addr": 8204
+  },
+  "constants": [
+    {
+      "name": "osbyte_read_himem",
+      "value": 14
+    }
+  ],
+  "macros": [
+    {
+      "name": "pack_lo",
+      "params": [
+        "mnem"
+      ],
+      "emit": "byte",
+      "body": {
+        "text": "((mnem[0] AND &1f) * &0400 + (mnem[1] AND &1f) * &20 + (mnem[2] AND &1f)) AND &ff",
+        "tree": {
+          "op": "and",
+          "left": {
+            "group": {
+              "op": "add",
+              "left": {
+                "op": "add",
+                "left": {
+                  "op": "mul",
+                  "left": {
+                    "op": "and",
+                    "left": {
+                      "op": "str_index",
+                      "string": {
+                        "param": "mnem"
+                      },
+                      "index": {
+                        "int": 0,
+                        "radix": "auto"
+                      }
+                    },
+                    "right": {
+                      "int": 31,
+                      "radix": "auto"
+                    }
+                  },
+                  "right": {
+                    "int": 1024,
+                    "radix": "auto"
+                  }
+                },
+                "right": {
+                  "op": "mul",
+                  "left": {
+                    "op": "and",
+                    "left": {
+                      "op": "str_index",
+                      "string": {
+                        "param": "mnem"
+                      },
+                      "index": {
+                        "int": 1,
+                        "radix": "auto"
+                      }
+                    },
+                    "right": {
+                      "int": 31,
+                      "radix": "auto"
+                    }
+                  },
+                  "right": {
+                    "int": 32,
+                    "radix": "auto"
+                  }
+                }
+              },
+              "right": {
+                "op": "and",
+                "left": {
+                  "op": "str_index",
+                  "string": {
+                    "param": "mnem"
+                  },
+                  "index": {
+                    "int": 2,
+                    "radix": "auto"
+                  }
+                },
+                "right": {
+                  "int": 31,
+                  "radix": "auto"
+                }
+              }
+            }
+          },
+          "right": {
+            "int": 255,
+            "radix": "auto"
+          }
+        }
+      }
+    }
+  ],
+  "subroutines": [
+    {
+      "addr": 8192,
+      "name": "start",
+      "title": "Entry",
+      "description": "The entry point."
+    }
+  ],
+  "banners": [],
+  "external_labels": {
+    "oswrch": 65518
+  },
+  "memory_map": [],
+  "index_bases": [],
+  "regions": [],
+  "items": [
+    {
+      "addr": 8192,
+      "bytes": [
+        169,
+        0
+      ],
+      "labels": [
+        "start"
+      ],
+      "type": "code",
+      "mnemonic": "lda",
+      "operand": "#osbyte_read_himem",
+      "expr": {
+        "text": "osbyte_read_himem",
+        "tree": {
+          "sym": "osbyte_read_himem"
+        }
+      }
+    },
+    {
+      "addr": 8194,
+      "bytes": [
+        96
+      ],
+      "type": "code",
+      "mnemonic": "rts",
+      "expr": {
+        "text": "pack_lo(\"LDA\")",
+        "tree": {
+          "macro_call": "pack_lo",
+          "args": [
+            {
+              "str": "LDA"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "addr": 8195,
+      "bytes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "labels": [
+        "table"
+      ],
+      "type": "byte",
+      "values": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "expressions": [
+        {
+          "text": "pack_lo(\"LDA\")",
+          "tree": {
+            "macro_call": "pack_lo",
+            "args": [
+              {
+                "str": "LDA"
+              }
+            ]
+          }
+        },
+        {
+          "text": "<(start - 1)",
+          "tree": {
+            "op": "lowbyte",
+            "operand": {
+              "op": "sub",
+              "left": {
+                "ref": 8192,
+                "name": "start"
+              },
+              "right": {
+                "int": 1,
+                "radix": "auto"
+              }
+            }
+          }
+        },
+        {
+          "text": ">(oswrch)",
+          "tree": {
+            "op": "highbyte",
+            "operand": {
+              "ref": 65518,
+              "name": "oswrch"
+            }
+          }
+        },
+        {
+          "text": "start - table AND &ff",
+          "tree": {
+            "op": "and",
+            "left": {
+              "op": "sub",
+              "left": {
+                "ref": 8192,
+                "name": "start"
+              },
+              "right": {
+                "ref": 8195,
+                "name": "table"
+              }
+            },
+            "right": {
+              "int": 255,
+              "radix": "auto"
+            }
+          }
+        },
+        {
+          "text": "&1f",
+          "tree": {
+            "int": 31,
+            "radix": "hex"
+          }
+        },
+        null
+      ]
+    },
+    {
+      "addr": 8201,
+      "bytes": [
+        0
+      ],
+      "type": "byte",
+      "values": [
+        0
+      ]
+    },
+    {
+      "addr": 8202,
+      "bytes": [
+        0,
+        0
+      ],
+      "type": "word",
+      "values": [
+        0
+      ]
+    }
+  ]
+}
