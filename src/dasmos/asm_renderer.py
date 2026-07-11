@@ -49,6 +49,7 @@ from dasmos.core.expr import (
     Unary,
     UnaryOp,
     fold,
+    substitute,
 )
 from dasmos.core.format_hint import FormatHint
 from dasmos.core.markdown_asm import markdown_to_asm_text, strip_address_uri_links
@@ -208,6 +209,13 @@ class AssemblerRenderer(TextRenderer):
         # uses ``b2r`` (most-recent move) and so misses inline anchors
         # from a non-most-recent move's body emission.
         self._inline_emitted_runtime_addrs: set[int] = set()
+        # Macros invoked *natively* (as a value function or a statement)
+        # during this render — only these get a definition emitted; a
+        # macro used only via inline-expansion needs none.
+        self._macros_used_natively: set[str] = set()
+        # Macro names already warned about being inline-expanded, so the
+        # warning fires once per macro rather than once per call site.
+        self._macros_expansion_warned: set[str] = set()
 
     def render(self, ir: "IntermediateRepresentation") -> TextOutput:
         """Walk the IR's classifications and emit a beebasm source
@@ -1820,10 +1828,17 @@ class AssemblerRenderer(TextRenderer):
         for i in range(n):
             addr = int(binary_addr) + i
             expr = ir.expressions.get_or_none(addr)
-            # A macro invocation on a backend without value macros is a
-            # statement, not a value — flush the run and emit its line(s).
-            if isinstance(expr, MacroCall) and not self.macro_calls_are_values:
+            # A data-item macro call on a non-value backend that has code
+            # macros is emitted as its own statement line (the native
+            # form). If the backend has no macro construct at all, we fall
+            # through and let render_expression inline-expand it.
+            if (
+                isinstance(expr, MacroCall)
+                and not self.macro_calls_are_values
+                and self.macro_statements_are_supported
+            ):
                 flush()
+                self._macros_used_natively.add(expr.name)
                 lines.extend(self.render_macro_statement(expr, ir))
                 continue
             if expr is not None:
@@ -1863,10 +1878,15 @@ class AssemblerRenderer(TextRenderer):
         for i in range(n_words):
             word_binary = int(binary_addr) + i * 2
             expr = ir.expressions.get_or_none(word_binary)
-            # A macro invocation on a backend without value macros is a
-            # statement, not a value — flush the run and emit its line(s).
-            if isinstance(expr, MacroCall) and not self.macro_calls_are_values:
+            # As in _render_byte: a data-item macro call renders as a
+            # statement on a code-macro backend, else inline-expands.
+            if (
+                isinstance(expr, MacroCall)
+                and not self.macro_calls_are_values
+                and self.macro_statements_are_supported
+            ):
                 flush()
+                self._macros_used_natively.add(expr.name)
                 lines.extend(self.render_macro_statement(expr, ir))
                 continue
             if expr is not None:
@@ -2030,10 +2050,19 @@ class AssemblerRenderer(TextRenderer):
         if isinstance(e, Param):
             return self.param_ref(e.name), self._ATOM_PRECEDENCE
         if isinstance(e, MacroCall):
-            return (
-                self.render_macro_value_call(e, ir, active_move),
-                self._ATOM_PRECEDENCE,
-            )
+            if self.macro_calls_are_values:
+                self._macros_used_natively.add(e.name)
+                return (
+                    self.render_macro_value_call(e, ir, active_move),
+                    self._ATOM_PRECEDENCE,
+                )
+            # No value-returning macro on this backend: inline-expand the
+            # body with the call's arguments and render that expression,
+            # preserving its own precedence when nested. Warned once (only
+            # once the call is known valid).
+            expanded = self._expand_macro_call(e, ir)
+            self._warn_macro_expanded(e.name)
+            return self._emit_expr(expanded, ir, active_move)
         if isinstance(e, (StrIndex, StrSlice, StrLen)):
             return self._emit_string_op(e, ir, active_move), self._ATOM_PRECEDENCE
         if isinstance(e, Unary):
@@ -2114,33 +2143,58 @@ class AssemblerRenderer(TextRenderer):
         params use sigils (64tass ``.macro`` ``\\name``) overrides."""
         return name
 
+    @property
+    def macro_statements_are_supported(self) -> bool:
+        """True iff this backend can emit a macro invocation as its own
+        statement line (a code macro: beebasm, acme, ca65). False on a
+        backend with no macro construct at all — where dasmos falls back
+        to inline-expanding even data-item calls."""
+        return False
+
     def render_macro_value_call(self, call, ir, active_move) -> str:
-        """A macro invocation used as a *value* (an operand, or nested
-        inside another expression). Only valid when
-        :attr:`macro_calls_are_values`; a data-item ``MacroCall`` is
-        instead intercepted by the byte/word renderer and emitted as a
-        statement line."""
-        if not self.macro_calls_are_values:
-            raise MacroRenderError(
-                f"macro {call.name!r} is used as a value (an operand or "
-                f"nested in an expression), but {type(self).__name__} has "
-                f"no value-returning macros — it can only emit a macro on "
-                f"its own data line. Register the macro call as a whole "
-                f"byte/word value, or target an assembler with value "
-                f"functions (e.g. 64tass)."
-            )
+        """A macro invocation used as a *value* — a native call
+        ``name(args)``. Only reached when :attr:`macro_calls_are_values`;
+        otherwise the value is produced by inline expansion instead."""
         args = ", ".join(
             self.render_expression(a, ir, active_move=active_move)
             for a in call.args
         )
         return f"{call.name}({args})"
 
+    def _expand_macro_call(self, call, ir) -> Expr:
+        """Inline-expand ``call``: bind its arguments to the definition's
+        parameters and substitute into the body, yielding an ordinary
+        expression this backend can render without a macro construct."""
+        macro = ir.macros.get(call.name)
+        if macro is None:
+            raise MacroRenderError(f"macro {call.name!r} is not defined")
+        if len(call.args) != len(macro.params):
+            raise MacroRenderError(
+                f"macro {call.name!r} takes {len(macro.params)} argument(s), "
+                f"got {len(call.args)}"
+            )
+        return substitute(macro.body, dict(zip(macro.params, call.args)))
+
+    def _warn_macro_expanded(self, name: str) -> None:
+        if name in self._macros_expansion_warned:
+            return
+        self._macros_expansion_warned.add(name)
+        warnings.warn(
+            f"macro {name!r} inline-expanded for {type(self).__name__}: this "
+            f"backend has no value-returning macro for this use, so the "
+            f"macro body is substituted at the call site (no definition "
+            f"emitted for it). Target an assembler with value functions "
+            f"(e.g. 64tass) to keep the macro form.",
+            UserWarning,
+            stacklevel=2,
+        )
+
     def _macro_arg_texts(self, call, ir) -> list[str]:
         return [self.render_expression(a, ir) for a in call.args]
 
     def render_macro_statement(self, call, ir) -> list[str]:
-        """A macro invocation as its own statement line(s). Backends
-        without value macros (beebasm, acme) override this."""
+        """A macro invocation as its own statement line(s). Backends with
+        code macros (beebasm, acme, ca65) override this."""
         raise NotImplementedError(
             f"{type(self).__name__} cannot render a macro invocation as a "
             f"statement"
@@ -2154,9 +2208,13 @@ class AssemblerRenderer(TextRenderer):
         )
 
     def _build_macro_definitions(self, ir) -> list[str]:
-        """The macro-definitions block, emitted once above the body."""
+        """The macro-definitions block, emitted once above the body — only
+        for macros actually invoked *natively* (a macro used solely via
+        inline expansion needs no definition)."""
         lines: list[str] = []
         for macro in ir.macros.values():
+            if macro.name not in self._macros_used_natively:
+                continue
             block = self.render_macro_definition(macro, ir)
             if block:
                 lines.extend(block)

@@ -271,6 +271,41 @@ class MacroDef:
     emit: str = "byte"
 
 
+def substitute(e: Expr, bindings: dict) -> Expr:
+    """Replace every :class:`Param` in ``e`` with its bound expression
+    from ``bindings`` (keyed by parameter name), recursing through the
+    whole tree. Used to *inline-expand* a macro: bind the call's
+    arguments to the definition's parameters and substitute into the
+    body, yielding an ordinary expression a backend can render without a
+    macro construct. An unbound parameter is left as-is.
+    """
+    if isinstance(e, Param):
+        return bindings.get(e.name, e)
+    if isinstance(e, (Int, Ref, Sym, Str, Raw)):
+        return e
+    if isinstance(e, Group):
+        return Group(substitute(e.inner, bindings))
+    if isinstance(e, Unary):
+        return Unary(e.op, substitute(e.operand, bindings))
+    if isinstance(e, Binary):
+        return Binary(
+            e.op, substitute(e.left, bindings), substitute(e.right, bindings)
+        )
+    if isinstance(e, StrIndex):
+        return StrIndex(substitute(e.string, bindings), substitute(e.index, bindings))
+    if isinstance(e, StrSlice):
+        return StrSlice(
+            substitute(e.string, bindings),
+            substitute(e.start, bindings),
+            None if e.stop is None else substitute(e.stop, bindings),
+        )
+    if isinstance(e, StrLen):
+        return StrLen(substitute(e.string, bindings))
+    if isinstance(e, MacroCall):
+        return MacroCall(e.name, tuple(substitute(a, bindings) for a in e.args))
+    raise TypeError(f"cannot substitute into expression node {type(e).__name__}")
+
+
 def fold(e: Expr) -> Expr:
     """Constant-fold string operations (and their sub-trees) as far as
     possible.

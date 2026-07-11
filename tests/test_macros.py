@@ -13,13 +13,14 @@ import os
 import shutil
 import subprocess
 import tempfile
+import warnings
 from pathlib import Path
 
 import pytest
 
 from dasmos.disassembler import Disassembler
 from dasmos.exceptions import MacroRenderError
-from dasmos.expr import MacroCall, group, param
+from dasmos.expr import Int, MacroCall, group, param
 from dasmos.ext.renderers.beebasm import BeebasmRenderer
 from dasmos.ext.renderers.json import JsonRenderer
 from dasmos.ext.renderers.tass64 import Tass64Renderer
@@ -309,9 +310,64 @@ class TestMacroAsOperand:
         # lda #<value> : the operand is the second byte (after the opcode).
         assert _assemble_tass64(text)[1] == (ord("L") & 0x1F)
 
-    def test_beebasm_raises_clear_error(self):
-        # beebasm has no value function, so a macro can't be an operand —
-        # it must fail with an actionable error, not an internal crash.
+    def test_beebasm_inline_expands_with_warning(self):
+        # beebasm has no value function, so a macro used as an operand is
+        # inline-expanded (body substituted at the call site) rather than
+        # failing — with a one-time warning, and no unused definition.
         ir = self._build().disassemble()
-        with pytest.raises(MacroRenderError, match="value"):
+        with pytest.warns(UserWarning, match="inline-expanded"):
+            text = str(ir.render(BeebasmRenderer(boundary_label_prefix="")))
+        # The operand shows the expanded body, keeping the string visible;
+        # no macro call and no (unused) MACRO definition remain.
+        assert 'lda #ASC(MID$("LDA", 1, 1)) AND &1f' in text
+        assert 'lobyte("LDA")' not in text
+        assert "MACRO lobyte" not in text
+
+    @pytest.mark.beebasm
+    def test_beebasm_expanded_operand_assembles(self):
+        ir = self._build().disassemble()
+        with pytest.warns(UserWarning):
+            text = str(ir.render(BeebasmRenderer(boundary_label_prefix="")))
+        assert _assemble_beebasm(text)[1] == (ord("L") & 0x1F)
+
+
+class TestInlineExpansionFallback:
+    def test_warns_once_per_macro_across_call_sites(self):
+        d = _mk(bytes([0xA9, 0x00, 0xA9, 0x00, 0x60]))
+        d.entry(0x2000)
+        m = param("mnem")
+        lob = d.define_macro("lobyte", ["mnem"], m[0] & 0x1F)
+        d.expr(0x2001, lob("LDA"))   # two operand uses of the same macro
+        d.expr(0x2003, lob("STA"))
+        ir = d.disassemble()
+        with warnings.catch_warnings(record=True) as rec:
+            warnings.simplefilter("always")
+            str(ir.render(BeebasmRenderer(boundary_label_prefix="")))
+        expand_warnings = [w for w in rec if "inline-expanded" in str(w.message)]
+        assert len(expand_warnings) == 1
+
+    def test_macro_nested_in_expression_expands(self):
+        # A macro call nested inside arithmetic (not a bare data item) is
+        # inline-expanded on beebasm, preserving precedence.
+        d = _mk(bytes([0x00]))
+        x = param("x")
+        half = d.define_macro("half", ["x"], x >> 1)
+        d.byte(0x2000, 1)
+        d.expr(0x2000, half(0x40) + 1)   # (0x40 >> 1) + 1
+        ir = d.disassemble()
+        with pytest.warns(UserWarning, match="inline-expanded"):
+            text = str(ir.render(BeebasmRenderer(boundary_label_prefix="")))
+        assert "half(" not in text
+        assert "&40 >> 1 + 1" in text
+
+    def test_arity_mismatch_raises(self):
+        d = _mk(bytes([0x00]))
+        a, b = param("a"), param("b")
+        d.define_macro("two", ["a", "b"], a + b)
+        d.byte(0x2000, 1)
+        # Nest the call (one arg for a two-param macro) so it takes the
+        # inline-expansion path, where arity is checked.
+        d.expr(0x2000, MacroCall("two", (Int(1),)) + 0)
+        ir = d.disassemble()
+        with pytest.raises(MacroRenderError, match="argument"):
             str(ir.render(BeebasmRenderer(boundary_label_prefix="")))

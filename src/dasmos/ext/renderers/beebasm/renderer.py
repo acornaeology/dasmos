@@ -307,6 +307,12 @@ class BeebasmRenderer(AssemblerRenderer):
     # statement line (``pack "LDA"``). ``macro_calls_are_values`` stays
     # False (the base default), so the byte-block renderer emits the
     # invocations as statements.
+    @property
+    def macro_statements_are_supported(self) -> bool:
+        # Beebasm has a code-macro (MACRO … ENDMACRO), so a data-item
+        # macro call renders natively as its own statement line.
+        return True
+
     def render_macro_definition(self, macro, ir) -> list[str]:
         body = self.render_expression(macro.body, ir)
         directive = {"byte": self.byte_prefix(), "word": self.word_prefix()}.get(

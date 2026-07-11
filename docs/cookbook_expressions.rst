@@ -260,6 +260,26 @@ the target assembler supports. The ``emit`` keyword
 which data directive to emit — ``EQUB`` vs ``EQUW`` — for a word-valued
 macro.
 
+**When a backend can't express the macro, dasmos expands it.** A macro
+used as an *operand* (``lda #pack_lo("LDA")``) or nested inside another
+expression needs a *value* — which beebasm has no construct for. Rather
+than fail, dasmos inline-expands the body at that call site (substituting
+the arguments) and emits a one-time :class:`UserWarning`:
+
+.. code-block:: text
+
+   ; 64tass keeps the value-function call
+   lda #pack_lo("LDA")
+
+   ; beebasm inline-expands the body (the string stays visible)
+   lda #((ASC(MID$("LDA", 1, 1)) AND &1f) * &0400 + ...) AND &ff
+
+Both assemble to the same byte. The macro *definition* is emitted only
+for backends that actually invoke it natively, so an expand-only use
+leaves no unused definition behind. This graceful degradation is what
+lets one macro target assemblers of differing power — a value function
+where available, inline expansion where not.
+
 
 All the operators
 -----------------

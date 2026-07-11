@@ -725,11 +725,22 @@ backend, split by a `macro_calls_are_values` capability:
   visible in every invocation — maximally readable.
 - JSON gains a `macros` section and `{"macro_call": …}` / `{"param": …}`
   tree nodes, so a consumer can re-expand or re-render macros.
+- **Inline-expansion fallback (not failure).** Native emission is the
+  default, but where a backend has no native construct for a use — a
+  value macro used as an *operand* or nested in an expression on beebasm,
+  or (later) any macro on a backend with no macro construct at all —
+  dasmos inline-expands the body at the call site (`substitute()` binds
+  the args to the params) and emits a one-time `UserWarning`, rather than
+  erroring. The definition is emitted only for macros invoked *natively*,
+  so an expand-only use leaves no unused definition. Two capability flags
+  drive it: `macro_calls_are_values` (value-function backend) and
+  `macro_statements_are_supported` (code-macro backend). `MacroRenderError`
+  is now reserved for a malformed call (undefined macro / wrong arity).
 - acme (no value function *and* no string indexing) and ca65 (`.define`)
   are designed but not built — dasmos ships only beebasm + 64tass. When
-  added, acme rides the statement path and must receive pre-split char
-  args (or dasmos folds the byte); this is the graceful-degradation
-  contract, driven by capability flags rather than per-driver authoring.
-- Supersedes the D-025 sketch (which proposed inline-expansion as the
-  default); native emission is the default here, because the whole point
-  is to see macros in the listing.
+  added, acme (no macro construct) rides the inline-expansion fallback
+  automatically; this is the graceful-degradation contract, driven by the
+  capability flags rather than per-driver authoring.
+- Refines the D-025 sketch: native emission is the *default* (the whole
+  point is to see macros in the listing), with D-025's inline-expansion
+  kept as the fallback for constructs a backend can't express.
