@@ -20,6 +20,20 @@ gate.
 
 ---
 
+## Versioning policy
+
+`schema_version` bumps on a **breaking** shape change — one that would
+make an existing consumer misread the document (e.g. the v2→v3
+`expressions` string→object reshape). **Additive** changes — a new
+optional key that older consumers simply ignore — do *not* bump the
+version; they are noted here as "additive in v3".
+
+Additive in v3 (safe to ignore if you don't need them):
+
+- `meta.title` / `meta.description` — the optional provenance header
+  (`Disassembler.set_file_header`); present only when the driver set one.
+
+
 ## What changed (breaking)
 
 ### 1. `expressions[i]`: string → object

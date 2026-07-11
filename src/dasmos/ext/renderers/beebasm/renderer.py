@@ -186,6 +186,27 @@ class BeebasmRenderer(AssemblerRenderer):
         # belongs at the very end (assertions, trailing newlines).
         return []
 
+    def build_command(self) -> list[str] | None:
+        """The beebasm invocation that assembles this listing back to the
+        binary.
+
+        When the listing carries a ``save "<file>", …`` directive (i.e.
+        ``output_filename`` is set), ``beebasm -i <listing>`` writes that
+        file itself — no ``-o`` needed. Otherwise the output name is given
+        with ``-o``. (Note: ``-do`` is beebasm's *disc image* output, not
+        the raw binary — deliberately not used here.)
+        """
+        listing = self.listing_filename or "<listing>.asm"
+        if self.output_filename is not None:
+            return [
+                "Assemble with beebasm:",
+                f"beebasm -i {listing}",
+            ]
+        return [
+            "Assemble with beebasm:",
+            f"beebasm -i {listing} -o <output.bin>",
+        ]
+
     def _save_directive(self, load_start, load_end) -> str:
         """Render the ``save`` directive for the loaded range.
 

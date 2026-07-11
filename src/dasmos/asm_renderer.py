@@ -107,6 +107,8 @@ class AssemblerRenderer(TextRenderer):
         comment_wrap_column: int = 87,
         lower_case: bool = True,
         fold_string_ops: bool = False,
+        include_build_instructions: bool = False,
+        listing_filename: str | None = None,
         **kwargs,
     ):
         super().__init__(name=name, **kwargs)
@@ -135,6 +137,12 @@ class AssemblerRenderer(TextRenderer):
         # When True, mnemonics and register-suffix letters render in
         # lowercase.
         self.lower_case = lower_case
+        # Opt-in "how to assemble this file" comment block (#41). The
+        # command is this backend's own; ``listing_filename`` is the name
+        # of the .asm the command reads (the renderer doesn't otherwise
+        # know it) — a placeholder is used when omitted.
+        self.include_build_instructions = include_build_instructions
+        self.listing_filename = listing_filename
         # Readability vs terseness for string operations. Default False:
         # keep the string visible by rendering the op in this assembler's
         # native syntax (``"BRK"[0]`` / ``ASC(MID$("BRK",1,1))``), which
@@ -386,7 +394,80 @@ class AssemblerRenderer(TextRenderer):
             header = [f"{self.comment_prefix()} Macros", ""]
             lines = header + macro_lines + lines
 
+        # The preamble (provenance header + build instructions) sits above
+        # everything else — prepended last so it lands at the very top.
+        preamble = self._build_preamble(ir)
+        if preamble:
+            lines = preamble + [""] + lines
+
         return TextOutput("\n".join(lines) + "\n")
+
+    # -- top-of-file preamble ---------------------------------------------
+
+    def _build_preamble(self, ir) -> list[str]:
+        """The provenance header (driver prose) followed by the optional
+        backend build-instructions block."""
+        lines = self._build_file_header(ir)
+        build = self._build_build_instructions()
+        if build:
+            if lines:
+                lines.append(self.comment_prefix())
+            lines.extend(build)
+        return lines
+
+    def _build_file_header(self, ir) -> list[str]:
+        """Render the driver's :class:`~dasmos.core.file_header.FileHeader`
+        as a comment block: the title, a blank comment line, then the
+        description.
+
+        The description's *line structure is preserved* — provenance is
+        often line-oriented (a note, an md5, a sha256), so each source line
+        becomes its own comment rather than reflowing into a paragraph.
+        Inline Markdown (emphasis, code, address links) is still flattened
+        per line.
+        """
+        header = ir.file_header
+        if header is None or header.is_empty():
+            return []
+        cp = self.comment_prefix()
+        out: list[str] = []
+        if header.title:
+            title = markdown_to_asm_text(
+                header.title, inline=True, hex_format=self.address_link_hex,
+            )
+            out.append(f"{cp} {title}")
+        if header.description:
+            if header.title:
+                out.append(cp)
+            for line in header.description.split("\n"):
+                if not line.strip():
+                    out.append(cp)
+                    continue
+                text = markdown_to_asm_text(
+                    line, inline=True, hex_format=self.address_link_hex,
+                )
+                out.append(f"{cp} {text}")
+        return out
+
+    def _build_build_instructions(self) -> list[str]:
+        """The optional ``; Assemble with …:`` block, when the renderer was
+        constructed with ``include_build_instructions=True`` and this
+        backend has a command to offer."""
+        if not self.include_build_instructions:
+            return []
+        command = self.build_command()
+        if not command:
+            return []
+        cp = self.comment_prefix()
+        return [f"{cp} {command[0]}"] + [f"{cp}   {c}" for c in command[1:]]
+
+    def build_command(self) -> list[str] | None:
+        """This backend's "how to assemble this listing" lines — a heading
+        followed by the command(s). Default ``None`` (nothing sensible to
+        say); assembler backends override. See
+        :attr:`listing_filename` / :attr:`output_filename` for the names
+        the command references."""
+        return None
 
     def _build_constant_equates(self, ir) -> list[str]:
         """``name = value`` lines for every registered constant

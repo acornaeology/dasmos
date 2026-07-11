@@ -7,7 +7,10 @@ Emits a JSON-serialisable dictionary:
     {
       # schema_version bumps on every breaking shape change; absent in
       # docs from dasmos <= 1.14.0 (treat as 1: references were [int]).
-      "meta": {"schema_version": int, "load_addr": int, "end_addr": int},
+      # ``title`` / ``description`` are the optional provenance header
+      # (Disassembler.set_file_header) — additive, present only when set.
+      "meta": {"schema_version": int, "load_addr": int, "end_addr": int,
+               "title": str?, "description": str?},
       "constants": [{"name": str, "value": int, "comment": str?}, ...],
       "macros": [{"name": str, "params": [str, ...], "emit": str,
                   "body": {"text": str, "tree": <expr>}}, ...],
@@ -206,16 +209,26 @@ class JsonRenderer(Renderer[StructuredOutput]):
             })
         return out
 
-    def _build_meta(self, ir) -> dict[str, int]:
+    def _build_meta(self, ir) -> dict[str, Any]:
         try:
             start, end = ir.memory.entire_load_range()
         except Exception:
             start, end = 0, 0
-        return {
+        meta: dict[str, Any] = {
             "schema_version": JSON_SCHEMA_VERSION,
             "load_addr": int(start),
             "end_addr": int(end),
         }
+        # Provenance header (see Disassembler.set_file_header) — additive,
+        # optional keys; absent when the driver set no header. The
+        # description keeps its source Markdown verbatim, like comments.
+        header = ir.file_header
+        if header is not None and not header.is_empty():
+            if header.title:
+                meta["title"] = header.title
+            if header.description:
+                meta["description"] = header.description
+        return meta
 
     def _build_constants(self, ir) -> list[dict[str, Any]]:
         """``constants`` registered via :meth:`Disassembler.constant`,

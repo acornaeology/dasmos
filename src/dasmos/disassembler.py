@@ -44,6 +44,7 @@ from dasmos.core.annotations import (
 from dasmos.core.classification import Byte, ExpressionRegistry, Fill, String, Word
 from dasmos.core.data_type import DataType, DecodedValue
 from dasmos.core.expr import Expr, MacroCall, MacroDef, Ref, macro_arg
+from dasmos.core.file_header import FileHeader
 from dasmos.core.expr import hi as expr_hi
 from dasmos.core.expr import lo as expr_lo
 from dasmos.core.expr_parse import parse_or_raw
@@ -204,6 +205,9 @@ class Disassembler:
         # definitions; each :class:`~dasmos.core.expr.MacroCall` refers
         # to one by name. Insertion order preserved for stable output.
         self._macros: dict[str, MacroDef] = {}
+        # Optional provenance prose emitted at the top of a listing and in
+        # the JSON meta (set via :meth:`set_file_header`).
+        self._file_header: FileHeader | None = None
         # Deprecated → replacement constant-name aliases registered by
         # environments via :meth:`register_deprecated_constant_name`.
         # When a driver calls :meth:`constant` with a key in this dict,
@@ -324,6 +328,34 @@ class Disassembler:
     def macros(self) -> dict[str, MacroDef]:
         """Driver-defined macros, keyed by name (see :meth:`define_macro`)."""
         return self._macros
+
+    @property
+    def file_header(self) -> "FileHeader | None":
+        """The provenance header, or ``None`` (see :meth:`set_file_header`)."""
+        return self._file_header
+
+    def set_file_header(self, title=None, description=None) -> None:
+        """Set the backend-agnostic provenance header emitted at the top of
+        a listing (and in the JSON ``meta``).
+
+        ``title`` is a single line naming the disassembly; ``description``
+        is free-text prose (Markdown, like comments) — source ROM, hashes,
+        notes. Each renderer applies only its own comment prefix and
+        wrapping, so the same header renders on every backend::
+
+            d.set_file_header(
+                title="Acorn BBC BASIC II",
+                description=(
+                    "Annotated disassembly of the 16 kB BASIC II ROM.\\n"
+                    "Source md5 2cc6…; sha256 45bd…"
+                ),
+            )
+
+        dasmos stores only the text — provenance stays the driver's, so
+        this is reusable across every project.
+        """
+        self._raise_if_disassembled("set_file_header")
+        self._file_header = FileHeader(title=title, description=description)
 
     def define_macro(self, name, params, body, *, emit: str = "byte"):
         """Define a macro computing a value from ``params`` and return a

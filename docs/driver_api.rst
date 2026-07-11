@@ -374,6 +374,63 @@ single-newline-is-a-soft-break CommonMark gotcha (use a blank line
 between paragraphs to get separate ``;`` lines in the output).
 
 
+Top-of-file preamble: header and build instructions
+----------------------------------------------------
+
+A generated listing can open with a **provenance header** — prose stating
+what the disassembly is and where it came from. It is backend-agnostic:
+you supply the text; each renderer applies only its own comment prefix.
+Set it with :meth:`~dasmos.Disassembler.set_file_header`:
+
+.. code-block:: python
+
+   d.set_file_header(
+       title="Acorn BBC BASIC II",
+       description=(
+           "Annotated disassembly of the 16 kB BASIC II language ROM.\n"
+           "Source md5 2cc6…; sha256 45bd…"
+       ),
+   )
+
+renders (beebasm, and identically on 64tass with its own prefix):
+
+.. code-block:: text
+
+   ; Acorn BBC BASIC II
+   ;
+   ; Annotated disassembly of the 16 kB BASIC II language ROM.
+   ; Source md5 2cc6…; sha256 45bd…
+
+The ``description``'s line breaks are preserved (provenance is often
+line-oriented — a note, an md5, a sha256), while inline Markdown is
+flattened. The header also surfaces in the JSON renderer's ``meta`` as
+optional ``title`` / ``description`` fields, so structured consumers get
+it too. dasmos stores only your text — it hardcodes no provenance, so the
+header stays reusable across projects.
+
+Separately, a renderer can be asked to emit a **"how to assemble this
+file"** command in its own tool's syntax — off by default, opt in with a
+renderer keyword:
+
+.. code-block:: python
+
+   ir.render("beebasm", include_build_instructions=True,
+             listing_filename="basic-2.asm")
+
+.. code-block:: text
+
+   ; Assemble with beebasm:
+   ;   beebasm -i basic-2.asm
+
+The command is the backend's own (64tass emits its
+``64tass --nostart -o … …`` form); the driver only decides whether to
+include it. ``listing_filename`` names the ``.asm`` the command reads (the
+renderer doesn't otherwise know it); the output name comes from
+:meth:`~dasmos.Disassembler` / the renderer's ``output_filename``. Both
+the header and the build block are comment-only, so assembled bytes are
+unaffected and the round-trip still holds.
+
+
 Classifying data
 ----------------
 

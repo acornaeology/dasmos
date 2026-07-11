@@ -84,6 +84,12 @@ class IntermediateRepresentation:
         return self._disassembler.macros
 
     @property
+    def file_header(self):
+        """The provenance header, or ``None`` (see
+        :meth:`Disassembler.set_file_header`)."""
+        return self._disassembler.file_header
+
+    @property
     def format_hints(self) -> "FormatHintRegistry":
         """Renderer-agnostic format hints registered via
         :meth:`Disassembler.format_hint` /
