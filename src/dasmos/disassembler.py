@@ -338,16 +338,22 @@ class Disassembler:
         """Set the backend-agnostic provenance header emitted at the top of
         a listing (and in the JSON ``meta``).
 
-        ``title`` is a single line naming the disassembly; ``description``
-        is free-text prose (Markdown, like comments) — source ROM, hashes,
-        notes. Each renderer applies only its own comment prefix and
-        wrapping, so the same header renders on every backend::
+        ``title`` and ``description`` are **Markdown**, exactly like every
+        driver comment (see :meth:`comment`): assembler renderers flatten
+        them to comment plaintext; the JSON renderer keeps the source
+        Markdown verbatim. Each renderer applies only its own comment
+        prefix, so the same header renders on every backend. As with any
+        comment, a single newline is a CommonMark soft break — separate
+        provenance lines (a note, an md5, a sha256) want a blank line
+        between paragraphs, or a Markdown list::
 
             d.set_file_header(
                 title="Acorn BBC BASIC II",
                 description=(
                     "Annotated disassembly of the 16 kB BASIC II ROM.\\n"
-                    "Source md5 2cc6…; sha256 45bd…"
+                    "\\n"
+                    "- Source md5: `2cc6…`\\n"
+                    "- Source sha256: `45bd…`"
                 ),
             )
 

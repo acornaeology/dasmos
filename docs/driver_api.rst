@@ -332,11 +332,25 @@ comment lines; the JSON renderer keeps the source verbatim for
 downstream HTML processors.
 
 
+.. _driver-comments-are-markdown:
+
 Comments
 --------
 
-:meth:`~dasmos.Disassembler.comment` attaches free-form text at an
-address. Like subroutine descriptions, comment text is full Markdown.
+**All driver-provided prose is Markdown.** Every piece of free text you
+hand dasmos — :meth:`~dasmos.Disassembler.comment` bodies, subroutine /
+banner descriptions (:meth:`~dasmos.Disassembler.subroutine`),
+:meth:`~dasmos.Disassembler.label` descriptions,
+:meth:`~dasmos.Disassembler.constant` comments, and the file header
+(:meth:`~dasmos.Disassembler.set_file_header`) — is CommonMark + GFM,
+plus the ``[label](address:…)`` cross-reference scheme below. dasmos
+renders it *appropriately per output*: assembler renderers flatten it to
+``;``-prefixed comment plaintext (emphasis, code spans, lists and tables
+all reduced to readable text, paragraphs wrapped); the JSON renderer
+keeps the **source Markdown verbatim** so a downstream HTML processor can
+render it richly. Write Markdown once; each backend does the right thing.
+
+:meth:`~dasmos.Disassembler.comment` attaches such text at an address.
 
 .. code-block:: python
 
@@ -380,7 +394,14 @@ Top-of-file preamble: header and build instructions
 A generated listing can open with a **provenance header** — prose stating
 what the disassembly is and where it came from. It is backend-agnostic:
 you supply the text; each renderer applies only its own comment prefix.
-Set it with :meth:`~dasmos.Disassembler.set_file_header`:
+Set it with :meth:`~dasmos.Disassembler.set_file_header`.
+
+Like every driver comment, the ``title`` and ``description`` are
+**Markdown** (see :ref:`the note below <driver-comments-are-markdown>`).
+Assembler renderers flatten it to comment plaintext; the JSON renderer
+keeps the source Markdown verbatim. So a single newline is a soft break
+(a space) — use a blank line between paragraphs, or a Markdown list, to
+get separate provenance lines:
 
 .. code-block:: python
 
@@ -388,7 +409,9 @@ Set it with :meth:`~dasmos.Disassembler.set_file_header`:
        title="Acorn BBC BASIC II",
        description=(
            "Annotated disassembly of the 16 kB BASIC II language ROM.\n"
-           "Source md5 2cc6…; sha256 45bd…"
+           "\n"
+           "- Source md5: `2cc6…`\n"
+           "- Source sha256: `45bd…`"
        ),
    )
 
@@ -399,14 +422,14 @@ renders (beebasm, and identically on 64tass with its own prefix):
    ; Acorn BBC BASIC II
    ;
    ; Annotated disassembly of the 16 kB BASIC II language ROM.
-   ; Source md5 2cc6…; sha256 45bd…
+   ;
+   ; - Source md5: 2cc6…
+   ; - Source sha256: 45bd…
 
-The ``description``'s line breaks are preserved (provenance is often
-line-oriented — a note, an md5, a sha256), while inline Markdown is
-flattened. The header also surfaces in the JSON renderer's ``meta`` as
-optional ``title`` / ``description`` fields, so structured consumers get
-it too. dasmos stores only your text — it hardcodes no provenance, so the
-header stays reusable across projects.
+The header also surfaces in the JSON renderer's ``meta`` as optional
+``title`` / ``description`` fields (the source Markdown, verbatim), so
+structured consumers get it too. dasmos stores only your text — it
+hardcodes no provenance, so the header stays reusable across projects.
 
 Separately, a renderer can be asked to emit a **"how to assemble this
 file"** command in its own tool's syntax — off by default, opt in with a

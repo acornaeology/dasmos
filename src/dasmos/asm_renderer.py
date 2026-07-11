@@ -420,11 +420,14 @@ class AssemblerRenderer(TextRenderer):
         as a comment block: the title, a blank comment line, then the
         description.
 
-        The description's *line structure is preserved* — provenance is
-        often line-oriented (a note, an md5, a sha256), so each source line
-        becomes its own comment rather than reflowing into a paragraph.
-        Inline Markdown (emphasis, code, address links) is still flattened
-        per line.
+        The ``title`` and ``description`` are **Markdown**, rendered the
+        same way as banner descriptions — emphasis, lists, tables, code
+        spans and the ``[label](address:…)`` links all flatten to
+        asm-comment plaintext, paragraphs word-wrap at
+        ``comment_wrap_column``. As in every driver comment, a *single*
+        newline is a CommonMark soft break (a space); put a blank line
+        between paragraphs (or use a Markdown list) to get separate
+        comment lines — e.g. for a note and its hashes.
         """
         header = ir.file_header
         if header is None or header.is_empty():
@@ -439,14 +442,12 @@ class AssemblerRenderer(TextRenderer):
         if header.description:
             if header.title:
                 out.append(cp)
-            for line in header.description.split("\n"):
-                if not line.strip():
-                    out.append(cp)
-                    continue
-                text = markdown_to_asm_text(
-                    line, inline=True, hex_format=self.address_link_hex,
-                )
-                out.append(f"{cp} {text}")
+            desc = markdown_to_asm_text(
+                header.description, wrap_width=self.comment_wrap_column,
+                hex_format=self.address_link_hex,
+            )
+            for line in desc.split("\n"):
+                out.append(f"{cp} {line}" if line else cp)
         return out
 
     def _build_build_instructions(self) -> list[str]:

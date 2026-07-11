@@ -36,9 +36,16 @@ def _mk(data=b"\x60", load=0x2000):
 class TestFileHeader:
     def _with_header(self):
         d = _mk()
+        # Markdown: a paragraph, then a blank line, then a list — the
+        # idiomatic way to get an intro plus separate provenance lines.
         d.set_file_header(
             title="Acorn BBC BASIC II",
-            description="Line one.\nmd5 2cc6; sha256 45bd.",
+            description=(
+                "Annotated disassembly of the BASIC II ROM.\n"
+                "\n"
+                "- md5 `2cc6`\n"
+                "- sha256 `45bd`"
+            ),
         )
         return d
 
@@ -51,20 +58,24 @@ class TestFileHeader:
     def test_beebasm_emits_header_block(self):
         text = str(self._with_header().disassemble().render(
             BeebasmRenderer(boundary_label_prefix="")))
-        head = text.splitlines()[:4]
+        head = text.splitlines()[:6]
         assert head == [
             "; Acorn BBC BASIC II",
             ";",
-            "; Line one.",
-            "; md5 2cc6; sha256 45bd.",
+            "; Annotated disassembly of the BASIC II ROM.",
+            ";",
+            "; - md5 2cc6",          # Markdown list item; code span stripped
+            "; - sha256 45bd",
         ]
 
-    def test_description_line_breaks_preserved(self):
-        # Provenance is line-oriented — a single newline is NOT reflowed.
-        text = str(self._with_header().disassemble().render(
-            BeebasmRenderer(boundary_label_prefix="")))
-        assert "; Line one." in text
-        assert "; md5 2cc6; sha256 45bd." in text
+    def test_description_is_markdown(self):
+        d = _mk()
+        # A single newline is a CommonMark soft break — it collapses to a
+        # space, NOT a new comment line. Structure comes from Markdown.
+        d.set_file_header(description="one\ntwo\n\nthree")
+        text = str(d.disassemble().render(BeebasmRenderer(boundary_label_prefix="")))
+        assert "; one two" in text          # soft break collapsed
+        assert "; three" in text            # blank line → new paragraph line
 
     def test_tass64_uses_same_prose_own_prefix(self):
         # Agnostic: identical text, each backend's own comment prefix
@@ -73,10 +84,15 @@ class TestFileHeader:
         text = str(self._with_header().disassemble().render(Tass64Renderer()))
         assert text.startswith("; Acorn BBC BASIC II")
 
-    def test_json_meta_carries_header(self):
-        meta = self._with_header().disassemble().render(JsonRenderer()).data["meta"]
+    def test_json_meta_keeps_source_markdown_verbatim(self):
+        # JSON keeps the source Markdown unflattened (like comments), so a
+        # downstream HTML consumer can render it itself.
+        d = _mk()
+        md = "Intro.\n\n- md5 `2cc6`\n- sha256 `45bd`"
+        d.set_file_header(title="Acorn BBC BASIC II", description=md)
+        meta = d.disassemble().render(JsonRenderer()).data["meta"]
         assert meta["title"] == "Acorn BBC BASIC II"
-        assert meta["description"] == "Line one.\nmd5 2cc6; sha256 45bd."
+        assert meta["description"] == md      # verbatim, not flattened
 
     def test_json_meta_omits_header_when_unset(self):
         meta = _mk().disassemble().render(JsonRenderer()).data["meta"]

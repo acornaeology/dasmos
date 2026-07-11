@@ -19,8 +19,12 @@ from dataclasses import dataclass
 class FileHeader:
     """Provenance prose for the top of a listing.
 
-    ``title`` is a single line; ``description`` is free-text (Markdown,
-    like comments) that may span several lines. Either may be ``None``.
+    Both fields are **Markdown**, like every driver-provided comment (see
+    :meth:`~dasmos.Disassembler.comment`): ``title`` is a single inline
+    phrase, ``description`` is free-text that may use paragraphs, lists,
+    emphasis and the ``[label](address:…)`` link scheme. Assembler
+    renderers flatten it to comment plaintext; the JSON renderer keeps the
+    source Markdown verbatim. Either may be ``None``.
     """
 
     title: str | None = None
