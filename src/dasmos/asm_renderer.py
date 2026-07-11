@@ -55,6 +55,7 @@ from dasmos.core.markdown_asm import markdown_to_asm_text, strip_address_uri_lin
 from dasmos.core.memory import BinaryAddr
 from dasmos.core.move import Move
 from dasmos.cpu import Opcode, OperandKind
+from dasmos.exceptions import MacroRenderError
 from dasmos.output import TextOutput
 from dasmos.renderer import TextRenderer
 
@@ -1850,17 +1851,30 @@ class AssemblerRenderer(TextRenderer):
         cols = c.cols() or self.default_word_cols
         n_words = c.length() // 2
         lines: list[str] = []
-        for chunk_start in range(0, n_words, cols):
-            parts: list[str] = []
-            for i in range(chunk_start, min(chunk_start + cols, n_words)):
-                word_binary = int(binary_addr) + i * 2
-                expr = ir.expressions.get_or_none(word_binary)
-                if expr is not None:
-                    parts.append(self.render_expression(expr, ir))
-                else:
-                    w = ir.memory.get_u16_le(word_binary)
-                    parts.append(self._addr_text(ir, w, width=16))
-            lines.append(f"    {self.word_prefix()}{', '.join(parts)}")
+        run: list[str] = []  # accumulated ``equw`` value parts
+
+        def flush() -> None:
+            for cs in range(0, len(run), cols):
+                lines.append(
+                    f"    {self.word_prefix()}{', '.join(run[cs:cs + cols])}"
+                )
+            run.clear()
+
+        for i in range(n_words):
+            word_binary = int(binary_addr) + i * 2
+            expr = ir.expressions.get_or_none(word_binary)
+            # A macro invocation on a backend without value macros is a
+            # statement, not a value — flush the run and emit its line(s).
+            if isinstance(expr, MacroCall) and not self.macro_calls_are_values:
+                flush()
+                lines.extend(self.render_macro_statement(expr, ir))
+                continue
+            if expr is not None:
+                run.append(self.render_expression(expr, ir))
+            else:
+                w = ir.memory.get_u16_le(word_binary)
+                run.append(self._addr_text(ir, w, width=16))
+        flush()
         return lines
 
     def _render_string(self, ir, binary_addr, c: String) -> list[str]:
@@ -2101,13 +2115,19 @@ class AssemblerRenderer(TextRenderer):
         return name
 
     def render_macro_value_call(self, call, ir, active_move) -> str:
-        """A macro invocation used as a value. Only valid when
-        :attr:`macro_calls_are_values`; otherwise the data-block renderer
-        must intercept and emit a statement instead."""
+        """A macro invocation used as a *value* (an operand, or nested
+        inside another expression). Only valid when
+        :attr:`macro_calls_are_values`; a data-item ``MacroCall`` is
+        instead intercepted by the byte/word renderer and emitted as a
+        statement line."""
         if not self.macro_calls_are_values:
-            raise NotImplementedError(
-                f"{type(self).__name__} has no value macros; a MacroCall "
-                f"must be emitted as a statement line"
+            raise MacroRenderError(
+                f"macro {call.name!r} is used as a value (an operand or "
+                f"nested in an expression), but {type(self).__name__} has "
+                f"no value-returning macros — it can only emit a macro on "
+                f"its own data line. Register the macro call as a whole "
+                f"byte/word value, or target an assembler with value "
+                f"functions (e.g. 64tass)."
             )
         args = ", ".join(
             self.render_expression(a, ir, active_move=active_move)

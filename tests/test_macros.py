@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from dasmos.disassembler import Disassembler
+from dasmos.exceptions import MacroRenderError
 from dasmos.expr import MacroCall, group, param
 from dasmos.ext.renderers.beebasm import BeebasmRenderer
 from dasmos.ext.renderers.json import JsonRenderer
@@ -158,27 +159,159 @@ BEEBASM = _find("beebasm", "BEEBASM")
 TASS64 = _find("64tass", "TASS64")
 
 
-@pytest.mark.beebasm
-@pytest.mark.parametrize("half", ["lo", "hi"])
-def test_macro_table_assembles_beebasm(half):
-    ir, expected = _build_ir(half)
-    text = str(ir.render(BeebasmRenderer(boundary_label_prefix="")))
+def _assemble_beebasm(text: str) -> bytes:
     d = Path(tempfile.mkdtemp())
     (d / "a.asm").write_text(text)
     r = subprocess.run([BEEBASM, "-i", str(d / "a.asm"), "-o", str(d / "o.bin")],
                        capture_output=True, text=True, cwd=d)
     assert (d / "o.bin").exists(), r.stderr
-    assert (d / "o.bin").read_bytes() == expected
+    return (d / "o.bin").read_bytes()
+
+
+def _assemble_tass64(text: str) -> bytes:
+    d = Path(tempfile.mkdtemp())
+    (d / "a.asm").write_text(text)
+    r = subprocess.run([TASS64, "--nostart", "-o", str(d / "o.bin"), str(d / "a.asm")],
+                       capture_output=True, text=True, cwd=d)
+    assert (d / "o.bin").exists(), r.stderr
+    return (d / "o.bin").read_bytes()
+
+
+@pytest.mark.beebasm
+@pytest.mark.parametrize("half", ["lo", "hi"])
+def test_macro_table_assembles_beebasm(half):
+    ir, expected = _build_ir(half)
+    text = str(ir.render(BeebasmRenderer(boundary_label_prefix="")))
+    assert _assemble_beebasm(text) == expected
 
 
 @pytest.mark.tass64
 @pytest.mark.parametrize("half", ["lo", "hi"])
 def test_macro_table_assembles_tass64(half):
     ir, expected = _build_ir(half)
-    text = str(ir.render(Tass64Renderer()))
-    d = Path(tempfile.mkdtemp())
-    (d / "a.asm").write_text(text)
-    r = subprocess.run([TASS64, "--nostart", "-o", str(d / "o.bin"), str(d / "a.asm")],
-                       capture_output=True, text=True, cwd=d)
-    assert (d / "o.bin").exists(), r.stderr
-    assert (d / "o.bin").read_bytes() == expected
+    assert _assemble_tass64(str(ir.render(Tass64Renderer()))) == expected
+
+
+# ---------------------------------------------------------------------------
+# Multiple parameters, word emit, and non-string arguments
+# ---------------------------------------------------------------------------
+
+def _mk(data: bytes, load: int = 0x2000):
+    p = Path(tempfile.mktemp())
+    p.write_bytes(data)
+    d = Disassembler.create(cpu="6502")
+    d.load(p, load)
+    return d
+
+
+def _build_word_macro():
+    """A two-parameter, word-valued macro: mkword(hi, lo) -> hi*256 + lo,
+    registered over a Word item so it emits EQUW / .word."""
+    d = _mk(bytes([0x34, 0x12, 0x78, 0x56]))  # words 0x1234, 0x5678
+    a, b = param("a"), param("b")
+    mkword = d.define_macro("mkword", ["a", "b"], a * 0x100 + b, emit="word")
+    d.word(0x2000, length=4)
+    d.expr(0x2000, mkword(0x12, 0x34))   # int args
+    d.expr(0x2002, mkword(0x56, 0x78))
+    return d.disassemble(), bytes([0x34, 0x12, 0x78, 0x56])
+
+
+class TestMultipleParamsAndWord:
+    def test_two_param_word_macro_shape(self):
+        ir, _ = _build_word_macro()
+        bee = str(ir.render(BeebasmRenderer(boundary_label_prefix="")))
+        assert "MACRO mkword a, b" in bee          # two named params
+        assert "equw" in bee                        # word emit
+        assert "mkword &12, &34" in bee             # int args, statement form
+        tass = str(ir.render(Tass64Renderer()))
+        assert "mkword .sfunction a, b," in tass
+        assert ".word mkword($12, $34), mkword($56, $78)" in tass
+
+    @pytest.mark.beebasm
+    def test_word_macro_assembles_beebasm(self):
+        ir, expected = _build_word_macro()
+        assert _assemble_beebasm(
+            str(ir.render(BeebasmRenderer(boundary_label_prefix="")))
+        ) == expected
+
+    @pytest.mark.tass64
+    def test_word_macro_assembles_tass64(self):
+        ir, expected = _build_word_macro()
+        assert _assemble_tass64(str(ir.render(Tass64Renderer()))) == expected
+
+
+# ---------------------------------------------------------------------------
+# Several macros in one output
+# ---------------------------------------------------------------------------
+
+class TestMultipleMacros:
+    def _build(self):
+        d = _mk(bytes([0x0A, 0x0B]))
+        x = param("x")
+        lo_m = d.define_macro("lo_nibble", ["x"], x & 0x0F)
+        hi_m = d.define_macro("hi_nibble", ["x"], (x >> 4) & 0x0F)
+        d.byte(0x2000, 2)
+        d.expr(0x2000, lo_m(0x0A))
+        d.expr(0x2001, hi_m(0xB0))
+        return d.disassemble()
+
+    def test_both_definitions_emitted_once(self):
+        text = str(self._build().render(BeebasmRenderer(boundary_label_prefix="")))
+        assert text.count("MACRO lo_nibble") == 1
+        assert text.count("MACRO hi_nibble") == 1
+
+    @pytest.mark.beebasm
+    def test_assembles_beebasm(self):
+        text = str(self._build().render(BeebasmRenderer(boundary_label_prefix="")))
+        assert _assemble_beebasm(text) == bytes([0x0A, 0x0B])
+
+    @pytest.mark.tass64
+    def test_assembles_tass64(self):
+        assert _assemble_tass64(str(self._build().render(Tass64Renderer()))) \
+            == bytes([0x0A, 0x0B])
+
+
+class TestDefinitionEmittedOnceRegardlessOfUses:
+    def test_one_definition_for_many_invocations(self):
+        d = _mk(bytes([0x01, 0x01, 0x01, 0x01]))
+        x = param("x")
+        inc = d.define_macro("inc", ["x"], x & 0xFF)
+        d.byte(0x2000, 4)
+        for i in range(4):
+            d.expr(0x2000 + i, inc(1))
+        text = str(d.disassemble().render(BeebasmRenderer(boundary_label_prefix="")))
+        assert text.count("MACRO inc") == 1
+        # int arg 1 renders as the small-int decimal ``1`` (AUTO radix).
+        assert text.count("    inc 1") == 4          # four invocation lines
+
+
+# ---------------------------------------------------------------------------
+# Macro used as a value (operand / nested) — backend-dependent
+# ---------------------------------------------------------------------------
+
+class TestMacroAsOperand:
+    def _build(self):
+        d = _mk(bytes([0xA9, 0x00, 0x60]))   # lda #0 : rts
+        d.entry(0x2000)
+        m = param("mnem")
+        lobyte = d.define_macro("lobyte", ["mnem"], m[0] & 0x1F)
+        d.expr(0x2001, lobyte("LDA"))        # operand at &2001
+        return d
+
+    def test_tass64_inlines_the_value(self):
+        # 64tass has value functions, so a macro call works as an operand.
+        text = str(self._build().disassemble().render(Tass64Renderer()))
+        assert 'lda #lobyte("LDA")' in text
+
+    @pytest.mark.tass64
+    def test_tass64_operand_assembles(self):
+        text = str(self._build().disassemble().render(Tass64Renderer()))
+        # lda #<value> : the operand is the second byte (after the opcode).
+        assert _assemble_tass64(text)[1] == (ord("L") & 0x1F)
+
+    def test_beebasm_raises_clear_error(self):
+        # beebasm has no value function, so a macro can't be an operand —
+        # it must fail with an actionable error, not an internal crash.
+        ir = self._build().disassemble()
+        with pytest.raises(MacroRenderError, match="value"):
+            str(ir.render(BeebasmRenderer(boundary_label_prefix="")))
