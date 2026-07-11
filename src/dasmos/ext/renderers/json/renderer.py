@@ -140,10 +140,21 @@ if TYPE_CHECKING:
 
 #: Version of the JSON output schema, emitted as ``meta.schema_version``.
 #: Bumped on every breaking change to the shape so consumers can branch.
-#: A document with no ``schema_version`` is the implicit pre-versioning
-#: schema shipped through dasmos 1.14.0 (``references`` was a bare
-#: ``[int]`` list); version 2 makes ``references`` structured objects.
-JSON_SCHEMA_VERSION = 2
+#: Any breaking change to the emitted JSON MUST bump this — a consumer's
+#: version gate is only as reliable as this number.
+#:
+#: History:
+#:
+#: - *(absent)* — pre-versioning schema through dasmos 1.14.0;
+#:   ``references`` was a bare ``[int]`` list.
+#: - ``2`` — ``references`` became structured objects
+#:   (``{addr, kind, move_id?}``); ``expressions[i]`` was a plain
+#:   *string*; no ``macros`` section.
+#: - ``3`` — driver expressions became assembler-neutral trees:
+#:   ``expressions[i]`` is now an OBJECT ``{"text", "tree"}`` (breaking),
+#:   code items gained an ``expr`` object, and a top-level ``macros``
+#:   section was added. See ``docs/design/json-schema-v3.md``.
+JSON_SCHEMA_VERSION = 3
 
 
 class JsonRenderer(Renderer[StructuredOutput]):

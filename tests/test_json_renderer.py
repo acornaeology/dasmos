@@ -85,6 +85,19 @@ class TestTopLevelSchema:
         assert out.data["meta"]["schema_version"] == JSON_SCHEMA_VERSION
         assert JSON_SCHEMA_VERSION >= 2
 
+    def test_schema_version_is_3_and_matches_v3_shape(self, tiny_disassembler):
+        # The version gate consumers rely on. If the emitted shape changes
+        # (expressions objects, macros section) the version MUST reflect
+        # it — pinning the literal here forces that discipline.
+        from dasmos.ext.renderers.json.renderer import JSON_SCHEMA_VERSION
+        assert JSON_SCHEMA_VERSION == 3
+        data = tiny_disassembler.render(JsonRenderer()).data
+        assert data["meta"]["schema_version"] == 3
+        # v3 hallmarks: a top-level macros section (empty here is fine),
+        # and expressions rendered as {text, tree} objects, not strings.
+        assert "macros" in data
+        assert isinstance(data["macros"], list)
+
     def test_str_round_trips_via_json(self, tiny_disassembler):
         # ``str(output)`` is canonical JSON; loading it back gives the
         # same dict. Confirms the StructuredOutput shape works.
