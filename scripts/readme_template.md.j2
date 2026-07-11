@@ -216,8 +216,13 @@ uv run python scripts/py8dis2dasmos.py path/to/disasm_<rom>.py > ported.py
 ---
 
 This README is generated from `scripts/readme_template.md.j2` by
-`scripts/generate_readme.py`. **Do not edit it directly** — edit the
-template (or the generator, or the source files whose output it
-captures) and re-run `uv run python scripts/generate_readme.py`. The
-pre-commit hook and the `readme-check` CI job both run the
-generator's `--check` mode and will refuse stale READMEs.
+`scripts/generate_readme.py` (the `{{ '{{ version }}' }}` placeholder and
+the captured CLI blocks are filled in at generation time). **Do not edit
+it directly** — edit the template (or the generator, or the source files
+whose output it captures). You rarely need to run the generator by hand:
+the pre-commit hook regenerates `README.md` and re-stages it on every
+relevant commit, and `bump-my-version` regenerates it as part of a
+version bump (via its `pre_commit_hooks`), so a bump lands the new
+version and the refreshed README in one commit. The `readme-check` CI
+job (in `ci.yml` and `release.yml`) runs the generator's `--check` mode
+and fails if a committed README is stale.
