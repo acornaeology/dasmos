@@ -261,6 +261,113 @@ which data directive to emit — ``EQUB`` vs ``EQUW`` — for a word-valued
 macro.
 
 
+All the operators
+-----------------
+
+Expressions compose with Python's own operators (plus a few named
+builders). Every one below renders to each backend's native token and is
+verified to assemble to the same value on beebasm and 64tass.
+
+.. list-table:: Binary operators
+   :header-rows: 1
+   :widths: 18 34 24 24
+
+   * - DSL / Python
+     - Meaning
+     - beebasm
+     - 64tass
+   * - ``a + b``
+     - addition
+     - ``a + b``
+     - ``a + b``
+   * - ``a - b``
+     - subtraction
+     - ``a - b``
+     - ``a - b``
+   * - ``a * b``
+     - multiplication
+     - ``a * b``
+     - ``a * b``
+   * - ``a // b``
+     - **integer** division
+     - ``a DIV b``
+     - ``a / b``
+   * - ``a % b``
+     - modulo
+     - ``a MOD b``
+     - ``a % b``
+   * - ``a & b``
+     - bitwise AND
+     - ``a AND b``
+     - ``a & b``
+   * - ``a | b``
+     - bitwise OR
+     - ``a OR b``
+     - ``a | b``
+   * - ``a ^ b``
+     - bitwise XOR
+     - ``a EOR b``
+     - ``a ^ b``
+   * - ``a << b``
+     - shift left
+     - ``a << b``
+     - ``a << b``
+   * - ``a >> b``
+     - shift right
+     - ``a >> b``
+     - ``a >> b``
+
+.. list-table:: Unary operators and byte-selects
+   :header-rows: 1
+   :widths: 18 34 24 24
+
+   * - DSL / Python
+     - Meaning
+     - beebasm
+     - 64tass
+   * - ``-a``
+     - negation
+     - ``-a``
+     - ``-a``
+   * - ``+a``
+     - unary plus
+     - ``+a``
+     - ``+a``
+   * - ``~a``
+     - bitwise complement
+     - ``NOT(a)``
+     - ``~a``
+   * - ``lo(a)``
+     - low byte
+     - ``<(a)``
+     - ``<(a)``
+   * - ``hi(a)``
+     - high byte
+     - ``>(a)``
+     - ``>(a)``
+
+String operations (the string-operations recipe above) round out the
+set: index ``string(s)[i]``, slice ``string(s)[i:j]``, and
+``str_len(string(s))``.
+
+Two gotchas worth internalising:
+
+- **Use** ``//`` **for division, never** ``/``. In the DSL ``//`` is
+  integer division (what a 6502 assembler does); Python's ``/`` is float
+  division and is rejected. ``//`` renders ``DIV`` on beebasm, ``/`` on
+  64tass — the *same* integer operation, spelled each assembler's way.
+- **Parenthesise bitwise masks.** Python's ``&`` / ``|`` / ``^`` bind
+  *looser* than ``+`` and ``*``, so ``a + b & 0xFF`` means
+  ``a + (b & 0xFF)`` in Python. Write ``(a + b) & 0xFF`` (or wrap the sum
+  in :func:`~dasmos.expr.group`) when you mean "mask the whole thing" —
+  the mnemonic-hash recipes do exactly this.
+
+(``~`` maps to a bitwise-complement that beebasm has no operator for, so
+it renders as beebasm's ``NOT(...)`` function — one example of dasmos
+choosing each assembler's real spelling for you. A 65816 bank-byte
+operator exists in the model but has no 6502 rendering.)
+
+
 How it renders correctly everywhere
 -----------------------------------
 
@@ -273,10 +380,10 @@ because they're *why* one expression can target many assemblers:
   minimum needed for the value to be correct there. You never manage
   parentheses for portability.
 
-- **Integer vs real division, hex sigils, byte-select spelling** and the
-  rest are per-backend token choices, not something the driver encodes.
-  ``//`` in the DSL is integer division and renders ``DIV`` for beebasm,
-  ``/`` for 64tass.
+- **Hex sigils, operator tokens, and byte-select spelling** are
+  per-backend choices, not something the driver encodes — see the
+  operator table above. The one expression means ``AND`` on beebasm and
+  ``&`` on 64tass, ``DIV`` versus ``/`` for integer division, and so on.
 
 The structured form is also available to non-assembler consumers: the
 JSON renderer emits every expression as ``{"text": ..., "tree": ...}`` —
