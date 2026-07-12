@@ -488,6 +488,7 @@ class JsonRenderer(Renderer[StructuredOutput]):
 
     def _collect_map_rows(self, ir) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
+        ungrouped: list[tuple[int, str]] = []
         for runtime_addr_obj, label in sorted(
             ir.labels.items(), key=lambda kv: int(kv[0]),
         ):
@@ -516,13 +517,45 @@ class JsonRenderer(Renderer[StructuredOutput]):
                 entry["length"] = label.length
             if label.group is not None:
                 entry["group"] = label.group
+            else:
+                ungrouped.append((runtime_addr, names[0]))
             access = label.access_flags()
             if access:
                 entry["access"] = access
             if label.description:
                 entry["description"] = label.description
             result.append(entry)
+        self._warn_ungrouped_map_entries(ungrouped)
         return result
+
+    @staticmethod
+    def _warn_ungrouped_map_entries(ungrouped: list[tuple[int, str]]) -> None:
+        """Interim aid for the #43 group audit: a memory-map row with no
+        ``group=`` can't sit in place within the surrounding
+        workspace/ZP layout (schema v4 folds indexing bases into
+        ``memory_map``, so bases need grouping like everything else).
+
+        Emit one consolidated ``UserWarning`` naming the offending
+        addresses rather than one per row, so a driver with many bare
+        entries produces a single actionable message. This is a
+        stop-gap; the full fix is per-driver ``group=`` annotation
+        (dasmos#43).
+        """
+        if not ungrouped:
+            return
+        listed = ", ".join(f"{name} (&{addr:04x})" for addr, name in ungrouped)
+        count = len(ungrouped)
+        subject = (
+            "1 memory-map entry lacks"
+            if count == 1
+            else f"{count} memory-map entries lack"
+        )
+        warnings.warn(
+            f"{subject} a group= and cannot be placed within the "
+            f"surrounding memory layout: {listed}. Add group= to each "
+            f"(see dasmos#43).",
+            stacklevel=2,
+        )
 
     def _build_items(self, ir) -> list[dict[str, Any]]:
         """Walk classifications in binary order; emit one entry per

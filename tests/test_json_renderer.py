@@ -966,6 +966,66 @@ class TestMemoryMapMetadata:
         assert all(e["name"] != "in_rom" for e in mm), mm
 
 
+class TestUngroupedMapEntryWarning:
+    """Interim aid for the #43 group audit: a memory-map entry with no
+    ``group=`` can't be placed within the surrounding memory layout, so
+    the renderer emits one consolidated ``UserWarning`` naming the
+    offenders. Removed when #43's per-driver grouping lands."""
+
+    def _disassembler(self, tmp_path):
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(bytes([0x60]))
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        return d
+
+    def test_warns_naming_ungrouped_entries(self, tmp_path, recwarn):
+        d = self._disassembler(tmp_path)
+        d.label(0x0070, "scratch", description="Scratch byte.")
+        d.label(0x0080, "flags", access="rw")
+        d.disassemble().render(JsonRenderer())
+        messages = [str(w.message) for w in recwarn.list
+                    if issubclass(w.category, UserWarning)]
+        joined = " ".join(messages)
+        assert "2 memory-map entries lack a group=" in joined
+        assert "scratch (&0070)" in joined
+        assert "flags (&0080)" in joined
+        assert "dasmos#43" in joined
+
+    def test_singular_wording_for_one_entry(self, tmp_path, recwarn):
+        d = self._disassembler(tmp_path)
+        d.label(0x0070, "scratch", description="Scratch byte.")
+        d.disassemble().render(JsonRenderer())
+        joined = " ".join(str(w.message) for w in recwarn.list)
+        assert "1 memory-map entry lacks a group=" in joined
+
+    def test_grouped_entries_do_not_warn(self, tmp_path, recwarn):
+        d = self._disassembler(tmp_path)
+        d.label(0x0070, "scratch", description="Scratch byte.",
+                group="zero_page")
+        d.index_base(0x0080, "zp_base", description="A base.",
+                     group="zero_page")
+        d.disassemble().render(JsonRenderer())
+        assert [w for w in recwarn.list
+                if "lack a group" in str(w.message)
+                or "lacks a group" in str(w.message)] == []
+
+    def test_bare_base_off_the_map_does_not_warn(self, tmp_path):
+        # An address with no author metadata never reaches the map, so it
+        # must not trigger the ungrouped warning either.
+        bin_path = tmp_path / "b.bin"
+        # LDA &70 ; STA &80,X ; RTS — &80 is a bare index base.
+        bin_path.write_bytes(bytes([0xA5, 0x70, 0x95, 0x80, 0x60]))
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x8000)
+        d.entry(0x8000)
+        import warnings as _w
+        with _w.catch_warnings():
+            _w.simplefilter("error")
+            data = d.disassemble().render(JsonRenderer()).data
+        assert all(e["addr"] != 0x80 for e in data["memory_map"])
+
+
 class TestSetextHeadingNormalisation:
     """Driver-supplied Setext-style headings (``Title\\n====``) get
     normalised to ATX (``# Title``) in the JSON output so the rule

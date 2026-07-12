@@ -258,6 +258,15 @@ place, but the literal byte is never touched, only indexed through).
 Access is modelled as orthogonal ``r`` / ``w`` / ``b`` flags, so an
 address that is both read and used as a base comes out ``["r", "b"]``.
 
+.. note::
+
+   For a base (or any map entry) to sit *in place* within the
+   surrounding workspace layout it needs a ``group=``, like every other
+   entry. As an interim aid, the JSON renderer emits a ``UserWarning``
+   naming any ``memory_map`` entries authored without one — add a
+   ``group=`` to each to silence it. This stop-gap is removed once the
+   per-driver grouping audit lands (``dasmos#43``).
+
 When several bases cluster around a named anchor — reached via indexed
 addressing with small displacements — declare an *indexing region*
 instead of naming each byte. :meth:`~dasmos.Disassembler.index_region`
