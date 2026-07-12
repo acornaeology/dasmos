@@ -35,7 +35,9 @@ upgrade separately, then start converting on a known-good baseline.
 
 If you have local tooling that parses the output JSON, note the schema
 is now versioned: ``references`` entries are ``{addr, kind, move_id?}``
-objects, and there is a new top-level ``index_bases`` array.
+objects, and each ``memory_map`` row's ``access`` is an ordered
+``["r", "w", "b"]`` array — a base is a row carrying ``"b"`` (schema v4;
+earlier dasmos used a separate ``index_bases`` array).
 
 
 2. Find candidates — as leads, not as an oracle
@@ -45,8 +47,9 @@ A **pure** index base shows in the ``.asm`` cross-reference as ``used as
 index base N times`` with *no* ``referenced``. A **mixed** address
 (``referenced … also used as index base …``) is touched both ways —
 leave it a plain :meth:`~dasmos.Disassembler.label`. In the JSON, pure
-bases you have already declared appear under ``index_bases``;
-``references[].kind`` gives you the split programmatically.
+bases you have already declared show as ``memory_map`` rows whose
+``access`` is ``["b"]``; ``references[].kind`` gives you the split
+programmatically.
 
 Two blind spots to compensate for:
 
@@ -85,8 +88,8 @@ never as a batch to convert.
        scratch *or* a ROM table / template / offsets / lookup, only ever
        ``lda`` / ``sta …,X`` / ``,Y``
      - **Convert** to ``index_base``, keeping ``description`` / ``group``
-       / ``length``; drop any ``access=`` (``index_base`` sets
-       ``access='indexed_base'`` itself).
+       / ``length``; drop any ``access=`` (``index_base`` asserts the
+       ``b`` flag itself, and a pure base has no ``r`` / ``w``).
    * - any ``type=='code'`` item, or an
        :meth:`~dasmos.Disassembler.entry` / move destination
      - **Leave** — code label (the caveat).
@@ -149,8 +152,9 @@ spacing. (Region windows must be disjoint; an explicit
 ----------
 
 Re-run ``lint`` / ``verify`` across every version (clean and
-byte-identical). Spot-check the JSON: converted addresses should sit
-under ``index_bases``, not ``memory_map``. Commit the conversions
+byte-identical). Spot-check the JSON: converted addresses should sit in
+``memory_map`` with ``access`` containing ``"b"`` (a ``["b"]``-only row
+for a pure base). Commit the conversions
 separately from the bare upgrade, and record the data-vs-code / banner /
 auto-label rules and the "don't force ``index_region``" guidance in your
 project's own notes so the next pass stays consistent.

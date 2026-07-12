@@ -63,7 +63,7 @@ class TestTopLevelSchema:
 
     EXPECTED_KEYS = (
         "meta", "constants", "macros", "subroutines", "banners",
-        "external_labels", "memory_map", "index_bases", "regions", "items",
+        "external_labels", "memory_map", "regions", "items",
     )
 
     def test_render_returns_structured_output(self, tiny_disassembler):
@@ -85,18 +85,20 @@ class TestTopLevelSchema:
         assert out.data["meta"]["schema_version"] == JSON_SCHEMA_VERSION
         assert JSON_SCHEMA_VERSION >= 2
 
-    def test_schema_version_is_3_and_matches_v3_shape(self, tiny_disassembler):
+    def test_schema_version_is_4_and_matches_v4_shape(self, tiny_disassembler):
         # The version gate consumers rely on. If the emitted shape changes
-        # (expressions objects, macros section) the version MUST reflect
-        # it — pinning the literal here forces that discipline.
+        # (expressions objects, macros section, folded index_bases) the
+        # version MUST reflect it — pinning the literal here forces that.
         from dasmos.ext.renderers.json.renderer import JSON_SCHEMA_VERSION
-        assert JSON_SCHEMA_VERSION == 3
+        assert JSON_SCHEMA_VERSION == 4
         data = tiny_disassembler.render(JsonRenderer()).data
-        assert data["meta"]["schema_version"] == 3
-        # v3 hallmarks: a top-level macros section (empty here is fine),
-        # and expressions rendered as {text, tree} objects, not strings.
+        assert data["meta"]["schema_version"] == 4
+        # v4 shape: a top-level macros section (empty here is fine),
+        # expressions as {text, tree} objects, and no separate
+        # index_bases array (bases live in memory_map as b-flagged rows).
         assert "macros" in data
         assert isinstance(data["macros"], list)
+        assert "index_bases" not in data
 
     def test_str_round_trips_via_json(self, tiny_disassembler):
         # ``str(output)`` is canonical JSON; loading it back gives the
@@ -911,7 +913,7 @@ class TestMemoryMapMetadata:
         assert entry["addr"] == 0x80
         assert entry["length"] == 2
         assert entry["group"] == "zero_page"
-        assert entry["access"] == "rw"
+        assert entry["access"] == ["r", "w"]
         assert entry["description"] == "Indirect pointer."
 
     def test_label_with_metadata_but_no_description_still_emitted(self, tmp_path):
@@ -928,7 +930,7 @@ class TestMemoryMapMetadata:
         out = d.disassemble().render(JsonRenderer())
         mm = out.data["memory_map"]
         entry = next(e for e in mm if e["name"] == "system_via_orb")
-        assert entry["access"] == "rw"
+        assert entry["access"] == ["r", "w"]
         assert entry["group"] == "io"
         assert "description" not in entry
 

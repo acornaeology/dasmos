@@ -4,8 +4,8 @@ A reference recorded against an operand's *base* address (``sta base,X``)
 must be distinguishable from one that touches the address directly
 (``sta base``). These tests exercise the whole path: the 6502 addressing
 mode's ``reference_kind``, the reference recorded on the label, the
-reworded cross-reference summaries, and the memory-map / ``index_bases``
-split driven by ``d.index_base()``.
+reworded cross-reference summaries, and the orthogonal ``r``/``w``/``b``
+access flags a base contributes to its ``memory_map`` row.
 
 See ``docs/design/reference-kinds-memo.md``.
 """
@@ -137,7 +137,10 @@ class TestMixedReferenceWording:
         ) in text
 
 
-class TestMemoryMapSplit:
+class TestMemoryMapAccessFlags:
+    """Under schema v4 there is one ``memory_map``; access is an ordered
+    ``["r","w","b"]`` array. Indexing bases are ordinary rows carrying
+    ``b`` — no separate ``index_bases`` array."""
 
     def _render_json(self, tmp_path, *, mark_base):
         d = _program(tmp_path)
@@ -148,39 +151,39 @@ class TestMemoryMapSplit:
             d.label(0x80, "zp_base", description="indexing base", access="rw")
         return d.disassemble().render(JsonRenderer()).data
 
-    def test_direct_location_appears_in_memory_map(self, tmp_path):
+    def test_no_separate_index_bases_array(self, tmp_path):
         data = self._render_json(tmp_path, mark_base=True)
-        names = {row["name"] for row in data["memory_map"]}
-        assert "zp_direct" in names
-        assert "zp_base" not in names
+        assert "index_bases" not in data
 
-    def test_indexed_base_appears_in_index_bases(self, tmp_path):
+    def test_direct_location_carries_read_flag(self, tmp_path):
         data = self._render_json(tmp_path, mark_base=True)
-        bases = {row["name"] for row in data["index_bases"]}
-        assert bases == {"zp_base"}
+        row = next(r for r in data["memory_map"] if r["name"] == "zp_direct")
+        assert row["access"] == ["r"]
+
+    def test_index_base_is_a_base_only_row_on_the_map(self, tmp_path):
+        data = self._render_json(tmp_path, mark_base=True)
+        row = next(r for r in data["memory_map"] if r["name"] == "zp_base")
+        # A ["b"]-only row: documented in place, literal byte untouched.
+        assert row["access"] == ["b"]
         # Description is preserved so the base is still documented.
-        row = next(r for r in data["index_bases"] if r["name"] == "zp_base")
         assert row["description"] == "indexing base"
-        # The section is implicit; the redundant access value is dropped.
-        assert "access" not in row
 
-    def test_without_index_base_marker_base_falls_back_to_memory_map(self, tmp_path):
-        # Author's choice: a base annotated with plain label()+access
-        # still lands on the fixed-location map (no auto-suppression).
+    def test_authored_rw_base_comes_out_orthogonal(self, tmp_path):
+        # &80 is used as an index base in the image (derives b) and the
+        # author also declared access="rw" → the orthogonal ["r","w","b"].
         data = self._render_json(tmp_path, mark_base=False)
-        names = {row["name"] for row in data["memory_map"]}
-        assert {"zp_direct", "zp_base"} <= names
-        assert data["index_bases"] == []
+        row = next(r for r in data["memory_map"] if r["name"] == "zp_base")
+        assert row["access"] == ["r", "w", "b"]
 
 
 class TestUnannotatedBaseStaysOffTheMap:
 
     def test_bare_indexed_base_is_not_a_memory_location(self, tmp_path):
         # &80 is referenced only as an index base and carries no
-        # author metadata → it must not appear as an owned location.
+        # author metadata → it must not appear as an owned location,
+        # even though its references derive the b flag.
         d = _program(tmp_path)
         data = d.disassemble().render(JsonRenderer()).data
         map_addrs = {row["addr"] for row in data["memory_map"]}
-        base_addrs = {row["addr"] for row in data["index_bases"]}
         assert 0x80 not in map_addrs
-        assert 0x80 not in base_addrs
+        assert "index_bases" not in data

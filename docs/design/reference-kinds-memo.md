@@ -134,17 +134,41 @@ Both renderers reword the summary from the reference kinds, no API:
   puts an address on the map, so a bare indexed base with no metadata
   never appears. No auto-suppression of author metadata (too
   surprising).
-- **Explicit directive:** `access='indexed_base'`, most conveniently
-  set via `d.index_base(addr, name, description=…, group=…)`. This
-  keeps the author's description/group but marks the label as a *base*:
-  the renderer keeps it **off** the fixed-location memory map (or, in
-  JSON, emits it under a distinct `index_bases` grouping rather than
-  `memory_map`) and the xref summary uses the base wording. This is the
-  positive-intent counterpart to today's "delete the metadata" hack: the
+- **Explicit directive:** `d.index_base(addr, name, description=…,
+  group=…)` keeps the author's description/group but marks the label as
+  a *base*, and the xref summary uses the base wording. This is the
+  positive-intent counterpart to the "delete the metadata" hack: the
   author states "this is a base" once and keeps the prose.
 
 Both are provided per the design decision ("infer the wording; let the
 author pin the map treatment").
+
+### Update — JSON schema v4: base as an orthogonal access flag
+
+The original Layer A design (above) modelled a base as a *mutually
+exclusive* `access='indexed_base'` value and split it out of `memory_map`
+into a separate `index_bases` array. That collapsed a genuinely
+orthogonal fact into an either/or: an address can be read/written by some
+sites **and** used as a base by others — the very orthogonality this memo
+establishes at the reference level (`touches_named_address`).
+
+JSON schema **v4** (see `json-schema-v4.md`, issue #42) fixes this.
+Memory access is an orthogonal set of flags `r` / `w` / `b`, emitted as
+an ordered array on each `memory_map` row (`Label.access_flags()`):
+
+- `r` / `w` stay **author-declared** — a `Reference` records only its
+  `ReferenceKind` (touches-vs-base), never read-vs-write, so the touch
+  mode cannot be derived and remains authored via `access=`.
+- `b` is **derived** from the reference kinds (`b` whenever
+  `indexed_base_reference_count() > 0`) and also author-assertable
+  (`d.index_base`, which now asserts `b` rather than setting a sentinel).
+
+A base is therefore an ordinary `memory_map` row carrying `b`; the
+separate `index_bases` array is gone. A `["b"]`-only row is exactly the
+old index base — documented in place, the `b` flag (not removal from the
+map) saying the literal byte is untouched. The membership rule is
+unchanged: only author metadata puts an address on the map, so a bare
+derived base with no metadata still never appears.
 
 ## Layer B — base±displacement slot naming
 

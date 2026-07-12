@@ -25,10 +25,13 @@ Emits a JSON-serialisable dictionary:
       "banners": [{"addr": int, "title": str?, "description": str?,
                    "align": "before_label"|"after_label"|"before_line"|"after_line", ...}],
       "external_labels": {"name": int, ...},
-      "memory_map": [{"addr": int, "name": str, "length": int?, ...}],
-      # Addresses used only as an indexing base (access='indexed_base'):
-      # documented but never touched directly, so kept out of memory_map.
-      "index_bases": [{"addr": int, "name": str, "length": int?, ...}],
+      # Out-of-load-range labels carrying map metadata. ``access`` is an
+      # ordered subset of ["r","w","b"] (read / write / indexing base) —
+      # r/w are author-declared, b is derived from indexed references (or
+      # author-asserted via d.index_base). A ["b"]-only row is an indexing
+      # base: documented in place, but the literal byte is never touched.
+      "memory_map": [{"addr": int, "name": str, "length": int?,
+                      "group": str?, "access": ["r"|"w"|"b", ...]?, ...}],
       # Author-declared indexing regions (d.index_region): in-window
       # neighbours of the anchor render as anchor±k / named slots.
       "regions": [{"anchor": int, "name": str, "window": [lo, hi],
@@ -132,7 +135,7 @@ from dasmos.core.expr import (
 )
 from dasmos.core.format_hint import FormatHint
 from dasmos.core.markdown_asm import markdown_normalize_headings
-from dasmos.core.memory import INDEXED_BASE_ACCESS, BinaryAddr, RuntimeAddr
+from dasmos.core.memory import BinaryAddr, RuntimeAddr
 from dasmos.cpu import Opcode, OperandKind
 from dasmos.output import StructuredOutput
 from dasmos.renderer import Renderer
@@ -157,7 +160,13 @@ if TYPE_CHECKING:
 #:   ``expressions[i]`` is now an OBJECT ``{"text", "tree"}`` (breaking),
 #:   code items gained an ``expr`` object, and a top-level ``macros``
 #:   section was added. See ``docs/design/json-schema-v3.md``.
-JSON_SCHEMA_VERSION = 3
+#: - ``4`` — memory access became orthogonal R/W/B flags: a map entry's
+#:   ``access`` is now an ordered ARRAY subset of ``["r", "w", "b"]``
+#:   (was a scalar ``"r"``/``"w"``/``"rw"`` string), and the separate
+#:   top-level ``index_bases`` array was folded back into ``memory_map``
+#:   (bases are ordinary rows carrying ``b`` in ``access``). See
+#:   ``docs/design/json-schema-v4.md``.
+JSON_SCHEMA_VERSION = 4
 
 
 class JsonRenderer(Renderer[StructuredOutput]):
@@ -184,7 +193,6 @@ class JsonRenderer(Renderer[StructuredOutput]):
             "banners": self._build_banners(ir),
             "external_labels": self._build_external_labels(ir),
             "memory_map": self._build_memory_map(ir),
-            "index_bases": self._build_index_bases(ir),
             "regions": self._build_regions(ir),
             "items": self._build_items(ir),
         }
@@ -450,20 +458,14 @@ class JsonRenderer(Renderer[StructuredOutput]):
         purely with ``length`` / ``access`` and no narrative still
         belongs in the rendered memory map.
 
-        Addresses tagged ``access='indexed_base'`` are *excluded* here
-        and reported separately by :meth:`_build_index_bases`: they are
-        indexing bases, not locations the program touches directly.
+        Indexing bases live here too, as ordinary rows carrying ``b`` in
+        their ``access`` array (a ``["b"]``-only row is a base: the
+        literal byte is never touched, only indexed through). The ``b``
+        flag — not physical removal from the map — is how the model says
+        "this byte isn't owned", so a base can sit in place within the
+        surrounding workspace/ZP layout.
         """
-        return self._collect_map_rows(ir, indexed_bases=False)
-
-    def _build_index_bases(self, ir) -> list[dict[str, Any]]:
-        """Rows for labels tagged ``access='indexed_base'`` — addresses
-        used only as the base of an indexed operand (``base,X``), where
-        the byte touched is ``base + register`` and the base itself is
-        never accessed. Kept out of ``memory_map`` so a base is never
-        presented as an owned location, while still documenting it.
-        """
-        return self._collect_map_rows(ir, indexed_bases=True)
+        return self._collect_map_rows(ir)
 
     def _build_regions(self, ir) -> list[dict[str, Any]]:
         """Indexing regions declared via ``d.index_region()`` — one row
@@ -484,9 +486,7 @@ class JsonRenderer(Renderer[StructuredOutput]):
             result.append(entry)
         return result
 
-    def _collect_map_rows(
-        self, ir, *, indexed_bases: bool,
-    ) -> list[dict[str, Any]]:
+    def _collect_map_rows(self, ir) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         for runtime_addr_obj, label in sorted(
             ir.labels.items(), key=lambda kv: int(kv[0]),
@@ -494,9 +494,9 @@ class JsonRenderer(Renderer[StructuredOutput]):
             runtime_addr = int(runtime_addr_obj)
             if self._label_address_is_in_range(ir, runtime_addr):
                 continue
-            is_indexed_base = label.access == INDEXED_BASE_ACCESS
-            if is_indexed_base != indexed_bases:
-                continue
+            # Only author-supplied metadata puts an address on the map;
+            # a bare indexing base with no metadata (b derived purely
+            # from its references) stays off it, as before.
             has_metadata = (
                 label.description
                 or label.length is not None
@@ -516,10 +516,9 @@ class JsonRenderer(Renderer[StructuredOutput]):
                 entry["length"] = label.length
             if label.group is not None:
                 entry["group"] = label.group
-            # The ``indexed_base`` marker is implicit in the section;
-            # don't repeat it as an access value on every row.
-            if label.access is not None and not is_indexed_base:
-                entry["access"] = label.access
+            access = label.access_flags()
+            if access:
+                entry["access"] = access
             if label.description:
                 entry["description"] = label.description
             result.append(entry)

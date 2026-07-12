@@ -143,6 +143,41 @@ class Label:
             if not r.kind.touches_named_address
         })
 
+    def access_flags(self) -> list[str]:
+        """The orthogonal access modes for this address, as an ordered
+        subset of ``["r", "w", "b"]``.
+
+        ``r`` / ``w`` are author-supplied (via ``access=`` on
+        :meth:`~dasmos.core.labels.LabelManager.add_label`): a use site's
+        read-vs-write is *not* recorded — a :class:`Reference` carries
+        only a :class:`~dasmos.core.memory.ReferenceKind` (touches-vs-base,
+        see the reference-kinds memo) — so the direct/indirect touch modes
+        stay author-declared as they always have.
+
+        ``b`` (indexing **base**) is *derived*: set whenever any in-image
+        site uses this address only as an indexing base
+        (:meth:`indexed_base_reference_count` > 0), and also settable by
+        the author (``access`` containing ``"b"``, most conveniently
+        :meth:`~dasmos.disassembler.Disassembler.index_base`) for a base
+        with no in-image references.
+
+        The ``r`` / ``w`` / ``b`` axes are orthogonal: an address read or
+        written by some sites *and* used as a base by others naturally
+        comes out ``["r", "b"]`` / ``["r", "w", "b"]``. Canonical
+        ``r, w, b`` ordering keeps output stable.
+        """
+        authored = self.access or ""
+        base = "b" in authored or self.indexed_base_reference_count() > 0
+        return [
+            flag
+            for flag, present in (
+                ("r", "r" in authored),
+                ("w", "w" in authored),
+                ("b", base),
+            )
+            if present
+        ]
+
     def has_direct_reference(self) -> bool:
         """``True`` if any reference genuinely reads or writes the named
         address (as opposed to using it purely as an indexing base)."""

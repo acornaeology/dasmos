@@ -1,6 +1,6 @@
 {
   "meta": {
-    "schema_version": 3,
+    "schema_version": 4,
     "load_addr": 8192,
     "end_addr": 8204
   },
@@ -115,7 +115,6 @@
     "oswrch": 65518
   },
   "memory_map": [],
-  "index_bases": [],
   "regions": [],
   "items": [
     {

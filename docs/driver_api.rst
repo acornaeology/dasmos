@@ -242,9 +242,9 @@ implies reads and writes that never happen at that exact byte.
 
 :meth:`~dasmos.Disassembler.index_base` names a base *as a base*. It
 keeps the name, description and group — so the ``,X`` operand still
-resolves and stays documented — but keeps the address off the
-fixed-location memory map, and its cross-reference reads
-``used as index base N times`` rather than ``referenced N times``:
+resolves and stays documented — and asserts the **base** access flag, so
+its cross-reference reads ``used as index base N times`` rather than
+``referenced N times``:
 
 .. code-block:: python
 
@@ -252,8 +252,11 @@ fixed-location memory map, and its cross-reference reads
                 description="Caller's zero-page pointer, byte 0; the "
                             "transfer copies base+0..+3 via lda ...,X.")
 
-In the JSON renderer these appear under a dedicated ``index_bases``
-array rather than ``memory_map``.
+In the JSON renderer such a base is an ordinary ``memory_map`` row whose
+``access`` array contains ``"b"`` (a ``["b"]``-only row: documented in
+place, but the literal byte is never touched, only indexed through).
+Access is modelled as orthogonal ``r`` / ``w`` / ``b`` flags, so an
+address that is both read and used as a base comes out ``["r", "b"]``.
 
 When several bases cluster around a named anchor — reached via indexed
 addressing with small displacements — declare an *indexing region*

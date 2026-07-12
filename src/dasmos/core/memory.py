@@ -139,14 +139,6 @@ class BinaryLocation:
         return result
 
 
-#: ``access=`` value marking a label as an *indexing base* rather than
-#: a byte the program touches directly. Such labels keep their name /
-#: description / group (so the ``,X`` operand still renders and is
-#: documented) but are kept off the fixed-location memory map — see
-#: ``Disassembler.index_base`` and the JSON renderer's ``index_bases``.
-INDEXED_BASE_ACCESS = "indexed_base"
-
-
 class ReferenceKind(Enum):
     """How an operand's *named* address relates to the location the
     instruction actually accesses.

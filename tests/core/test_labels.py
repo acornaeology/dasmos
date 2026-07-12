@@ -318,6 +318,53 @@ class TestLabelManagerReference:
         assert lab.indexed_base_reference_count() == 1
 
 
+class TestAccessFlags:
+    """``Label.access_flags`` combines author-declared r/w with a b flag
+    derived from indexing references (or author-asserted)."""
+
+    def test_no_access_no_references_is_empty(self, lm):
+        lab = lm.add_label(0x8000, "x")
+        assert lab.access_flags() == []
+
+    def test_authored_rw_only(self, lm):
+        lab = lm.add_label(0x8000, "x", access="rw")
+        assert lab.access_flags() == ["r", "w"]
+
+    def test_canonical_ordering_from_scrambled_author_string(self, lm):
+        lab = lm.add_label(0x8000, "x", access="wr")
+        assert lab.access_flags() == ["r", "w"]
+
+    def test_authored_base_only(self, lm):
+        lab = lm.add_label(0x8000, "x", access="b")
+        assert lab.access_flags() == ["b"]
+
+    def test_base_derived_from_indexed_reference(self, lm):
+        lab = lm.add_label(0x8000, "x")
+        lm.add_reference(
+            0x8000, BinaryLocation(0x9000, BASE_MOVE_ID),
+            ReferenceKind.INDEXED,
+        )
+        assert lab.access_flags() == ["b"]
+
+    def test_orthogonal_read_and_base(self, lm):
+        # Author declares a read; a site also indexes through it → r + b.
+        lab = lm.add_label(0x8000, "x", access="r")
+        lm.add_reference(
+            0x8000, BinaryLocation(0x9000, BASE_MOVE_ID),
+            ReferenceKind.INDEXED,
+        )
+        assert lab.access_flags() == ["r", "b"]
+
+    def test_direct_reference_does_not_derive_read(self, lm):
+        # r/w stay author-supplied: a DIRECT touch is not read-vs-write.
+        lab = lm.add_label(0x8000, "x")
+        lm.add_reference(
+            0x8000, BinaryLocation(0x9000, BASE_MOVE_ID),
+            ReferenceKind.DIRECT,
+        )
+        assert lab.access_flags() == []
+
+
 class TestLabelManagerIndependence:
 
     def test_two_managers_share_no_state(self):

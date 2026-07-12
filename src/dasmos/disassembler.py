@@ -55,7 +55,7 @@ from dasmos.core.disassembly import (
     ClassificationStore,
 )
 from dasmos.core.labels import LabelManager
-from dasmos.core.memory import INDEXED_BASE_ACCESS, BinaryAddr, MemoryImage
+from dasmos.core.memory import BinaryAddr, MemoryImage
 from dasmos.core.move import BASE_MOVE_ID, Move, MoveManager
 from dasmos.core.regions import IndexRegion, RegionManager
 from dasmos.cpu import Cpu, create_cpu
@@ -578,20 +578,22 @@ class Disassembler:
         is never read or written.
 
         Behaves like :meth:`optional_label` (the name is emitted only if
-        referenced, so the ``base,X`` operand can resolve) but tags the
-        label with ``access='indexed_base'``. That keeps any
+        referenced, so the ``base,X`` operand can resolve) but asserts the
+        **base** (``b``) access flag on the label. That keeps any
         ``description=`` / ``group=`` / ``length=`` the author supplies —
-        so the base is still documented — while keeping it **off** the
-        fixed-location memory map (the JSON renderer lists such bases
-        under a separate ``index_bases`` section). This is the
-        intention-revealing alternative to omitting metadata to hide a
-        base from the map.
+        so the base is still documented — and the address takes its place
+        on the memory map carrying ``access`` including ``b`` (a
+        base-only row: ``b`` with no ``r`` / ``w`` says the literal byte
+        is never touched, only indexed through). This is the
+        intention-revealing way to document a base with no in-image
+        references; a base that *is* referenced derives ``b``
+        automatically from its reference kinds.
 
         See ``docs/design/reference-kinds-memo.md``.
         """
         self._raise_if_disassembled("index_base")
         self._shift_move_kwarg(kwargs)
-        kwargs.setdefault("access", INDEXED_BASE_ACCESS)
+        kwargs.setdefault("access", "b")
         return self._labels.add_label(
             runtime_addr, name, is_optional=True, **kwargs,
         )
