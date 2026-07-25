@@ -65,6 +65,47 @@ _ADDRESS_URI_TARGET_RE = re.compile(
     re.IGNORECASE,
 )
 
+# The symbolic ``[label](label:NAME[@version][?flag])`` form. NAME is
+# resolved to its address via the ``label_resolver`` the renderer
+# supplies, so a ``?hex`` label link renders ``label (&ADDR)`` just like
+# the address form — but stays correct when code shifts between versions.
+_LABEL_URI_LINK_RE = re.compile(
+    r"\[(?P<label>[^\]\[]+)\]\(label:"
+    r"(?P<name>[^\]\[()?@\s]+)"
+    r"(?:@[^)?]+)?"
+    r"(?:\?(?P<flag>[^)]*))?"
+    r"\)",
+)
+
+_LABEL_URI_TARGET_RE = re.compile(
+    r"^label:"
+    r"(?P<name>[^?@\s]+)"
+    r"(?:@[^?]+)?"
+    r"(?:\?(?P<flag>[^&]*))?"
+    r"$",
+)
+
+
+def _render_uri_link_text(label, hex_str, flag, fmt):
+    """Shared collapse for address:/label: comment links.
+
+    ``hex_str`` is the target's hex digits (from an address: URI, or a
+    resolved label: name) or ``None`` when a label: name didn't resolve.
+    Without a flag, or when ``?hex`` can't show a hex, the link collapses
+    to its label text; ``?hex`` with a known address appends ``(&ADDR)``.
+    """
+    flag = (flag or "").lower()
+    if flag == "hex" and hex_str is not None:
+        return f"{label} ({fmt(hex_str)})"
+    if flag and flag != "hex" and flag not in _warned_flags:
+        _warned_flags.add(flag)
+        warnings.warn(
+            f"unknown flag '?{flag}' in address:/label: URI — "
+            f"rendering label only in asm output",
+            stacklevel=3,
+        )
+    return label
+
 
 # Track flags we've already warned about so each unknown flag fires
 # only ONCE per process. Without this, a 1000-line driver with a
@@ -83,10 +124,10 @@ def _default_address_link_hex(hex_str: str) -> str:
 
 
 def strip_address_uri_links(
-    text: str, *, hex_format=None,
+    text: str, *, hex_format=None, label_resolver=None,
 ) -> str:
-    """Replace ``[label](address:HEX[?hex])`` with plain text — no
-    markdown parser involved, just the regex.
+    """Replace ``[label](address:HEX[?hex])`` / ``[label](label:NAME[?hex])``
+    with plain text — no markdown parser involved, just the regex.
 
     Use when the surrounding text needs to keep its literal layout
     (banner separators, ASCII-art tables) and full Markdown parsing
@@ -99,6 +140,11 @@ def strip_address_uri_links(
     With ``?hex``: the hex is appended uppercased in parentheses:
         ``see [foo](address:E000?hex)`` → ``see foo (&E000)``
 
+    A ``label:NAME`` link resolves ``NAME`` to its address via
+    ``label_resolver`` (a ``name -> int | None`` callable); ``?hex`` then
+    shows that resolved address, so the link stays correct across
+    versions. A name that doesn't resolve collapses to its label text.
+
     An ``@version`` suffix is silently stripped. Unknown flags warn
     once per flag value and collapse as if no flag were present.
     Backticks around the label are removed (they're HTML-only
@@ -107,24 +153,21 @@ def strip_address_uri_links(
 
     fmt = hex_format or _default_address_link_hex
 
-    def rewrite(match: re.Match[str]) -> str:
+    def rewrite_address(match: re.Match[str]) -> str:
         label = match.group("label").replace("`", "")
-        hex_str = match.group("hex")
-        flag = (match.group("flag") or "").lower()
-        if not flag:
-            return label
-        if flag == "hex":
-            return f"{label} ({fmt(hex_str)})"
-        if flag not in _warned_flags:
-            _warned_flags.add(flag)
-            warnings.warn(
-                f"unknown flag '?{flag}' in address: URI — "
-                f"rendering label only in asm output",
-                stacklevel=2,
-            )
-        return label
+        return _render_uri_link_text(
+            label, match.group("hex"), match.group("flag"), fmt)
 
-    return _ADDRESS_URI_LINK_RE.sub(rewrite, text)
+    def rewrite_label(match: re.Match[str]) -> str:
+        label = match.group("label").replace("`", "")
+        addr = label_resolver(match.group("name")) if label_resolver else None
+        hex_str = f"{int(addr):04X}" if addr is not None else None
+        return _render_uri_link_text(
+            label, hex_str, match.group("flag"), fmt)
+
+    text = _ADDRESS_URI_LINK_RE.sub(rewrite_address, text)
+    text = _LABEL_URI_LINK_RE.sub(rewrite_label, text)
+    return text
 
 
 def markdown_normalize_headings(text: str) -> str:
@@ -205,6 +248,7 @@ def markdown_to_asm_text(
     inline: bool = False,
     wrap_width: int | None = None,
     hex_format=None,
+    label_resolver=None,
 ) -> str:
     """Render ``text`` (CommonMark + GFM tables) as plaintext for asm.
 
@@ -213,6 +257,8 @@ def markdown_to_asm_text(
     - ``wrap_width=N`` wraps prose paragraphs and list items at column
       N. Tables and code fences are laid out structurally and ignore
       the wrap.
+    - ``label_resolver`` (a ``name -> int | None`` callable) resolves a
+      ``label:NAME`` link's address for its ``?hex`` rendering.
 
     Returns the plaintext with paragraphs separated by blank lines and
     no trailing newline.
@@ -220,6 +266,7 @@ def markdown_to_asm_text(
     import mistletoe
     with _AsmTextRenderer(
         wrap_width=wrap_width, inline=inline, hex_format=hex_format,
+        label_resolver=label_resolver,
     ) as renderer:
         doc = mistletoe.Document(text)
         return renderer.render(doc)
@@ -240,11 +287,12 @@ class _AsmTextRenderer(BaseRenderer):
     """
 
     def __init__(self, wrap_width: int | None = None, inline: bool = False,
-                 hex_format=None):
+                 hex_format=None, label_resolver=None):
         super().__init__()
         self.wrap_width = wrap_width
         self.inline = inline
         self._hex_format = hex_format or _default_address_link_hex
+        self._label_resolver = label_resolver
         self._indent = ""
         self._list_markers: list[tuple[str, int | None]] = []
 
@@ -412,18 +460,16 @@ class _AsmTextRenderer(BaseRenderer):
         target = getattr(token, "target", "") or ""
         match = _ADDRESS_URI_TARGET_RE.match(target)
         if match:
-            flag = (match.group("flag") or "").lower()
-            hex_str = match.group("hex")
-            if flag == "hex":
-                return f"{label} ({self._hex_format(hex_str)})"
-            if flag and flag not in _warned_flags:
-                _warned_flags.add(flag)
-                warnings.warn(
-                    f"unknown flag '?{flag}' in address: URI — "
-                    f"rendering label only in asm output",
-                    stacklevel=2,
-                )
-            return label
+            return _render_uri_link_text(
+                label, match.group("hex"), match.group("flag"),
+                self._hex_format)
+        match = _LABEL_URI_TARGET_RE.match(target)
+        if match:
+            addr = (self._label_resolver(match.group("name"))
+                    if self._label_resolver else None)
+            hex_str = f"{int(addr):04X}" if addr is not None else None
+            return _render_uri_link_text(
+                label, hex_str, match.group("flag"), self._hex_format)
         # Ordinary URLs collapse to label text — asm has no hypertext.
         return label
 

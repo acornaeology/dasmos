@@ -214,6 +214,9 @@ class AssemblerRenderer(TextRenderer):
         every :meth:`render` call so the renderer is reusable across
         multiple IRs.
         """
+        # name -> address lookup for label: comment links; render()
+        # replaces this with the real resolver once the IR is known.
+        self._comment_label_resolver = None
         # Runtime addresses of out-of-range labels we resolved to a
         # name during operand rendering. The explicit-label table at
         # the top of the output emits these (plus all required
@@ -278,6 +281,7 @@ class AssemblerRenderer(TextRenderer):
         byte-equality holds.
         """
         self._reset_render_state()
+        self._comment_label_resolver = self._build_comment_label_resolver(ir)
 
         lines: list[str] = []
         lines.extend(self.disassembly_start())
@@ -447,6 +451,7 @@ class AssemblerRenderer(TextRenderer):
         if header.title:
             title = markdown_to_asm_text(
                 header.title, inline=True, hex_format=self.address_link_hex,
+                label_resolver=self._comment_label_resolver,
             )
             out.append(f"{cp} {title}")
         if header.description:
@@ -455,6 +460,7 @@ class AssemblerRenderer(TextRenderer):
             desc = markdown_to_asm_text(
                 header.description, wrap_width=self.comment_wrap_column,
                 hex_format=self.address_link_hex,
+                label_resolver=self._comment_label_resolver,
             )
             for line in desc.split("\n"):
                 out.append(f"{cp} {line}" if line else cp)
@@ -537,7 +543,7 @@ class AssemblerRenderer(TextRenderer):
             if c.comment:
                 line = (
                     f"{line}  {self.comment_prefix()} "
-                    f"{markdown_to_asm_text(c.comment, inline=True, hex_format=self.address_link_hex)}"
+                    f"{markdown_to_asm_text(c.comment, inline=True, hex_format=self.address_link_hex, label_resolver=self._comment_label_resolver)}"
                 )
             lines.append(line)
         return lines
@@ -819,6 +825,18 @@ class AssemblerRenderer(TextRenderer):
             lines.extend(self._render_annotation(ann))
         return lines
 
+    def _build_comment_label_resolver(self, ir):
+        """Build a ``name -> runtime-address`` lookup for ``label:NAME``
+        comment links, so a ``label:NAME?hex`` renders ``text (&ADDR)``
+        with the label's current address. Built once per render (the
+        per-name :meth:`LabelManager.addr_for_name` is linear)."""
+        name_to_addr: dict[str, int] = {}
+        for runtime_addr_obj, label in ir.labels.items():
+            addr = int(runtime_addr_obj)
+            for name in label.all_names():
+                name_to_addr.setdefault(name, addr)
+        return name_to_addr.get
+
     def _build_explicit_label_table(self, ir) -> list[str]:
         """Return ``name = &xxxx`` definition lines for out-of-range
         labels:
@@ -914,7 +932,7 @@ class AssemblerRenderer(TextRenderer):
             if description:
                 line = (
                     f"{line}  {self.comment_prefix()} "
-                    f"{markdown_to_asm_text(description, inline=True, hex_format=self.address_link_hex)}"
+                    f"{markdown_to_asm_text(description, inline=True, hex_format=self.address_link_hex, label_resolver=self._comment_label_resolver)}"
                 )
             lines.append(line)
             # If this address has tracked references, follow the equate
@@ -1317,6 +1335,7 @@ class AssemblerRenderer(TextRenderer):
         if not ann.word_wrap:
             text = strip_address_uri_links(
                 ann.text, hex_format=self.address_link_hex,
+                label_resolver=self._comment_label_resolver,
             )
             if inline:
                 # Collapse whitespace for inline rendering even in
@@ -1327,6 +1346,7 @@ class AssemblerRenderer(TextRenderer):
             return text
         return markdown_to_asm_text(
             ann.text, inline=inline, hex_format=self.address_link_hex,
+                label_resolver=self._comment_label_resolver,
         )
 
     def _render_banner_lines(self, banner: Banner) -> list[str]:
@@ -1360,6 +1380,7 @@ class AssemblerRenderer(TextRenderer):
             # any incidental wrap-style whitespace and strip Markdown.
             title_text = markdown_to_asm_text(
                 banner.title, inline=True, hex_format=self.address_link_hex,
+                label_resolver=self._comment_label_resolver,
             )
             out.append(f"{prefix} {title_text}")
         if banner.description:
@@ -1368,6 +1389,7 @@ class AssemblerRenderer(TextRenderer):
             description_text = markdown_to_asm_text(
                 banner.description, wrap_width=self.comment_wrap_column,
                 hex_format=self.address_link_hex,
+                label_resolver=self._comment_label_resolver,
             )
             for line in description_text.split("\n"):
                 if line:
@@ -1389,6 +1411,7 @@ class AssemblerRenderer(TextRenderer):
                 # as descriptions, so flatten through the same helper.
                 value_text = markdown_to_asm_text(
                     value, inline=True, hex_format=self.address_link_hex,
+                label_resolver=self._comment_label_resolver,
                 )
                 out.append(f"{prefix}     {key.upper()}: {value_text}")
         return out

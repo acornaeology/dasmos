@@ -291,3 +291,42 @@ class TestMarkdownNormalizeHeadings:
         text = "single short paragraph"
         assert markdown_normalize_headings(text) is text or \
                markdown_normalize_headings(text) == text
+
+
+class TestLabelUriLinks:
+    """label:NAME comment links resolve to (&ADDR) via a label_resolver."""
+
+    RESOLVER = {"foo": 0x81A3, "bar": 0xE000}.get
+
+    def test_label_hex_flag_resolves_address(self):
+        out = strip_address_uri_links(
+            "see [`foo`](label:foo?hex) here", label_resolver=self.RESOLVER)
+        assert out == "see foo (&81A3) here"
+
+    def test_label_no_flag_collapses_to_text(self):
+        out = strip_address_uri_links(
+            "see [`foo`](label:foo) here", label_resolver=self.RESOLVER)
+        assert out == "see foo here"
+
+    def test_label_version_qualifier_stripped(self):
+        out = strip_address_uri_links(
+            "[`bar`](label:bar@3.60?hex)", label_resolver=self.RESOLVER)
+        assert out == "bar (&E000)"
+
+    def test_unresolved_label_collapses_gracefully(self):
+        out = strip_address_uri_links(
+            "[`nope`](label:nope?hex)", label_resolver=self.RESOLVER)
+        assert out == "nope"
+
+    def test_label_hex_without_resolver_collapses(self):
+        out = strip_address_uri_links("[`foo`](label:foo?hex)")
+        assert out == "foo"
+
+    def test_markdown_path_resolves_label(self):
+        out = markdown_to_asm_text(
+            "see [`bar`](label:bar?hex) end", inline=True,
+            label_resolver=self.RESOLVER)
+        assert out == "see bar (&E000) end"
+
+    def test_address_links_unaffected(self):
+        assert strip_address_uri_links("[`x`](address:E000?hex)") == "x (&E000)"
