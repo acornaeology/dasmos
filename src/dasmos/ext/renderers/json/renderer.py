@@ -236,6 +236,24 @@ class JsonRenderer(Renderer[StructuredOutput]):
                 meta["title"] = header.title
             if header.description:
                 meta["description"] = header.description
+        # Load-and-run program metadata (see Disassembler.program) —
+        # additive, optional keys; present only when the driver declared
+        # exec/reload/load addresses. Each declared address is surfaced
+        # under ``meta.program`` so a consumer can reproduce the DFS
+        # header a beebasm ``save`` would carry.
+        program = ir.program
+        if program is not None:
+            declared = {
+                key: value
+                for key, value in (
+                    ("load_addr", program.load_addr),
+                    ("exec_addr", program.exec_addr),
+                    ("reload_addr", program.reload_addr),
+                )
+                if value is not None
+            }
+            if declared:
+                meta["program"] = declared
         return meta
 
     def _build_constants(self, ir) -> list[dict[str, Any]]:

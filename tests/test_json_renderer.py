@@ -107,6 +107,20 @@ class TestTopLevelSchema:
         out = tiny_disassembler.render(JsonRenderer())
         assert json.loads(str(out)) == out.data
 
+    def test_meta_has_no_program_key_when_undeclared(self, tiny_disassembler):
+        out = tiny_disassembler.render(JsonRenderer())
+        assert "program" not in out.data["meta"]
+
+    def test_meta_surfaces_declared_program_metadata(self, tmp_path):
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(b"\x60")
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x1900)
+        d.entry(0x1900)
+        d.program(exec_addr=0x3906, reload_addr=0x1900)
+        meta = d.disassemble().render(JsonRenderer()).data["meta"]
+        assert meta["program"] == {"exec_addr": 0x3906, "reload_addr": 0x1900}
+
 
 class TestItemEmission:
 

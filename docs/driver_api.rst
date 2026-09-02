@@ -491,6 +491,33 @@ still holds.
    coupling doesn't arise; ``build_output_name`` simply names its target.
 
 
+Load-and-run programs (exec / reload addresses)
+-----------------------------------------------
+
+A ROM lives at a fixed address, but a DFS ``*RUN`` program *loads* at
+one address and may *begin execution* at another (its **exec** address),
+with the filesystem recording a **reload** address distinct from where
+the bytes sit. :meth:`~dasmos.Disassembler.program` declares that
+metadata once, in the model, independent of any assembler syntax:
+
+.. code-block:: python
+
+   d.program(exec_addr=0x3906, reload_addr=0x1900)
+
+Each renderer emits what it can express:
+
+- the beebasm renderer folds them into its ``save`` directive —
+  ``save "NAME", start, end, &3906, &1900`` — so the produced file is
+  directly ``*RUN``-able and its DFS header matches the original;
+- the JSON renderer surfaces them under ``meta.program``;
+- 64tass, which saves via ``-o`` and has no exec/reload concept for a
+  raw binary, warns and omits them. The raw payload — and so
+  ``fantasm verify`` — is unaffected either way.
+
+``reload_addr`` defaults to the loaded range's start when omitted; every
+argument is optional.
+
+
 Classifying data
 ----------------
 

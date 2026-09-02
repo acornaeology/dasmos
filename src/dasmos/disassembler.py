@@ -57,6 +57,7 @@ from dasmos.core.disassembly import (
 from dasmos.core.labels import LabelManager
 from dasmos.core.memory import BinaryAddr, MemoryImage
 from dasmos.core.move import BASE_MOVE_ID, Move, MoveManager
+from dasmos.core.program import ProgramInfo
 from dasmos.core.regions import IndexRegion, RegionManager
 from dasmos.cpu import Cpu, create_cpu
 from dasmos.exceptions import DasmosError
@@ -208,6 +209,10 @@ class Disassembler:
         # Optional provenance prose emitted at the top of a listing and in
         # the JSON meta (set via :meth:`set_file_header`).
         self._file_header: FileHeader | None = None
+        # Optional load-and-run program metadata (exec/reload/load
+        # addresses) declared via :meth:`program`. ``None`` for a
+        # plain position-fixed ROM disassembly.
+        self._program_info: ProgramInfo | None = None
         # Deprecated → replacement constant-name aliases registered by
         # environments via :meth:`register_deprecated_constant_name`.
         # When a driver calls :meth:`constant` with a key in this dict,
@@ -333,6 +338,48 @@ class Disassembler:
     def file_header(self) -> "FileHeader | None":
         """The provenance header, or ``None`` (see :meth:`set_file_header`)."""
         return self._file_header
+
+    @property
+    def program_info(self) -> "ProgramInfo | None":
+        """Declared load-and-run program metadata, or ``None``
+        (see :meth:`program`)."""
+        return self._program_info
+
+    def program(
+        self,
+        *,
+        load_addr: int | None = None,
+        exec_addr: int | None = None,
+        reload_addr: int | None = None,
+    ) -> None:
+        """Declare load-and-run program metadata for the disassembly.
+
+        A DFS ``*RUN`` program loads at one address but may begin
+        execution at another (its ``exec_addr``), and the filesystem
+        records a ``reload_addr`` distinct from where the bytes sit.
+        These are properties of the program, not of any assembler
+        syntax, so they are declared here and each renderer emits what
+        it can express:
+
+        - beebasm appends them to its ``save`` directive
+          (``save "NAME", start, end, exec, reload``), producing a
+          directly ``*RUN``-able file whose header matches the original
+          DFS metadata;
+        - the JSON renderer surfaces them structurally;
+        - a backend with no equivalent (e.g. 64tass, which saves via
+          ``-o``) warns and omits them, leaving the raw payload — and
+          so ``fantasm verify`` — unaffected.
+
+        Every argument is optional; an omitted address is simply not
+        recorded. ``reload_addr`` defaults to the loaded range's start
+        when a renderer needs it and it was not declared.
+        """
+        self._raise_if_disassembled("program")
+        self._program_info = ProgramInfo(
+            load_addr=load_addr,
+            exec_addr=exec_addr,
+            reload_addr=reload_addr,
+        )
 
     def set_file_header(self, title=None, description=None) -> None:
         """Set the backend-agnostic provenance header emitted at the top of

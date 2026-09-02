@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import warnings
 from pathlib import Path
 
 import pytest
@@ -85,6 +86,36 @@ class TestLexicalProtocol:
 
     def test_registered_via_entry_point(self):
         assert isinstance(create_renderer("64tass"), Tass64Renderer)
+
+
+class TestProgramMetadataGraceful:
+    """64tass saves via ``-o`` and has no exec/reload concept for a raw
+    binary; declared program metadata is warned about and omitted, and
+    the raw payload (so ``fantasm verify``) is unaffected (#45)."""
+
+    def _ir(self, tmp_path, **program_kwargs):
+        binpath = tmp_path / "p.bin"
+        binpath.write_bytes(b"\x60")
+        d = Disassembler.create(cpu="6502")
+        d.load(binpath, 0x1900)
+        d.entry(0x1900)
+        if program_kwargs:
+            d.program(**program_kwargs)
+        return d.disassemble()
+
+    def test_no_program_no_warning_no_save(self, tmp_path):
+        ir = self._ir(tmp_path)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            text = str(ir.render(Tass64Renderer()))
+        assert "save" not in text
+
+    def test_exec_reload_warns_and_omits(self, tmp_path):
+        ir = self._ir(tmp_path, exec_addr=0x3906, reload_addr=0x1900)
+        with pytest.warns(UserWarning, match="exec/reload"):
+            text = str(ir.render(Tass64Renderer()))
+        assert "3906" not in text
+        assert "save" not in text
 
 
 class TestRelocationHooks:

@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from dasmos.core.labels import LabelManager
     from dasmos.core.memory import MemoryImage
     from dasmos.core.move import MoveManager
+    from dasmos.core.program import ProgramInfo
     from dasmos.cpu import Cpu
     from dasmos.disassembler import Disassembler
     from dasmos.renderer import Renderer
@@ -106,6 +107,12 @@ class IntermediateRepresentation:
     @property
     def config(self) -> "Config":
         return self._disassembler.config
+
+    @property
+    def program(self) -> "ProgramInfo | None":
+        """Declared load-and-run program metadata, or ``None``
+        (see :meth:`Disassembler.program`)."""
+        return self._disassembler.program_info
 
     @property
     def constants(self):

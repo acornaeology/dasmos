@@ -33,6 +33,8 @@ validated the same way beebasm's is; see ``tests/test_tass64.py``.
 
 from __future__ import annotations
 
+import warnings
+
 from dasmos.asm_renderer import AssemblerRenderer
 from dasmos.core.expr import BinOp
 
@@ -70,6 +72,25 @@ class Tass64Renderer(AssemblerRenderer):
             "Assemble with 64tass:",
             f"64tass --nostart -o {output} {listing}",
         ]
+
+    def _save_directive(self, load_start, load_end, program=None) -> str | None:
+        """64tass writes the binary via ``-o``, so there is never an
+        in-source save directive. Load-and-run exec/reload metadata
+        (#45) has no representation in a raw 64tass output, so it is
+        warned about and omitted; the raw payload is unaffected.
+        """
+        if program is not None and (
+            program.exec_addr is not None or program.reload_addr is not None
+        ):
+            warnings.warn(
+                "64tass has no exec/reload save directive; the declared "
+                "exec/reload program metadata is omitted. The raw binary "
+                "(and so fantasm verify) is unaffected. Use the beebasm "
+                "backend to emit a *RUN-able file with a DFS header.",
+                UserWarning,
+                stacklevel=2,
+            )
+        return None
 
     def cpus_supported(self) -> list[str]:
         return ["6502", "65C02"]

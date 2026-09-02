@@ -200,12 +200,16 @@ class AssemblerRenderer(TextRenderer):
         """
         return None
 
-    def _save_directive(self, load_start, load_end) -> str | None:
+    def _save_directive(self, load_start, load_end, program=None) -> str | None:
         """A directive writing the loaded range to a binary file, or
         ``None`` when the assembler saves via a command-line flag
         instead. Default: ``None`` (no in-source save). Beebasm
         overrides with its ``save`` directive; 64tass leaves it to the
         ``-o`` flag.
+
+        ``program`` is the IR's :class:`~dasmos.core.program.ProgramInfo`
+        (or ``None``) — load-and-run metadata (exec/reload addresses) a
+        backend may fold into its save directive.
         """
         return None
 
@@ -358,7 +362,7 @@ class AssemblerRenderer(TextRenderer):
             if expected_pc != int(load_end):
                 lines.extend(self.set_origin(int(load_end)))
             lines.append(self.inline_label(self.boundary_end_label))
-        save = self._save_directive(load_start, load_end)
+        save = self._save_directive(load_start, load_end, ir.program)
         if save is not None:
             lines.append("")
             lines.append(save)

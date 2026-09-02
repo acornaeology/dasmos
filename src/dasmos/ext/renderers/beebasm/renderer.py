@@ -210,12 +210,24 @@ class BeebasmRenderer(AssemblerRenderer):
             f"beebasm -i {listing} -o {output}",
         ]
 
-    def _save_directive(self, load_start, load_end) -> str:
+    def _save_directive(self, load_start, load_end, program=None) -> str:
         """Render the ``save`` directive for the loaded range.
 
         Uses the boundary marker labels when they're configured;
         falls back to literal hex addresses when they're suppressed
         (``boundary_label_prefix=""``).
+
+        When the IR carries load-and-run :class:`ProgramInfo` with an
+        exec and/or reload address, beebasm's extended grammar is used::
+
+            save "NAME", start, end, exec, reload
+
+        so the produced file is directly ``*RUN``-able and its DFS
+        header matches the original. beebasm's grammar nests the
+        optional args (``reload`` only after ``exec``), so whenever
+        either is declared both are emitted — a missing one defaults to
+        the reload/load address (``reload_addr`` → ``load_addr`` → the
+        loaded range's start; ``exec_addr`` → the loaded range's start).
         """
         if self.emit_boundary_labels:
             save_args = (
@@ -225,9 +237,30 @@ class BeebasmRenderer(AssemblerRenderer):
             save_args = (
                 f"{self.hex4(int(load_start))}, {self.hex4(int(load_end))}"
             )
+        save_args += self._exec_reload_suffix(load_start, program)
         if self.output_filename is not None:
             return f'save "{self.output_filename}", {save_args}'
         return f"save {save_args}"
+
+    def _exec_reload_suffix(self, load_start, program) -> str:
+        """The ``, <exec>, <reload>`` tail of a ``save`` directive, or
+        the empty string when no exec/reload metadata was declared.
+        """
+        if program is None:
+            return ""
+        if program.exec_addr is None and program.reload_addr is None:
+            return ""
+        default_start = int(load_start)
+        exec_addr = (
+            program.exec_addr if program.exec_addr is not None else default_start
+        )
+        if program.reload_addr is not None:
+            reload_addr = program.reload_addr
+        elif program.load_addr is not None:
+            reload_addr = program.load_addr
+        else:
+            reload_addr = default_start
+        return f", {self.hex4(int(exec_addr))}, {self.hex4(int(reload_addr))}"
 
     def code_start(self, start_addr, end_addr, first: bool) -> list[str]:
         # Blank line before, ORG line, blank line after — readability

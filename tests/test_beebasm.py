@@ -156,6 +156,48 @@ class TestLexicalSyntax:
         text = str(ir.render(r))
         assert 'save "output.bin", dasmos_start, dasmos_end' in text
 
+    def _program_ir(self, tmp_path, **program_kwargs):
+        from dasmos.disassembler import Disassembler
+        bin_path = tmp_path / "p.bin"
+        bin_path.write_bytes(b"\x60")
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_path, 0x1900)
+        d.entry(0x1900)
+        if program_kwargs:
+            d.program(**program_kwargs)
+        return d.disassemble()
+
+    def test_save_appends_exec_and_reload(self, tmp_path):
+        ir = self._program_ir(tmp_path, exec_addr=0x3906, reload_addr=0x1900)
+        r = BeebasmRenderer()
+        r.set_output_filename("KEYPAD")
+        text = str(ir.render(r))
+        assert (
+            'save "KEYPAD", dasmos_start, dasmos_end, &3906, &1900' in text
+        )
+
+    def test_save_reload_defaults_to_load_start(self, tmp_path):
+        # Only exec declared: reload defaults to the loaded range's start.
+        ir = self._program_ir(tmp_path, exec_addr=0x1909)
+        text = str(ir.render(BeebasmRenderer()))
+        assert "save dasmos_start, dasmos_end, &1909, &1900" in text
+
+    def test_save_without_program_is_unchanged(self, tmp_path):
+        ir = self._program_ir(tmp_path)
+        text = str(ir.render(BeebasmRenderer()))
+        assert "save dasmos_start, dasmos_end" in text
+        assert "&3906" not in text
+
+    def test_save_exec_only_needs_no_reload_arg_when_reload_equals_start(
+        self, tmp_path,
+    ):
+        # exec present, reload omitted → reload synthesised as load start,
+        # so beebasm gets both trailing args (exec is meaningless without
+        # a reload slot before it in the SAVE grammar).
+        ir = self._program_ir(tmp_path, exec_addr=0x3906)
+        text = str(ir.render(BeebasmRenderer()))
+        assert ", &3906, &1900" in text
+
 
 # ---------------------------------------------------------------------------
 # End-to-end rendering against a tiny program
@@ -843,6 +885,34 @@ class TestBeebasmRoundTrip:
             f"=== stderr ===\n{result.stderr}"
         )
         assert (tmp_path / "out.bin").read_bytes() == original
+
+    def test_save_with_exec_reload_assembles_and_payload_matches(self, tmp_path):
+        # beebasm's SAVE "NAME", start, end, exec, reload must assemble;
+        # exec/reload only affect the DFS header, not the payload, so the
+        # produced binary still matches byte-for-byte.
+        original = b"\xa9\x2a\x60"  # LDA #$2A; RTS
+        binpath = tmp_path / "in.bin"
+        binpath.write_bytes(original)
+        d = Disassembler.create(cpu="6502")
+        d.load(binpath, 0x1900)
+        d.entry(0x1900)
+        d.program(exec_addr=0x1902, reload_addr=0x1900)
+        ir = d.disassemble()
+        renderer = BeebasmRenderer()
+        renderer.set_output_filename("KEYPAD")
+        text = str(ir.render(renderer))
+        assert 'save "KEYPAD", dasmos_start, dasmos_end, &1902, &1900' in text
+        asm_path = tmp_path / "src.asm"
+        asm_path.write_text(text, encoding="utf-8")
+        result = subprocess.run(
+            [BEEBASM, "-i", str(asm_path)],
+            capture_output=True, text=True, cwd=str(tmp_path),
+        )
+        assert result.returncode == 0, (
+            f"beebasm failed:\n=== source ===\n{text}\n"
+            f"=== stderr ===\n{result.stderr}"
+        )
+        assert (tmp_path / "KEYPAD").read_bytes() == original
 
     def test_each_addressing_mode_round_trips(self, tmp_path):
         # A program that exercises every common 6502 addressing mode.
