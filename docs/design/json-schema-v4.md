@@ -95,3 +95,45 @@ Membership rule is unchanged: only author-supplied metadata
 (`description` / `length` / `group` / `access`) puts an address on the
 map. A bare indexing base with no metadata — `b` derived purely from its
 references — still stays off the map, exactly as in v3.
+
+---
+
+## Additive fields since v4 (non-breaking)
+
+Per the versioning policy above, `schema_version` bumps only on a
+**breaking** shape change. The fields below are **additive** — they
+appear only when the driver uses the corresponding feature, and a
+consumer that doesn't know them ignores them and reads the rest of the
+document unchanged. They do **not** bump the version.
+
+### `meta.program` — load-and-run metadata
+
+Present only when the driver called `d.program(...)`. An object holding
+whichever of `load_addr` / `exec_addr` / `reload_addr` were declared
+(each an integer runtime address); an undeclared address is omitted, and
+the whole `program` key is absent when none were declared.
+
+```jsonc
+"meta": {
+  "schema_version": 4,
+  "load_addr": 6400,
+  "end_addr": 14440,
+  "program": { "exec_addr": 14598, "reload_addr": 6400 }
+}
+```
+
+### `items[].type == "incbin"` — external binary include
+
+A region declared via `d.include_binary(addr, length, path)`. Like the
+other data items it carries `addr` (and `binary_addr` when moved) and
+the owned `bytes`; its type-specific fields are:
+
+```jsonc
+{ "addr": 6934, "type": "incbin",
+  "path": "keypad-basic.dat", "length": 7506,
+  "bytes": [ 134, 0, 15, ... ] }
+```
+
+`path` is the include path as it appears in the assembler directive; the
+owned `bytes` are the canonical payload
+(`ir.write_included_binaries(dir)` writes them to `path`).

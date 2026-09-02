@@ -558,6 +558,36 @@ should render compactly (``equb &00 [* N]`` or similar):
 
    d.fill(0x9F00, length=0x100)
 
+:meth:`~dasmos.Disassembler.include_binary` marks a region whose source
+of truth lives *outside* the disassembly and is regenerated at build
+time — for example a block of detokenised BASIC re-encoded to bytes, or
+any generated data payload you would rather carry as an editable source
+file than as an opaque wall of ``equb`` lines:
+
+.. code-block:: python
+
+   d.include_binary(0x1b16, 0x1d52, "keypad-basic.dat")
+
+The region still *owns* its loaded bytes (nothing is left unaccounted
+for and the tracer won't enter it), but the renderer emits an include
+directive — beebasm ``incbin "keypad-basic.dat"``, 64tass
+``.binary "keypad-basic.dat"`` — instead of the bytes. The owned bytes
+are the *canonical payload*: write them next to the listing with
+:meth:`~dasmos.ir.IntermediateRepresentation.write_included_binaries`
+so the assembler reads back exactly what dasmos accounted for and the
+round-trip stays self-consistent:
+
+.. code-block:: python
+
+   ir = d.disassemble()
+   listing_dirpath = pathlib.Path("build")
+   (listing_dirpath / "keypad.asm").write_text(str(ir.render("beebasm")))
+   ir.write_included_binaries(listing_dirpath)   # writes keypad-basic.dat
+
+A project whose own generator must reproduce the region can diff its
+output against that canonical payload. A backend with no file-include
+directive raises a clear error rather than mis-rendering the region.
+
 For pointer tables that *do* contain code addresses but which the
 trace can't follow (because they're indirect-dispatched via
 ``rts`` push tricks or table indexing), use

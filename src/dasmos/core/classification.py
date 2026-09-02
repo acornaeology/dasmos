@@ -178,6 +178,40 @@ class String(Classification):
         self._length = length
 
 
+class IncludedBinary(Classification):
+    """Marks a span whose bytes are supplied by an *external* file at
+    assembly time.
+
+    The span still **owns** its loaded bytes exactly like :class:`Byte`
+    (the tracer won't enter it and nothing is left unaccounted for), but
+    the renderer emits an include directive (beebasm ``incbin "path"``;
+    64tass ``.binary "path"``) instead of ``equb`` lines. The owned
+    bytes are the canonical payload: :meth:`IntermediateRepresentation
+    .write_included_binaries` writes them to ``path`` so an assembler
+    reads back exactly what dasmos accounted for, keeping the round-trip
+    self-consistent even though the data lives in a separate file.
+
+    ``path`` is the include path as it should appear in the directive
+    (and the relative path the payload is written to) — typically a
+    bare filename sitting next to the listing.
+    """
+
+    def __init__(self, length: int, path: str):
+        _validate_positive_length(length)
+        if not isinstance(path, str) or not path:
+            raise ClassificationError(
+                f"IncludedBinary path must be a non-empty string; got {path!r}"
+            )
+        self._length = length
+        self._path = path
+
+    def length(self) -> int:
+        return self._length
+
+    def path(self) -> str:
+        return self._path
+
+
 class ExpressionRegistry:
     """Per-disassembly mapping from binary address to a user-supplied
     operand expression.

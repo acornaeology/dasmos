@@ -412,6 +412,12 @@ class BeebasmRenderer(AssemblerRenderer):
     def render_string_length(self, s: str) -> str:
         return f"LEN({s})"
 
+    def included_binary_directive(self, path: str) -> list[str]:
+        # beebasm includes an external file verbatim at assembly time
+        # with ``incbin "<path>"``; the file must sit next to the
+        # listing (write it with ir.write_included_binaries).
+        return [f'incbin "{path}"']
+
     def fill_directive(self, value: int, length: int) -> list[str]:
         # Beebasm has no native fill-with-value; a FOR/NEXT loop
         # produces exactly N copies at assembly time. The loop

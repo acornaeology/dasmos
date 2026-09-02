@@ -112,7 +112,7 @@ from dasmos.core.annotations import (
     Comment,
     DecodedAnnotation,
 )
-from dasmos.core.classification import Byte, Fill, String, Word
+from dasmos.core.classification import Byte, Fill, IncludedBinary, String, Word
 from dasmos.core.expr import (
     BinOp,
     Binary,
@@ -693,6 +693,10 @@ class JsonRenderer(Renderer[StructuredOutput]):
             hints = self._collect_format_hints(ir, binary_addr, length, 2)
             if hints:
                 entry["format_hints"] = hints
+        elif isinstance(c, IncludedBinary):
+            entry["type"] = "incbin"
+            entry["path"] = c.path()
+            entry["length"] = length
         elif isinstance(c, Fill):
             entry["type"] = "fill"
             entry["value"] = c.value()

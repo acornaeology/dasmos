@@ -29,7 +29,7 @@ from dasmos.core.annotations import (
     Comment,
     DecodedAnnotation,
 )
-from dasmos.core.classification import Byte, Fill, String, Word
+from dasmos.core.classification import Byte, Fill, IncludedBinary, String, Word
 from dasmos.core.expr import (
     BinOp,
     Binary,
@@ -212,6 +212,24 @@ class AssemblerRenderer(TextRenderer):
         backend may fold into its save directive.
         """
         return None
+
+    def included_binary_directive(self, path: str) -> list[str]:
+        """Lines emitting an external binary include for ``path`` (an
+        :class:`~dasmos.core.classification.IncludedBinary` region).
+
+        Backends whose assembler can include an external file at
+        assembly time override this (beebasm ``incbin "path"``; 64tass
+        ``.binary "path"``). The base raises so a backend with no such
+        directive fails with a clear, actionable message rather than
+        silently mis-rendering the region as something else.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} has no external-binary include "
+            f"directive, so it cannot render the include_binary region "
+            f"for {path!r}. Use a backend that supports file inclusion "
+            f"(beebasm's incbin / 64tass's .binary), or classify the "
+            f"region with byte()/word() instead."
+        )
 
     def _reset_render_state(self) -> None:
         """Reset per-render tracking state. Called at the start of
@@ -1030,6 +1048,8 @@ class AssemblerRenderer(TextRenderer):
         word_count = 0
         string_byte_count = 0
         string_count = 0
+        included_byte_count = 0
+        included_count = 0
         for _addr, c in ir.classifications.iter_classified_starts():
             length = c.length()
             if isinstance(c, Opcode):
@@ -1046,6 +1066,9 @@ class AssemblerRenderer(TextRenderer):
                     string_count += 1
                 elif isinstance(c, Fill):
                     byte_count += length
+                elif isinstance(c, IncludedBinary):
+                    included_byte_count += length
+                    included_count += 1
         total = code_bytes + data_bytes
         if total == 0:
             return []
@@ -1063,7 +1086,14 @@ class AssemblerRenderer(TextRenderer):
             f"{cp}     Number of data words     = {word_count} bytes",
             f"{cp}     Number of string bytes   = {string_byte_count} bytes",
             f"{cp}     Number of strings        = {string_count}",
-        ]
+        ] + (
+            [
+                f"{cp}     Number of included bytes = {included_byte_count} bytes",
+                f"{cp}     Number of includes       = {included_count}",
+            ]
+            if included_count
+            else []
+        )
 
     def _build_auto_label_footer(self, ir) -> list[str]:
         """``; Automatically generated labels:`` block listing every
@@ -1444,6 +1474,11 @@ class AssemblerRenderer(TextRenderer):
             return ["    " + self.fill_directive(c.value(), c.length())[0]]
         if isinstance(c, String):
             return self._render_string(ir, binary_addr, c)
+        if isinstance(c, IncludedBinary):
+            return [
+                "    " + line
+                for line in self.included_binary_directive(c.path())
+            ]
         raise TypeError(
             f"{type(self).__name__} does not know how to render "
             f"{type(c).__name__}"

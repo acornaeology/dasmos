@@ -202,6 +202,12 @@ class Tass64Renderer(AssemblerRenderer):
             return chr(n)
         return None
 
+    def included_binary_directive(self, path: str) -> list[str]:
+        # 64tass includes an external file with ``.binary "<path>"``
+        # (raw bytes, no header). The file must sit next to the listing
+        # (write it with ir.write_included_binaries).
+        return [f'.binary "{path}"']
+
     def fill_directive(self, value: int, length: int) -> list[str]:
         # 64tass has a native fill: ``.fill <count>, <value>``.
         if length <= 0:

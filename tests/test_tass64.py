@@ -219,6 +219,23 @@ class TestTass64SyntheticRoundTrip:
         )
         assert produced == original
 
+    def test_include_binary_round_trips_via_dot_binary(self, tmp_path):
+        # rts + an external-binary region: .binary pulls the written
+        # payload back in and the assembled binary matches.
+        original = bytes([0x60]) + bytes(range(0x10, 0x40))
+        bin_in = tmp_path / "input.bin"
+        bin_in.write_bytes(original)
+        d = Disassembler.create(cpu="6502")
+        d.load(bin_in, 0x2000)
+        d.entry(0x2000, name="start")
+        d.include_binary(0x2001, len(original) - 1, "payload.dat")
+        ir = d.disassemble()
+        text = str(ir.render(Tass64Renderer()))
+        assert '.binary "payload.dat"' in text
+        ir.write_included_binaries(tmp_path)
+        produced = _assemble_64tass(text, tmp_path)
+        assert produced == original
+
 
 # Sibling-repo ROMs, driven through their full ported drivers.
 # (subdir, driver, rom, emitted-asm). tube-client is xfail: its 4 KB

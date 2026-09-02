@@ -30,6 +30,8 @@ from typing import TYPE_CHECKING, Any
 from dasmos.output import Output
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from dasmos.core.annotations import AnnotationStore
     from dasmos.core.classification import ExpressionRegistry
     from dasmos.core.config import Config
@@ -135,6 +137,56 @@ class IntermediateRepresentation:
         :meth:`Disassembler.index_region`, in declaration order.
         """
         return self._disassembler.index_regions
+
+    def write_included_binaries(self, dirpath) -> list["Path"]:
+        """Write each ``include_binary`` region's owned bytes to its
+        declared path, under ``dirpath``.
+
+        Every :class:`~dasmos.core.classification.IncludedBinary` region
+        owns the bytes it covers; those bytes are the canonical payload
+        the include directive refers to. Writing them next to the
+        listing lets an assembler resolve ``incbin`` / ``.binary`` and
+        keeps the round-trip self-consistent (the assembler reads back
+        exactly what dasmos accounted for).
+
+        Each region's path is resolved relative to ``dirpath``; parent
+        directories are created as needed. Returns the paths written, in
+        binary-address order. Raises :class:`ValueError` if two regions
+        declare the same path with differing bytes (a genuine
+        inconsistency the author must resolve).
+        """
+        from pathlib import Path
+
+        from dasmos.core.classification import IncludedBinary
+        from dasmos.core.memory import BinaryAddr
+
+        base = Path(dirpath)
+        written: dict[Path, bytes] = {}
+        order: list[Path] = []
+        for binary_addr, classification in (
+            self.classifications.iter_classified_starts()
+        ):
+            if not isinstance(classification, IncludedBinary):
+                continue
+            ba = int(binary_addr)
+            payload = bytes(
+                self.memory.get_u8(BinaryAddr(ba + i))
+                for i in range(classification.length())
+            )
+            target = base / classification.path()
+            if target in written:
+                if written[target] != payload:
+                    raise ValueError(
+                        f"include_binary path {classification.path()!r} is "
+                        f"declared for two regions with differing bytes; "
+                        f"give each region a distinct path."
+                    )
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(payload)
+            written[target] = payload
+            order.append(target)
+        return order
 
     def render(self, renderer: "Renderer | str", **kwargs: Any) -> Output:
         """Render this IR via the named or supplied renderer.

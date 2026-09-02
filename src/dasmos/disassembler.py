@@ -41,7 +41,14 @@ from dasmos.core.annotations import (
     Comment,
     DecodedAnnotation,
 )
-from dasmos.core.classification import Byte, ExpressionRegistry, Fill, String, Word
+from dasmos.core.classification import (
+    Byte,
+    ExpressionRegistry,
+    Fill,
+    IncludedBinary,
+    String,
+    Word,
+)
 from dasmos.core.data_type import DataType, DecodedValue
 from dasmos.core.expr import Expr, MacroCall, MacroDef, Ref, macro_arg
 from dasmos.core.file_header import FileHeader
@@ -1056,6 +1063,47 @@ class Disassembler:
         binary_addr = self._resolve_to_binary_addr(runtime_addr, move)
         self._override_clear(binary_addr, length, override)
         self._classifications.add_classification(binary_addr, String(length))
+
+    def include_binary(
+        self,
+        runtime_addr,
+        length: int,
+        path: str,
+        *,
+        move: Move | None = None,
+        override: bool = False,
+    ):
+        """Mark ``length`` bytes at ``runtime_addr`` as an external
+        binary include.
+
+        Classifies the span as data — the bytes are accounted for and
+        the tracer won't enter it, exactly like :meth:`byte` — but tags
+        it so a renderer emits an include directive (beebasm
+        ``incbin "<path>"``; 64tass ``.binary "<path>"``) instead of a
+        wall of ``equb`` lines. Use it for a region whose source of
+        truth lives outside the disassembly and is regenerated at build
+        time (e.g. detokenised BASIC re-encoded to bytes).
+
+        The span still owns its loaded bytes, so nothing is left
+        unaccounted for. Those bytes are the canonical payload:
+        :meth:`IntermediateRepresentation.write_included_binaries` writes
+        them to ``path`` next to the listing, so the assembler reads back
+        exactly the bytes dasmos accounted for and the round-trip stays
+        self-consistent. A project whose own generator must reproduce the
+        region can diff its output against that canonical payload.
+
+        ``path`` is the include path as it should appear in the directive
+        (typically a bare filename beside the listing). Pass
+        ``override=True`` to clear a conflicting classification in the
+        range first; otherwise an overlap raises
+        :class:`ClassificationError`.
+        """
+        self._raise_if_disassembled("include_binary")
+        binary_addr = self._resolve_to_binary_addr(runtime_addr, move)
+        self._override_clear(binary_addr, length, override)
+        self._classifications.add_classification(
+            binary_addr, IncludedBinary(length, path),
+        )
 
     # -- driver-script API: custom data types ----------------------------
 

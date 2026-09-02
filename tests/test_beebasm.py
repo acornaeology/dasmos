@@ -886,6 +886,39 @@ class TestBeebasmRoundTrip:
         )
         assert (tmp_path / "out.bin").read_bytes() == original
 
+    def test_include_binary_round_trips_with_written_payload(self, tmp_path):
+        # A driver at 0x1900 (RTS) with an external-binary region for the
+        # remaining bytes. dasmos writes the region's owned bytes as the
+        # payload, beebasm's incbin pulls them back in, and the assembled
+        # binary equals the original byte-for-byte.
+        original = b"\x60" + bytes(range(0x10, 0x60))  # RTS + 0x50 data bytes
+        binpath = tmp_path / "in.bin"
+        binpath.write_bytes(original)
+        d = Disassembler.create(cpu="6502")
+        d.load(binpath, 0x1900)
+        d.entry(0x1900)
+        d.include_binary(0x1901, len(original) - 1, "payload.dat")
+        ir = d.disassemble()
+        renderer = BeebasmRenderer()
+        renderer.set_output_filename("out.bin")
+        text = str(ir.render(renderer))
+        assert 'incbin "payload.dat"' in text
+        asm_path = tmp_path / "src.asm"
+        asm_path.write_text(text, encoding="utf-8")
+        # The payload must sit next to the listing for beebasm to find it.
+        written = ir.write_included_binaries(tmp_path)
+        assert written == [tmp_path / "payload.dat"]
+        assert (tmp_path / "payload.dat").read_bytes() == original[1:]
+        result = subprocess.run(
+            [BEEBASM, "-i", str(asm_path)],
+            capture_output=True, text=True, cwd=str(tmp_path),
+        )
+        assert result.returncode == 0, (
+            f"beebasm failed:\n=== source ===\n{text}\n"
+            f"=== stderr ===\n{result.stderr}"
+        )
+        assert (tmp_path / "out.bin").read_bytes() == original
+
     def test_save_with_exec_reload_assembles_and_payload_matches(self, tmp_path):
         # beebasm's SAVE "NAME", start, end, exec, reload must assemble;
         # exec/reload only affect the DFS header, not the payload, so the
