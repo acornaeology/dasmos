@@ -77,6 +77,17 @@ BYTE_COLUMN_TOTAL_WIDTH = 27
 # surrounding text.
 BANNER_SEPARATOR_WIDTH = 87
 
+# Absolute addressing modes and the zero-page mode a size-optimising
+# assembler (beebasm, 64tass) substitutes when the operand value is
+# below ``&100`` *and* the mnemonic has that zero-page form. An
+# instruction encoded in one of these modes with such an operand must
+# be rendered so the assembler keeps the absolute encoding (#46).
+_ZERO_PAGE_FORM_OF_ABSOLUTE_MODE = {
+    "ABSOLUTE": "ZERO_PAGE",
+    "ABSOLUTE_X": "ZERO_PAGE_X",
+    "ABSOLUTE_Y": "ZERO_PAGE_Y",
+}
+
 if TYPE_CHECKING:
     from dasmos.ir import IntermediateRepresentation
 
@@ -259,6 +270,10 @@ class AssemblerRenderer(TextRenderer):
         # Macro names already warned about being inline-expanded, so the
         # warning fires once per macro rather than once per call site.
         self._macros_expansion_warned: set[str] = set()
+        # ``(operation, addressing-mode name)`` pairs the IR's CPU
+        # offers, built lazily on first use (see
+        # :meth:`_needs_forced_absolute`).
+        self._cpu_operation_modes: frozenset | None = None
 
     def render(self, ir: "IntermediateRepresentation") -> TextOutput:
         """Walk the IR's classifications and emit a beebasm source
@@ -1488,6 +1503,10 @@ class AssemblerRenderer(TextRenderer):
         self, ir, binary_addr, opcode: Opcode, *, active_move=None,
     ) -> str:
         """Format a single instruction line."""
+        if self._needs_forced_absolute(ir, binary_addr, opcode):
+            return self._render_forced_absolute(
+                ir, binary_addr, opcode, active_move=active_move,
+            )
         mnemonic = self._apply_case(opcode.default_mnemonic())
         operand = self._render_operand(
             ir, binary_addr, opcode, active_move=active_move,
@@ -1496,6 +1515,82 @@ class AssemblerRenderer(TextRenderer):
         if operand:
             return f"    {mnemonic} {operand}{char_hint}"
         return f"    {mnemonic}"
+
+    def _needs_forced_absolute(self, ir, binary_addr, opcode: Opcode) -> bool:
+        """True when the instruction is encoded with absolute addressing
+        but a size-optimising assembler would reassemble it to the
+        shorter zero-page form.
+
+        That happens exactly when the operand value is below ``&100``
+        *and* the mnemonic has the matching zero-page mode — the rule
+        beebasm and 64tass both apply. ``LDA abs,Y`` with a zero-page
+        operand is therefore safe (LDA has no ``zp,Y``), while
+        ``LDX abs,Y`` is not.
+        """
+        zero_page_mode = _ZERO_PAGE_FORM_OF_ABSOLUTE_MODE.get(
+            opcode.addressing_mode.name,
+        )
+        if zero_page_mode is None:
+            return False
+        if ir.memory.get_u16_le(int(binary_addr) + 1) >= 0x100:
+            return False
+        if self._cpu_operation_modes is None:
+            self._cpu_operation_modes = frozenset(
+                (op.operation, op.addressing_mode.name)
+                for op in ir.cpu.opcodes().values()
+            )
+        return (opcode.operation, zero_page_mode) in self._cpu_operation_modes
+
+    def _render_forced_absolute(
+        self, ir, binary_addr, opcode: Opcode, *, active_move=None,
+    ) -> str:
+        """Render an absolute-mode instruction whose operand is in zero
+        page so that it reassembles to the same three bytes.
+
+        The backend's :meth:`force_abs_instruction` supplies its
+        operand-size syntax where it has one (64tass ``@w``). Otherwise
+        the instruction is emitted as data — its opcode byte and 16-bit
+        operand — via :meth:`forced_absolute_as_data`, with the
+        instruction kept readable in a trailing comment.
+        """
+        mnemonic = self._apply_case(opcode.default_mnemonic())
+        symbol = self._resolve_operand_symbol(
+            ir, binary_addr, opcode, int(binary_addr) + 1,
+            active_move=active_move,
+        )
+        mode_name = opcode.addressing_mode.name
+        if mode_name == "ABSOLUTE_X":
+            suffix = f",{self._apply_case('X')}"
+        elif mode_name == "ABSOLUTE_Y":
+            suffix = f",{self._apply_case('Y')}"
+        else:
+            suffix = ""
+        forced = self.force_abs_instruction(mnemonic, "", symbol, suffix)
+        if forced is not None:
+            return f"    {forced}"
+        data = self.forced_absolute_as_data(
+            ir.memory.get_u8(binary_addr), symbol,
+        )
+        return (
+            f"    {data} {self.comment_prefix()} "
+            f"{mnemonic} {symbol}{suffix} (absolute)"
+        )
+
+    def forced_absolute_as_data(self, opcode_byte: int, operand: str) -> str:
+        """An absolute-mode instruction spelled as data: its opcode byte
+        then its 16-bit operand, as one source line.
+
+        Used when the assembler has no syntax to force absolute
+        addressing (:meth:`force_abs_instruction` returned ``None``).
+        The default joins a byte and a word directive with ``:``, the
+        statement separator beebasm (the backend that needs this)
+        accepts. Override for an assembler that separates statements
+        differently.
+        """
+        return (
+            f"{self.byte_prefix()}{self.hex2(opcode_byte)} : "
+            f"{self.word_prefix()}{operand}"
+        )
 
     def _apply_case(self, text: str) -> str:
         """Apply the renderer's ``lower_case`` setting to ``text``.

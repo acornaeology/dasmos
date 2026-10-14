@@ -240,6 +240,18 @@ class TextRenderer(Renderer[TextOutput]):
     def force_abs_instruction(
         self, instruction: str, prefix: str, operand: str, suffix: str,
     ) -> str | None:
+        """Instruction text that forces absolute (16-bit) addressing, or
+        ``None`` when the assembler has no syntax for it.
+
+        Called for an instruction encoded with absolute addressing whose
+        operand is below ``&100`` and whose mnemonic also has a
+        zero-page form — the case a size-optimising assembler would
+        otherwise shrink to two bytes. ``instruction`` is the mnemonic,
+        ``operand`` the resolved symbol, ``prefix`` / ``suffix`` the
+        surrounding mode punctuation (``""`` / ``",x"`` / ``",y"``).
+        64tass returns ``sta @w name``; the default ``None`` makes the
+        renderer emit the instruction as data instead.
+        """
         return None
 
     def force_zp_label_prefix(self) -> str:

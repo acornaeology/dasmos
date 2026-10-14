@@ -202,6 +202,13 @@ class Tass64Renderer(AssemblerRenderer):
             return chr(n)
         return None
 
+    def force_abs_instruction(
+        self, instruction: str, prefix: str, operand: str, suffix: str,
+    ) -> str | None:
+        # 64tass's ``@w`` operand-size prefix forces the 16-bit
+        # (absolute) encoding even when the value fits in zero page.
+        return f"{instruction} {prefix}@w {operand}{suffix}"
+
     def included_binary_directive(self, path: str) -> list[str]:
         # 64tass includes an external file with ``.binary "<path>"``
         # (raw bytes, no header). The file must sit next to the listing
