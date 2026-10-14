@@ -174,6 +174,11 @@ class AssemblerRenderer(TextRenderer):
         # so). Drivers wanting per-expression control can fold selected
         # expressions themselves before registering them.
         self.fold_string_ops = fold_string_ops
+        # Initialise the per-render state so the public helpers that
+        # rely on it (e.g. :meth:`render_expression`) also work on a
+        # renderer that hasn't rendered anything yet; :meth:`render`
+        # resets it again at the start of every render.
+        self._reset_render_state()
 
     @property
     def emit_boundary_labels(self) -> bool:
@@ -274,6 +279,10 @@ class AssemblerRenderer(TextRenderer):
         # offers, built lazily on first use (see
         # :meth:`_needs_forced_absolute`).
         self._cpu_operation_modes: frozenset | None = None
+        # Explicit label name -> runtime address, so an expression that
+        # names a label (a ``Sym``) can mark it used (see
+        # :meth:`_note_symbol_use`). Filled in by :meth:`render`.
+        self._label_addr_by_name: dict[str, int] = {}
 
     def render(self, ir: "IntermediateRepresentation") -> TextOutput:
         """Walk the IR's classifications and emit a beebasm source
@@ -319,6 +328,7 @@ class AssemblerRenderer(TextRenderer):
         """
         self._reset_render_state()
         self._comment_label_resolver = self._build_comment_label_resolver(ir)
+        self._label_addr_by_name = self._build_label_addr_by_name(ir)
 
         lines: list[str] = []
         lines.extend(self.disassembly_start())
@@ -873,6 +883,30 @@ class AssemblerRenderer(TextRenderer):
             for name in label.all_names():
                 name_to_addr.setdefault(name, addr)
         return name_to_addr.get
+
+    def _build_label_addr_by_name(self, ir) -> dict[str, int]:
+        """Map each explicit label name to its runtime address (first
+        registration wins), for :meth:`_note_symbol_use`."""
+        addr_by_name: dict[str, int] = {}
+        for runtime_addr_obj, label in ir.labels.items():
+            for name in label.explicit_names_in_insertion_order():
+                addr_by_name.setdefault(name, int(runtime_addr_obj))
+        return addr_by_name
+
+    def _note_symbol_use(self, ir, name: str) -> None:
+        """Record that an emitted expression names the label ``name``.
+
+        An expression can refer to a label by *name* (a ``Sym`` — e.g.
+        the ``fscv+1`` alias the ``acorn_mos`` environment registers for
+        ``&021F``, or a driver's ``d.expr(addr, "ptr+1")``) rather than by
+        address. That is still a use of the label: an optional label
+        outside the loaded range must then get its ``name = &xxxx``
+        definition, exactly as an operand that resolves to it by address
+        does (#47). A name dasmos doesn't know is left to the driver.
+        """
+        addr = self._label_addr_by_name.get(name)
+        if addr is not None and not self._label_address_is_in_range(ir, addr):
+            self._used_external_labels.add(addr)
 
     def _build_explicit_label_table(self, ir) -> list[str]:
         """Return ``name = &xxxx`` definition lines for out-of-range
@@ -2285,6 +2319,7 @@ class AssemblerRenderer(TextRenderer):
         if isinstance(e, Int):
             return self._render_int_node(e), self._ATOM_PRECEDENCE
         if isinstance(e, Sym):
+            self._note_symbol_use(ir, e.name)
             return e.name, self._ATOM_PRECEDENCE
         if isinstance(e, Ref):
             return (
