@@ -235,6 +235,17 @@ class TextRenderer(Renderer[TextOutput]):
     def force_zp_instruction(
         self, instruction: str, prefix: str, operand: str, suffix: str,
     ) -> str | None:
+        """Instruction text that forces zero-page (8-bit) addressing, or
+        ``None`` when the assembler has no syntax for it.
+
+        Called for a zero-page instruction whose operand names a label
+        defined later in the listing, when the assembler's first pass
+        would otherwise guess the absolute form (see
+        ``AssemblerRenderer.forward_reference_assumes_zero_page``).
+        Arguments as for :meth:`force_abs_instruction`. 64tass returns
+        ``lda @b name``; the default ``None`` makes the renderer emit
+        the instruction as data instead.
+        """
         return None
 
     def force_abs_instruction(

@@ -412,6 +412,12 @@ class BeebasmRenderer(AssemblerRenderer):
     def render_string_length(self, s: str) -> str:
         return f"LEN({s})"
 
+    def forward_reference_assumes_zero_page(self, pc: int) -> bool:
+        # On its first pass beebasm substitutes the current PC for an
+        # undefined symbol (assemble.cpp), so it guesses zero page
+        # exactly when the instruction itself sits below &100.
+        return pc < 0x100
+
     def included_binary_directive(self, path: str) -> list[str]:
         # beebasm includes an external file verbatim at assembly time
         # with ``incbin "<path>"``; the file must sit next to the

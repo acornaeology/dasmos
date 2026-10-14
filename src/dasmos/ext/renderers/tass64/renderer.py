@@ -209,6 +209,13 @@ class Tass64Renderer(AssemblerRenderer):
         # (absolute) encoding even when the value fits in zero page.
         return f"{instruction} {prefix}@w {operand}{suffix}"
 
+    def force_zp_instruction(
+        self, instruction: str, prefix: str, operand: str, suffix: str,
+    ) -> str | None:
+        # ``@b`` forces the 8-bit (zero-page) encoding, so a forward
+        # reference can't settle on the absolute form (#48).
+        return f"{instruction} {prefix}@b {operand}{suffix}"
+
     def included_binary_directive(self, path: str) -> list[str]:
         # 64tass includes an external file with ``.binary "<path>"``
         # (raw bytes, no header). The file must sit next to the listing

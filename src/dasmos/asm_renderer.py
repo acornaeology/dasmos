@@ -87,6 +87,10 @@ _ZERO_PAGE_FORM_OF_ABSOLUTE_MODE = {
     "ABSOLUTE_X": "ZERO_PAGE_X",
     "ABSOLUTE_Y": "ZERO_PAGE_Y",
 }
+_ABSOLUTE_FORM_OF_ZERO_PAGE_MODE = {
+    zero_page: absolute
+    for absolute, zero_page in _ZERO_PAGE_FORM_OF_ABSOLUTE_MODE.items()
+}
 
 if TYPE_CHECKING:
     from dasmos.ir import IntermediateRepresentation
@@ -283,6 +287,10 @@ class AssemblerRenderer(TextRenderer):
         # names a label (a ``Sym``) can mark it used (see
         # :meth:`_note_symbol_use`). Filled in by :meth:`render`.
         self._label_addr_by_name: dict[str, int] = {}
+        # While an instruction's operand is being rendered: the runtime
+        # addresses of the labels it names (see :meth:`_render_opcode`);
+        # ``None`` otherwise.
+        self._operand_label_refs: set[int] | None = None
 
     def render(self, ir: "IntermediateRepresentation") -> TextOutput:
         """Walk the IR's classifications and emit a beebasm source
@@ -905,8 +913,12 @@ class AssemblerRenderer(TextRenderer):
         does (#47). A name dasmos doesn't know is left to the driver.
         """
         addr = self._label_addr_by_name.get(name)
-        if addr is not None and not self._label_address_is_in_range(ir, addr):
+        if addr is None:
+            return
+        if not self._label_address_is_in_range(ir, addr):
             self._used_external_labels.add(addr)
+        if self._operand_label_refs is not None:
+            self._operand_label_refs.add(addr)
 
     def _build_explicit_label_table(self, ir) -> list[str]:
         """Return ``name = &xxxx`` definition lines for out-of-range
@@ -1538,17 +1550,42 @@ class AssemblerRenderer(TextRenderer):
     ) -> str:
         """Format a single instruction line."""
         if self._needs_forced_absolute(ir, binary_addr, opcode):
-            return self._render_forced_absolute(
-                ir, binary_addr, opcode, active_move=active_move,
+            return self._render_pinned_size(
+                ir, binary_addr, opcode, absolute=True, active_move=active_move,
             )
         mnemonic = self._apply_case(opcode.default_mnemonic())
-        operand = self._render_operand(
-            ir, binary_addr, opcode, active_move=active_move,
+        # Collect the labels the operand names, to spot a forward
+        # reference whose size the assembler would have to guess.
+        self._operand_label_refs = set()
+        try:
+            operand = self._render_operand(
+                ir, binary_addr, opcode, active_move=active_move,
+            )
+            referenced = self._operand_label_refs
+        finally:
+            self._operand_label_refs = None
+        pin_absolute = self._forward_reference_pin(
+            ir, binary_addr, opcode, referenced, active_move=active_move,
         )
+        if pin_absolute is not None:
+            return self._render_pinned_size(
+                ir, binary_addr, opcode,
+                absolute=pin_absolute, active_move=active_move,
+            )
         char_hint = self._immediate_char_hint(ir, binary_addr, opcode)
         if operand:
             return f"    {mnemonic} {operand}{char_hint}"
         return f"    {mnemonic}"
+
+    def _cpu_has_mode(self, ir, operation, mode_name: str) -> bool:
+        """True iff the IR's CPU offers ``operation`` in the addressing
+        mode named ``mode_name``."""
+        if self._cpu_operation_modes is None:
+            self._cpu_operation_modes = frozenset(
+                (op.operation, op.addressing_mode.name)
+                for op in ir.cpu.opcodes().values()
+            )
+        return (operation, mode_name) in self._cpu_operation_modes
 
     def _needs_forced_absolute(self, ir, binary_addr, opcode: Opcode) -> bool:
         """True when the instruction is encoded with absolute addressing
@@ -1559,7 +1596,7 @@ class AssemblerRenderer(TextRenderer):
         *and* the mnemonic has the matching zero-page mode — the rule
         beebasm and 64tass both apply. ``LDA abs,Y`` with a zero-page
         operand is therefore safe (LDA has no ``zp,Y``), while
-        ``LDX abs,Y`` is not.
+        ``LDX abs,Y`` is not (#46).
         """
         zero_page_mode = _ZERO_PAGE_FORM_OF_ABSOLUTE_MODE.get(
             opcode.addressing_mode.name,
@@ -1568,24 +1605,98 @@ class AssemblerRenderer(TextRenderer):
             return False
         if ir.memory.get_u16_le(int(binary_addr) + 1) >= 0x100:
             return False
-        if self._cpu_operation_modes is None:
-            self._cpu_operation_modes = frozenset(
-                (op.operation, op.addressing_mode.name)
-                for op in ir.cpu.opcodes().values()
+        return self._cpu_has_mode(ir, opcode.operation, zero_page_mode)
+
+    def _forward_reference_pin(
+        self, ir, binary_addr, opcode: Opcode, referenced, *, active_move=None,
+    ) -> bool | None:
+        """Decide whether an instruction's operand size must be pinned
+        because its operand forward-references a label (#48).
+
+        When a mnemonic has both a zero-page and an absolute form, the
+        assembler can only choose between them once it knows the
+        operand's value. For a label defined later in the listing it
+        must guess on its first pass, and a wrong guess can settle into
+        a self-consistent but wrong layout: the guessed size moves the
+        label to the matching side of ``&100``. So the size is pinned
+        when the operand names a label defined later *and* this
+        assembler's first-pass guess
+        (:meth:`forward_reference_assumes_zero_page`) disagrees with
+        the encoded size. Where the guess already matches, the
+        instruction renders normally.
+
+        Returns ``True`` to pin the absolute form, ``False`` to pin the
+        zero-page form, or ``None`` when no pinning is needed.
+        """
+        mode_name = opcode.addressing_mode.name
+        if mode_name in _ZERO_PAGE_FORM_OF_ABSOLUTE_MODE:
+            encoded_zero_page = False
+            alternative = _ZERO_PAGE_FORM_OF_ABSOLUTE_MODE[mode_name]
+        elif mode_name in _ABSOLUTE_FORM_OF_ZERO_PAGE_MODE:
+            encoded_zero_page = True
+            alternative = _ABSOLUTE_FORM_OF_ZERO_PAGE_MODE[mode_name]
+        else:
+            return None
+        if not self._cpu_has_mode(ir, opcode.operation, alternative):
+            return None
+        if not any(self._label_defined_later(ir, addr) for addr in referenced):
+            return None
+        if active_move is not None:
+            pc = int(active_move.dest_runtime_addr) + (
+                int(binary_addr) - int(active_move.src_binary_addr)
             )
-        return (opcode.operation, zero_page_mode) in self._cpu_operation_modes
+        else:
+            pc = int(ir.moves.b2r(BinaryAddr(int(binary_addr))))
+        if self.forward_reference_assumes_zero_page(pc) == encoded_zero_page:
+            return None
+        return not encoded_zero_page
 
-    def _render_forced_absolute(
-        self, ir, binary_addr, opcode: Opcode, *, active_move=None,
+    def _label_defined_later(self, ir, runtime_addr: int) -> bool:
+        """True iff the label at ``runtime_addr`` is defined further on
+        in the listing than the line being rendered.
+
+        Labels outside the loaded range are equates at the top of the
+        listing, and in-range labels with no inline anchor go into the
+        same table, so only an inline anchor (or an inline
+        ``name = base+offset``) not yet emitted is still to come.
+        """
+        if runtime_addr in self._inline_emitted_runtime_addrs:
+            return False
+        if not self._label_address_is_in_range(ir, runtime_addr):
+            return False
+        return (
+            self._label_address_is_classification_start(ir, runtime_addr)
+            or self._label_has_inline_offset_base(ir, runtime_addr)
+        )
+
+    def forward_reference_assumes_zero_page(self, pc: int) -> bool:
+        """Whether this assembler's first pass assumes zero-page
+        addressing for an instruction at ``pc`` whose operand is a
+        not-yet-defined symbol.
+
+        Default ``False``: an undefined symbol is assumed to be 16-bit,
+        so the absolute form is chosen (64tass's behaviour). Backends
+        whose assembler guesses otherwise override this; beebasm
+        substitutes the instruction's own address, so it guesses zero
+        page exactly when ``pc`` is below ``&100``.
+        """
+        return False
+
+    def _render_pinned_size(
+        self, ir, binary_addr, opcode: Opcode, *, absolute: bool,
+        active_move=None,
     ) -> str:
-        """Render an absolute-mode instruction whose operand is in zero
-        page so that it reassembles to the same three bytes.
+        """Render an instruction so it reassembles to its encoded size —
+        absolute (three bytes) or zero page (two bytes) — whatever the
+        assembler would otherwise choose.
 
-        The backend's :meth:`force_abs_instruction` supplies its
-        operand-size syntax where it has one (64tass ``@w``). Otherwise
-        the instruction is emitted as data — its opcode byte and 16-bit
-        operand — via :meth:`forced_absolute_as_data`, with the
-        instruction kept readable in a trailing comment.
+        The backend's :meth:`force_abs_instruction` /
+        :meth:`force_zp_instruction` supply its operand-size syntax
+        where it has one (64tass ``@w`` / ``@b``). Otherwise the
+        instruction is emitted as data via
+        :meth:`forced_absolute_as_data` /
+        :meth:`forced_zero_page_as_data`, with the instruction kept
+        readable in a trailing comment.
         """
         mnemonic = self._apply_case(opcode.default_mnemonic())
         symbol = self._resolve_operand_symbol(
@@ -1593,21 +1704,28 @@ class AssemblerRenderer(TextRenderer):
             active_move=active_move,
         )
         mode_name = opcode.addressing_mode.name
-        if mode_name == "ABSOLUTE_X":
+        if mode_name.endswith("_X"):
             suffix = f",{self._apply_case('X')}"
-        elif mode_name == "ABSOLUTE_Y":
+        elif mode_name.endswith("_Y"):
             suffix = f",{self._apply_case('Y')}"
         else:
             suffix = ""
-        forced = self.force_abs_instruction(mnemonic, "", symbol, suffix)
+        if absolute:
+            forced = self.force_abs_instruction(mnemonic, "", symbol, suffix)
+        else:
+            forced = self.force_zp_instruction(mnemonic, "", symbol, suffix)
         if forced is not None:
             return f"    {forced}"
-        data = self.forced_absolute_as_data(
-            ir.memory.get_u8(binary_addr), symbol,
-        )
+        opcode_byte = ir.memory.get_u8(binary_addr)
+        if absolute:
+            data = self.forced_absolute_as_data(opcode_byte, symbol)
+            size = "absolute"
+        else:
+            data = self.forced_zero_page_as_data(opcode_byte, symbol)
+            size = "zero page"
         return (
             f"    {data} {self.comment_prefix()} "
-            f"{mnemonic} {symbol}{suffix} (absolute)"
+            f"{mnemonic} {symbol}{suffix} ({size})"
         )
 
     def forced_absolute_as_data(self, opcode_byte: int, operand: str) -> str:
@@ -1625,6 +1743,15 @@ class AssemblerRenderer(TextRenderer):
             f"{self.byte_prefix()}{self.hex2(opcode_byte)} : "
             f"{self.word_prefix()}{operand}"
         )
+
+    def forced_zero_page_as_data(self, opcode_byte: int, operand: str) -> str:
+        """A zero-page instruction spelled as data: its opcode byte then
+        its 8-bit operand, as one byte directive.
+
+        Used when the assembler has no syntax to force zero-page
+        addressing (:meth:`force_zp_instruction` returned ``None``).
+        """
+        return f"{self.byte_prefix()}{self.hex2(opcode_byte)}, {operand}"
 
     def _apply_case(self, text: str) -> str:
         """Apply the renderer's ``lower_case`` setting to ``text``.
@@ -1963,6 +2090,8 @@ class AssemblerRenderer(TextRenderer):
             if names:
                 if not self._label_address_is_in_range(ir, addr):
                     self._used_external_labels.add(addr)
+                if self._operand_label_refs is not None:
+                    self._operand_label_refs.add(addr)
                 return names[0]
             # No explicit name — fall back to an expression. Drivers
             # use ``d.expr_label(addr, "<base>-1")`` to register a
