@@ -9,7 +9,8 @@
         "load_addr": 8192,
         "end_addr": 8204
       }
-    ]
+    ],
+    "moves": []
   },
   "constants": [
     {

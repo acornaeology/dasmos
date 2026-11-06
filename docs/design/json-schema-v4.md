@@ -159,3 +159,36 @@ single-image disassembly has a one-entry list.
 When more than one image is loaded, each item carries `image`: the index
 into `meta.images` of the image holding its stored bytes (by
 `binary_addr`). It is omitted when there is only one image.
+
+### `meta.moves`, `move` and `target_move` — telling copies apart
+
+With moves, several pieces of code can share one run address (overlays of
+the same RAM), and an item's stored address can equal another item's run
+address. These fields say which move each part of the listing belongs to.
+A move's **name** is its public identifier: names are unique, and an
+unnamed move gets a generated `move_<n>` that never repeats an explicit
+name.
+
+`meta.moves` lists every move in declaration order (empty when there are
+none):
+
+```jsonc
+"moves": [
+  { "name": "game_core",    "dest": 2240, "src": 12288, "length": 5952 },
+  { "name": "low_keyboard", "dest": 1024, "src": 20912, "length": 1024 },
+  { "name": "low_joystick", "dest": 1024, "src": 21936, "length": 1024 }
+]
+```
+
+- **`move`** — on each item, subroutine and banner whose stored bytes lie
+  in a move: that move's name. Omitted for unmoved code. `(addr, move)`
+  identifies an item uniquely, so it serves as an anchor.
+- **`references[].move`** — the move the referring code is stored in,
+  omitted for unmoved code. `references[].move_id` is the same move's
+  internal index, kept for existing consumers; prefer `move`.
+- **`target_move`** — on an item with a `target`: the move the target
+  resolves into, as the trace resolves it — the instruction's own move
+  when that covers the target, else the one move that does. Omitted when
+  the target runs in place, or when several moves overlay it and none is
+  the instruction's own. When a link names no copy, a natural default is
+  the unmoved code if any, otherwise the first move in `meta.moves`.

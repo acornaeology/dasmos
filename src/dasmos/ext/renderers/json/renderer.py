@@ -41,6 +41,8 @@ Emits a JSON-serialisable dictionary:
           "addr": int,             # runtime_addr
           "bytes": [int, ...],
           "binary_addr": int?,     # only if differs from runtime_addr
+          "image": int?,           # index into meta.images; several images only
+          "move": str?,            # name of the move storing it (meta.moves)
           "labels": [str, ...]?,
           "sub_labels": {addr: [str, ...]}?,
           # Per-align comment buckets — full Align distinction
@@ -56,11 +58,11 @@ Emits a JSON-serialisable dictionary:
           "xref_summaries": [str, ...]?,
           # Structured incoming references: caller runtime addr, its
           # ReferenceKind (direct/pointer/indexed/indexed_pointer), and
-          # move_id when non-zero. xref_summaries is prose derived from
-          # this same data.
-          "references": [{"addr": int, "kind": str, "move_id": int?}, ...]?,
+          # for code stored in a move its name (and internal move_id).
+          # xref_summaries is prose derived from this same data.
+          "references": [{"addr": int, "kind": str, "move": str?, "move_id": int?}, ...]?,
           "type": "code"|"string"|"word"|"fill"|"byte",
-          # type-specific: mnemonic/operand/target/target_label,
+          # type-specific: mnemonic/operand/target/target_label/target_move,
           #                values/expressions, value/length, string,
           #                format_hints, format_hint
           #
@@ -273,6 +275,18 @@ class JsonRenderer(Renderer[StructuredOutput]):
                 entry["reload_addr"] = image.reload_addr
             images.append(entry)
         meta["images"] = images
+        # Every move, in declaration order (#56) — additive. A move's
+        # name is its public identifier: unique, and what ``move`` /
+        # ``target_move`` / ``references[].move`` refer to elsewhere.
+        meta["moves"] = [
+            {
+                "name": move.name,
+                "dest": int(move.dest_runtime_addr),
+                "src": int(move.src_binary_addr),
+                "length": move.length,
+            }
+            for move in ir.moves.moves
+        ]
         return meta
 
     def _build_constants(self, ir) -> list[dict[str, Any]]:
@@ -352,6 +366,10 @@ class JsonRenderer(Renderer[StructuredOutput]):
                 and int(sub.binary_addr) != int(sub.runtime_addr)
             ):
                 entry["binary_addr"] = int(sub.binary_addr)
+            if sub.binary_addr is not None:
+                move_name = self._move_name_at(ir, int(sub.binary_addr))
+                if move_name is not None:
+                    entry["move"] = move_name
             if sub.name:
                 entry["name"] = sub.name
             if sub.title:
@@ -425,6 +443,9 @@ class JsonRenderer(Renderer[StructuredOutput]):
                 entry: dict[str, Any] = {"addr": runtime_addr}
                 if ba != runtime_addr:
                     entry["binary_addr"] = ba
+                move_name = self._move_name_at(ir, ba)
+                if move_name is not None:
+                    entry["move"] = move_name
                 # If a label exists at this runtime address, take its
                 # first explicit name as the banner's ``name``. Matches
                 # py8dis's data_banner shape, where the second
@@ -611,6 +632,36 @@ class JsonRenderer(Renderer[StructuredOutput]):
     # -- per-item rendering ---------------------------------------------
 
     @staticmethod
+    def _move_name_at(ir, binary_addr: int) -> str | None:
+        """The name of the move whose stored range holds ``binary_addr``,
+        or ``None`` for an unmoved byte (#56)."""
+        move_id = ir.moves.move_id_for_binary_addr(binary_addr)
+        if move_id == BASE_MOVE_ID:
+            return None
+        return ir.moves.move_for_id(move_id).name
+
+    @staticmethod
+    def _target_move(ir, binary_addr: int, target: int) -> str | None:
+        """The move an operand's run-address ``target`` resolves into,
+        from the instruction stored at ``binary_addr`` (#56).
+
+        Resolved as the trace resolves it (D-030): the instruction's own
+        move when that covers the target, else the one move that does.
+        ``None`` when the target runs in place, or when several moves
+        overlay it and none is the instruction's own — then there is no
+        single answer.
+        """
+        covering = ir.moves.move_ids_for_runtime_addr(target)
+        own = ir.moves.move_id_for_binary_addr(binary_addr)
+        if own in covering:
+            move_id = own
+        elif len(covering) == 1:
+            (move_id,) = covering
+        else:
+            return None
+        return ir.moves.move_for_id(move_id).name
+
+    @staticmethod
     def _image_index(ir, binary_addr: int) -> int | None:
         """Index into ``meta.images`` of the image holding the stored
         byte at ``binary_addr`` — or ``None`` when only one image is
@@ -648,6 +699,9 @@ class JsonRenderer(Renderer[StructuredOutput]):
         image_index = self._image_index(ir, binary_addr)
         if image_index is not None:
             entry["image"] = image_index
+        move_name = self._move_name_at(ir, binary_addr)
+        if move_name is not None:
+            entry["move"] = move_name
 
         # Labels at the runtime address. Insertion order so the JSON
         # ``labels`` array matches the asm renderer's display sequence.
@@ -700,16 +754,18 @@ class JsonRenderer(Renderer[StructuredOutput]):
             entry["xref_summaries"] = xrefs
 
         # Cross-references — structured, per-reference: the caller's
-        # runtime address, its ReferenceKind, and (when non-zero) the
-        # move it runs under. Consumers read the kind straight from here
-        # rather than parsing it out of the xref-summary prose.
+        # runtime address, its ReferenceKind, and the move its code is
+        # stored in (``move``, the move's name; #56). ``move_id`` is the
+        # move's internal index, kept for existing consumers. Consumers
+        # read the kind straight from here rather than parsing it out of
+        # the xref-summary prose.
         records = self._collect_reference_records(ir, binary_addr)
         if records:
             entry["references"] = [
                 {
                     "addr": rt,
                     "kind": kind.value,
-                    **({"move_id": mid} if mid else {}),
+                    **({"move": ir.moves.move_for_id(mid).name, "move_id": mid} if mid else {}),
                 }
                 for rt, mid, kind in records
             ]
@@ -782,6 +838,9 @@ class JsonRenderer(Renderer[StructuredOutput]):
         target = self._target_runtime(ir, binary_addr, opcode)
         if target is not None:
             entry["target"] = target
+            target_move = self._target_move(ir, binary_addr, target)
+            if target_move is not None:
+                entry["target_move"] = target_move
             target_label = ir.labels.get_label(target)
             if target_label is not None:
                 # ``target_label`` carries the EXPLICIT name only —

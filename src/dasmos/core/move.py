@@ -273,7 +273,15 @@ class MoveManager:
 
         move_id = len(self._moves)
         if name is None:
+            # Move names are public identifiers (the JSON's ``move`` and
+            # ``meta.moves``), so a generated one must not repeat a name
+            # given explicitly to an earlier move.
+            taken = {existing.name for existing in self._moves[1:]}
             name = f"move_{move_id}"
+            suffix = 2
+            while name in taken:
+                name = f"move_{move_id}_{suffix}"
+                suffix += 1
         else:
             for existing in self._moves[1:]:
                 if existing.name == name:
