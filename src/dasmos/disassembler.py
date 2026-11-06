@@ -889,6 +889,9 @@ class Disassembler:
 
             addr = d.stringz(0x9000)
             addr = d.stringz(addr)  # next string follows
+
+        Given a :class:`~dasmos.core.memory.BinaryAddr` (a stored byte),
+        the returned address is a ``BinaryAddr`` too.
         """
         return self._string_terminated(
             runtime_addr, 0x00, "stringz", "a NUL", move=move,
@@ -908,7 +911,8 @@ class Disassembler:
         Behaves like :meth:`stringz` but with ``0x0D`` as the
         terminator; the terminator byte is included in the classified
         span (use ``d.byte`` if you need to classify them
-        differently).
+        differently). Given a :class:`~dasmos.core.memory.BinaryAddr`,
+        the returned address is a ``BinaryAddr`` too.
         """
         return self._string_terminated(
             runtime_addr, 0x0D, "stringcr", "a CR (&0d)", move=move,
@@ -944,6 +948,9 @@ class Disassembler:
             scan += 1
         length = scan - int(binary_addr) + 1
         self.string(runtime_addr, length, move=move)
+        if isinstance(runtime_addr, BinaryAddr):
+            # Given a stored byte, answer in the same address space.
+            return runtime_addr + length
         return int(runtime_addr) + length
 
     # -- driver-script API: data classification -------------------------
@@ -1350,8 +1357,23 @@ class Disassembler:
         ``move``, requires the address to map under that specific
         move and raises :class:`DisassemblerError` on failure.
 
-        Common to every driver method that takes a runtime address.
+        A :class:`~dasmos.core.memory.BinaryAddr` names the stored byte
+        directly and is returned as-is, with no move resolution — for
+        code that already holds a binary address (post-trace analysers,
+        hooks). Round-tripping it through a runtime address instead is
+        wrong whenever a move's run range covers that number (#52).
+        Combining it with ``move`` is contradictory and raises.
+
+        Common to every driver method that describes stored bytes.
         """
+        if isinstance(runtime_addr, BinaryAddr):
+            if move is not None:
+                raise DisassemblerError(
+                    f"BinaryAddr 0x{int(runtime_addr):x} already names a "
+                    f"stored byte; it can't also be resolved under move "
+                    f"{move.name!r}"
+                )
+            return runtime_addr
         move_id = self._move_to_id(move)
         if move_id is None:
             return self._moves.r2b_checked(runtime_addr).binary_addr

@@ -20,7 +20,10 @@ Hook signature::
     def hook(disassembler, jsr_binary_addr) -> int
 
 - ``disassembler`` is the active :class:`Disassembler` (so the hook
-  can call ``d.string(...)``, ``d.byte(...)``, etc.).
+  can call ``d.string(...)``, ``d.byte(...)``, etc.). Pass those
+  methods a :class:`~dasmos.core.memory.BinaryAddr` built from
+  ``jsr_binary_addr``: it names the stored byte directly, so the hook
+  stays correct when the code it inspects has been relocated.
 - ``jsr_binary_addr`` is the binary address of the JSR opcode byte.
 - The return value is the binary address where the trace continues.
 
@@ -63,14 +66,15 @@ def _scan_to_bit7_terminator(
 
 def _classify_string(d: "Disassembler", string_start: int, length: int) -> None:
     """Classify ``length`` bytes from ``string_start`` (binary addr) as
-    a String, converting to the runtime address the public API expects.
+    a String.
 
-    With no active move, b2r is the identity, but threading it through
-    keeps the hook correct under relocation too.
+    Passed as a :class:`~dasmos.core.memory.BinaryAddr` so the driver
+    API classifies exactly that stored byte, with no move resolution
+    (a binary-to-runtime-and-back round trip goes wrong when a move's
+    run range covers the same number).
     """
     from dasmos.core.memory import BinaryAddr
-    runtime_start = int(d.moves.b2r(BinaryAddr(string_start)))
-    d.string(runtime_start, length)
+    d.string(BinaryAddr(string_start), length)
 
 
 def stringhi_hook(d: "Disassembler", jsr_binary_addr: int) -> int:
@@ -149,9 +153,7 @@ def stringz_hook(d: "Disassembler", jsr_binary_addr: int) -> int:
     """
     from dasmos.core.memory import BinaryAddr
     string_start = jsr_binary_addr + 3
-    runtime_start = int(d.moves.b2r(BinaryAddr(string_start)))
-    # ``d.stringz`` walks to the NUL inclusively and returns the
-    # runtime address right after it. Convert back to a binary
-    # address for the trace return value.
-    next_runtime = d.stringz(runtime_start)
-    return int(d.moves.r2b_checked(next_runtime).binary_addr)
+    # ``d.stringz`` walks to the NUL inclusively and, given a
+    # BinaryAddr, returns the binary address right after it — the
+    # trace's return value.
+    return int(d.stringz(BinaryAddr(string_start)))

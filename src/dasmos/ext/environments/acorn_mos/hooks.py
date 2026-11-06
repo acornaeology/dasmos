@@ -352,7 +352,7 @@ def _analyzer_for(
         # expression (driver overrides win).
         operand_addr = load_imm_addr + 1
         if disassembler.expressions.get_or_none(operand_addr) is None:
-            disassembler.expr(operand_addr, name)
+            disassembler.expr(BinaryAddr(operand_addr), name)
         # Inline auto-comment at the JSR site, if the per-call
         # table provided one.
         if inline_for_value is not None:
@@ -395,7 +395,7 @@ def osword_analyzer(
                 disassembler.constant(a.value, a_name)
             a_operand = a.previous_load_imm_addr + 1
             if disassembler.expressions.get_or_none(a_operand) is None:
-                disassembler.expr(a_operand, a_name)
+                disassembler.expr(BinaryAddr(a_operand), a_name)
             # Inline auto-comment at the JSR site.
             inline_text = OSWORD_INLINE.get(a.value)
             if inline_text is not None:
@@ -540,9 +540,8 @@ def _attach_post_call_descriptions(
             parts.append(text)
     if not parts:
         return
-    runtime_addr = int(disassembler.moves.b2r(BinaryAddr(next_addr)))
     disassembler.comment(
-        runtime_addr,
+        BinaryAddr(next_addr),
         " / ".join(parts),
         align=Align.INLINE,
         auto_generated=True,
@@ -579,9 +578,9 @@ def _maybe_register_xy_address(disassembler, state) -> None:
     x_operand = x.previous_load_imm_addr + 1
     y_operand = y.previous_load_imm_addr + 1
     if disassembler.expressions.get_or_none(x_operand) is None:
-        disassembler.expr(x_operand, f"<({name})")
+        disassembler.expr(BinaryAddr(x_operand), f"<({name})")
     if disassembler.expressions.get_or_none(y_operand) is None:
-        disassembler.expr(y_operand, f">({name})")
+        disassembler.expr(BinaryAddr(y_operand), f">({name})")
 
 
 osfind_analyzer = _analyzer_for(OSFIND_ENUM, inline_for_value=OSFIND_INLINE)
@@ -616,7 +615,7 @@ def osbyte_analyzer(
                 disassembler.constant(a_value, a_name)
             a_operand = a.previous_load_imm_addr + 1
             if disassembler.expressions.get_or_none(a_operand) is None:
-                disassembler.expr(a_operand, a_name)
+                disassembler.expr(BinaryAddr(a_operand), a_name)
             # Inline auto-comment at the JSR site. Precedence
             # (highest first):
             #   1. INKEY-aware phrasing for OSBYTE &79 / &81 when
@@ -657,7 +656,7 @@ def osbyte_analyzer(
                             disassembler.constant(x.value, x_name)
                         x_operand = x.previous_load_imm_addr + 1
                         if disassembler.expressions.get_or_none(x_operand) is None:
-                            disassembler.expr(x_operand, x_name)
+                            disassembler.expr(BinaryAddr(x_operand), x_name)
             # Post-call: attach descriptive inline comments at the
             # next byte after the JSR/JMP for each register named in
             # OSBYTE_POST_CALL_DESCRIPTIONS[a_value]. py8dis tracks

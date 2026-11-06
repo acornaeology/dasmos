@@ -794,11 +794,29 @@ call site:
 
 .. code-block:: python
 
-   def my_hook(d, call_site, regs):
-       # called once per JSR/JMP to the hooked address.
-       ...
+   from dasmos.core.memory import BinaryAddr
 
-   d.hook_subroutine(0xFFF4, "osbyte", my_hook)
+   def my_hook(d, jsr_binary_addr):
+       # Called at each JSR to the hooked address. Classify the inline
+       # parameter bytes after the JSR, then return the binary address
+       # where tracing continues.
+       params = BinaryAddr(jsr_binary_addr + 3)
+       d.byte(params, 2)
+       return int(params) + 2
+
+   d.hook_subroutine(0x8F00, "read_inline_params", my_hook)
+
+A hook works in *binary* (stored) addresses. When it calls a driver
+method that describes bytes — :meth:`~dasmos.Disassembler.byte`,
+:meth:`~dasmos.Disassembler.string`, :meth:`~dasmos.Disassembler.expr`,
+:meth:`~dasmos.Disassembler.comment` and the rest — pass the address as
+a :class:`~dasmos.core.memory.BinaryAddr`. Those methods normally take a
+runtime address and resolve it through the moves; a ``BinaryAddr``
+names the stored byte directly. Passing a binary address as a plain
+``int`` happens to work until the code is relocated by a move whose run
+range covers the same numbers, at which point it silently lands on a
+different byte. Methods that name addresses — labels, entry points,
+subroutines — always take runtime addresses.
 
 Most users won't write hooks directly — the ``acorn_mos`` environment
 ships hooks for OSBYTE, OSWORD, OSFIND, OSFILE, OSGBPB, and OSEVEN
