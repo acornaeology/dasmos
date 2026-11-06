@@ -319,12 +319,17 @@ class BeebasmRenderer(AssemblerRenderer):
 
         Falls back to literal hex when no label exists at one of the
         anchors — beebasm accepts both, just less readable.
+
+        beebasm's ``clear`` *zeroes* the memory it frees, so when the
+        stored and destination ranges overlap (#51) only the part of
+        the destination outside the stored copy ``copyblock`` has just
+        written is cleared; when the ranges coincide nothing is.
+        (``copyblock`` itself copies overlapping ranges safely.)
         """
         src_anchor = src_label or self.hex(int(src))
         dest_anchor = dest_label or self.hex(int(dest))
-        dest_end = int(dest) + length
         cp = self.comment_prefix()
-        return [
+        lines = [
             "",
             "",
             f"    {cp} Copy the newly assembled block of code back to "
@@ -334,16 +339,49 @@ class BeebasmRenderer(AssemblerRenderer):
             "'copyblock <start>,<end>,<dest>')",
             f"    copyblock {dest_anchor}, *, {src_anchor}",
             "",
-            f"    {cp} Clear the area of memory we just temporarily "
-            "used to assemble the new block,",
-            f"    {cp} allowing us to assemble there again if needed",
-            f"    clear {dest_anchor}, {self.hex(dest_end)}",
-            "",
+        ]
+        clear_range = self._scratch_range_to_clear(int(dest), int(src), length)
+        if clear_range is not None:
+            clear_start, clear_end = clear_range
+            clear_start_text = (
+                dest_anchor if clear_start == int(dest) else self.hex(clear_start)
+            )
+            lines += [
+                f"    {cp} Clear the area of memory we just temporarily "
+                "used to assemble the new block,",
+                f"    {cp} allowing us to assemble there again if needed",
+                f"    clear {clear_start_text}, {self.hex(clear_end)}",
+                "",
+            ]
+        return lines + [
             f"    {cp} Set the program counter to the next position "
             "in the binary file.",
             f"    org {src_anchor} + (* - {dest_anchor})",
             "",
         ]
+
+    @staticmethod
+    def _scratch_range_to_clear(
+        dest: int, src: int, length: int,
+    ) -> tuple[int, int] | None:
+        """The ``[start, end)`` part of a move's destination range that
+        is pure scratch — not also occupied by the stored copy — or
+        ``None`` when there is none.
+
+        The two ranges have the same length, so what's left of the
+        destination after removing the stored range is always a single
+        run: below the stored copy, above it, or the whole destination
+        when they don't overlap.
+        """
+        dest_end = dest + length
+        src_end = src + length
+        if src_end <= dest or dest_end <= src:
+            return dest, dest_end
+        if dest < src:
+            return dest, src
+        if src < dest:
+            return src_end, dest_end
+        return None
 
     def char_literal(self, n: int) -> str | None:
         # Beebasm accepts single-quoted printable characters except
