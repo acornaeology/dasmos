@@ -300,3 +300,100 @@ def test_beebasm_saves_an_image_whose_bytes_are_relocated(tmp_path):
     )
     assert (out_dirpath / "LOADER").read_bytes() == loader
     assert (out_dirpath / "CODE").read_bytes() == stored
+
+
+# -- 64tass: one section and one output file per image -------------------
+
+from dasmos.ext.renderers.tass64 import Tass64Renderer
+
+
+def _find_tass64() -> str | None:
+    env = os.environ.get("TASS64")
+    if env and os.path.isfile(env) and os.access(env, os.X_OK):
+        return env
+    return shutil.which("64tass")
+
+
+TASS64 = _find_tass64()
+
+
+def _tass64_text(ir, **kwargs):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")      # exec/reload are warned about
+        return str(ir.render(Tass64Renderer(**kwargs)))
+
+
+class TestTass64Sections:
+
+    def test_each_image_is_a_section(self, tmp_path):
+        lines = [ln.strip() for ln in _tass64_text(_game(tmp_path)).splitlines()]
+        for name in ("dunjun4", "dunjun5", "dunjun6"):
+            assert f".dsection {name}" in lines
+            assert f".section {name}" in lines
+            assert f".send {name}" in lines
+
+    def test_build_instructions_write_one_file_per_image(self, tmp_path):
+        text = _tass64_text(
+            _game(tmp_path),
+            include_build_instructions=True, listing_filename="game.asm",
+        )
+        assert (
+            "64tass --nostart --output-section=dunjun4 -o Dunjun4 "
+            "--output-section=dunjun5 -o Dunjun5 "
+            "--output-section=dunjun6 -o Dunjun6 game.asm"
+        ) in text
+
+    def test_exec_is_warned_about(self, tmp_path):
+        with pytest.warns(UserWarning, match="exec/reload"):
+            str(_game(tmp_path).render(Tass64Renderer()))
+
+    def test_single_image_has_no_sections(self, tmp_path):
+        d = Disassembler.create("6502")
+        d.load(_write(tmp_path, "GameA", IMAGE_A), 0x0400)
+        d.entry(0x0400)
+        assert ".section" not in _tass64_text(d.disassemble())
+
+
+def _tass64_outputs(tmp_path, ir):
+    text = _tass64_text(ir)
+    out_dirpath = tmp_path / "out64"
+    out_dirpath.mkdir()
+    (out_dirpath / "game.asm").write_text(text, encoding="utf-8")
+    args = []
+    for image, section in zip(
+        sorted(ir.images, key=lambda i: i.start),
+        Tass64Renderer()._image_identifiers(sorted(ir.images, key=lambda i: i.start)),
+    ):
+        args += [f"--output-section={section}", "-o", image.name]
+    result = subprocess.run(
+        [TASS64, "--nostart", "-q", *args, "game.asm"],
+        capture_output=True, text=True, cwd=str(out_dirpath),
+    )
+    assert result.returncode == 0, (
+        f"64tass failed:\n=== source ===\n{text}\n"
+        f"=== stderr ===\n{result.stderr}"
+    )
+    return out_dirpath
+
+
+@pytest.mark.tass64
+def test_64tass_writes_each_image_as_its_own_file(tmp_path):
+    out_dirpath = _tass64_outputs(tmp_path, _game(tmp_path))
+    for name, _addr, data in GAME:
+        assert (out_dirpath / name).read_bytes() == data, name
+
+
+@pytest.mark.tass64
+def test_64tass_saves_an_image_whose_bytes_are_relocated(tmp_path):
+    loader = bytes([0x20, 0x00, 0x09, 0x60])
+    stored = bytes([0xA9, 0x05, 0x60, 0xEA])
+    d = Disassembler.create("6502")
+    d.load(_write(tmp_path, "LOADER.bin", loader), 0x0400, name="LOADER")
+    d.load(_write(tmp_path, "CODE.bin", stored), 0x2400, name="CODE")
+    move = d.add_move(0x0900, 0x2400, len(stored))
+    d.entry(0x0400)
+    with move:
+        d.entry(0x0900)
+    out_dirpath = _tass64_outputs(tmp_path, d.disassemble())
+    assert (out_dirpath / "LOADER").read_bytes() == loader
+    assert (out_dirpath / "CODE").read_bytes() == stored

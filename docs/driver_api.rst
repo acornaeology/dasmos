@@ -517,6 +517,54 @@ Each renderer emits what it can express:
 ``reload_addr`` defaults to the loaded range's start when omitted; every
 argument is optional.
 
+The same facts can be given where the file is loaded, together with its
+name — the entries a disc catalogue holds for it:
+
+.. code-block:: python
+
+   d.load("KEYPAD", 0x1900, name="KEYPAD", exec_addr=0x3906)
+
+A declared ``name`` names the beebasm ``save`` (an explicit
+``set_output_filename`` still takes precedence); left undeclared, it
+defaults to the loaded file's name and the single-image listing is
+unchanged.
+
+
+Several files in one disassembly
+--------------------------------
+
+A program can be several files loaded at different addresses: the
+Dunjunz game is four DFS files at ``&0400``, ``&0D00``, ``&1100`` and
+``&6E80``, with the screen in the gap. Load them all into one
+disassembler so the trace follows the calls between them, and give each
+its catalogue entry:
+
+.. code-block:: python
+
+   d.load("Dunjun4", 0x0400, name="Dunjun4", exec_addr=0x0400)
+   d.load("Dunjun7", 0x0D00, name="Dunjun7")
+   d.load("Dunjun5", 0x1100, name="Dunjun5")
+   d.load("Dunjun6", 0x6E80, name="Dunjun6")
+
+Each file remains its own *image*, and the renderers reproduce the
+files, not the span between them:
+
+- **beebasm** emits one ``save`` per image, each with its own boundary
+  labels and, when declared, exec/reload addresses —
+  ``save "Dunjun4", dasmos_dunjun4_start, dasmos_dunjun4_end, &0400,
+  &0400`` — so ``beebasm -i game.asm`` writes the four files. Gaps
+  between images are neither assembled nor saved.
+- **64tass** puts each image in a section of its own; its build
+  instructions write one file per section
+  (``64tass --nostart --output-section=dunjun4 -o Dunjun4 …``).
+  Exec/reload addresses are warned about and omitted, as above.
+- **JSON** lists the images under ``meta.images``, and each item says
+  which image holds it.
+
+:meth:`~dasmos.Disassembler.program` describes a single-image program,
+so with several images give each its own ``exec_addr`` / ``reload_addr``
+on ``d.load()``.
+
 
 Classifying data
 ----------------

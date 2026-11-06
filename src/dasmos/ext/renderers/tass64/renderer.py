@@ -67,6 +67,20 @@ class Tass64Renderer(AssemblerRenderer):
         ``output_filename``, else a placeholder); ``--nostart`` strips the
         load-address header so the file is the raw ROM image."""
         listing = self.listing_filename or "<listing>.asm"
+        if self._saved_images:
+            # One section per loaded image (#49), each written to its own
+            # file: the section option precedes the -o it applies to.
+            outputs = " ".join(
+                f"--output-section={section_id} -o {image.name}"
+                for image, section_id in zip(
+                    self._saved_images,
+                    self._image_identifiers(self._saved_images),
+                )
+            )
+            return [
+                "Assemble with 64tass:",
+                f"64tass --nostart {outputs} {listing}",
+            ]
         output = self.build_output_name or self.output_filename or "<output.bin>"
         return [
             "Assemble with 64tass:",
@@ -202,6 +216,37 @@ class Tass64Renderer(AssemblerRenderer):
         # except the closing quote.
         if 32 <= n <= 126 and n != ord('"'):
             return chr(n)
+        return None
+
+    # -- one output file per loaded image (#49) ----------------------------
+    #
+    # 64tass has no in-source save, but it can write each named section to
+    # its own file (``--output-section=NAME -o FILE``). So each image's
+    # content — its moved blocks included — goes in a section of its own,
+    # declared (placed) once at the top and reopened as needed; ``* =``
+    # inside a section still sets an absolute address.
+
+    def image_section_declarations(self, section_ids: list[str]) -> list[str]:
+        return [f"    .dsection {section_id}" for section_id in section_ids]
+
+    def image_section_start(self, section_id: str) -> list[str]:
+        return ["", f"    .section {section_id}"]
+
+    def image_section_end(self, section_id: str) -> list[str]:
+        return [f"    .send {section_id}"]
+
+    def _image_save_directive(self, image, start_ref: str, end_ref: str) -> None:
+        """The image's section is its output (see :meth:`build_command`);
+        exec/reload have no representation in a raw 64tass output."""
+        if image.program is not None:
+            warnings.warn(
+                f"64tass has no exec/reload save directive; the exec/reload "
+                f"addresses declared for image {image.name!r} are omitted. "
+                f"Its raw bytes are unaffected. Use the beebasm backend to "
+                f"emit *RUN-able files with DFS headers.",
+                UserWarning,
+                stacklevel=2,
+            )
         return None
 
     def force_abs_instruction(

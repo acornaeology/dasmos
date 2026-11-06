@@ -265,17 +265,42 @@ class AssemblerRenderer(TextRenderer):
             return [(self.boundary_start_label, self.boundary_end_label)]
         if not self.emit_boundary_labels:
             return [(None, None)] * len(segments)
-        labels: list[tuple[str | None, str | None]] = []
-        used: set[str] = set()
-        for _start, _end, image in segments:
+        prefix = self.boundary_label_prefix
+        return [
+            (f"{prefix}{ident}_start", f"{prefix}{ident}_end")
+            for ident in self._image_identifiers(
+                [image for _start, _end, image in segments],
+            )
+        ]
+
+    @staticmethod
+    def _image_identifiers(images) -> list[str]:
+        """An identifier for each image, from its name — lower-cased,
+        other characters folded to ``_`` (``Game B`` -> ``game_b``) —
+        made unique by a numeric suffix. Used for per-image boundary
+        labels and section names."""
+        identifiers: list[str] = []
+        for image in images:
             stem = re.sub(r"[^0-9a-z_]+", "_", image.name.lower()).strip("_") or "image"
             candidate, n = stem, 2
-            while candidate in used:
+            while candidate in identifiers:
                 candidate, n = f"{stem}_{n}", n + 1
-            used.add(candidate)
-            prefix = self.boundary_label_prefix
-            labels.append((f"{prefix}{candidate}_start", f"{prefix}{candidate}_end"))
-        return labels
+            identifiers.append(candidate)
+        return identifiers
+
+    def image_section_declarations(self, section_ids: list[str]) -> list[str]:
+        """Lines declaring one output section per loaded image, emitted
+        near the top when several images are loaded (#49). Default: none
+        — a backend that saves in-source (beebasm) needs no sections."""
+        return []
+
+    def image_section_start(self, section_id: str) -> list[str]:
+        """Lines opening (or reopening) an image's section. Default: none."""
+        return []
+
+    def image_section_end(self, section_id: str) -> list[str]:
+        """Lines closing an image's section. Default: none."""
+        return []
 
     def included_binary_directive(self, path: str) -> list[str]:
         """Lines emitting an external binary include for ``path`` (an
@@ -414,23 +439,17 @@ class AssemblerRenderer(TextRenderer):
             for move in [moves_by_src[src]]
         }
 
-        # PHASE 1: emit move regions first, in source-binary-address
-        # order. Each move's emission is self-contained: org-to-src,
-        # source label, move-enter, body, move-exit.
-        for src_addr in sorted(moves_by_src):
-            move = moves_by_src[src_addr]
-            lines.extend(
-                self._emit_move_section(ir, move, moves_by_src, move_ids)
-            )
-
-        # PHASE 2: main code, one segment per saved image. A single
-        # image (the usual case) is one segment spanning the whole load
-        # range. Several separately-loaded images (#49) are each their
-        # own segment — own ``org``, boundary labels and save — so the
-        # gaps between them are never assembled or saved.
+        # The main walk runs one segment per saved image. A single image
+        # (the usual case) is one segment spanning the whole load range.
+        # Several separately-loaded images (#49) are each their own
+        # segment — own ``org``, boundary labels and save — so the gaps
+        # between them are never assembled or saved; a backend that
+        # saves per section (64tass) also gets each image's content,
+        # moved blocks included, wrapped in that image's section.
         images = sorted(ir.images, key=lambda image: image.start)
         if len(images) > 1:
             segments = [(image.start, image.end, image) for image in images]
+            section_ids = self._image_identifiers(images)
             self._saved_images = images
             if self.output_filename is not None:
                 warnings.warn(
@@ -440,9 +459,33 @@ class AssemblerRenderer(TextRenderer):
                     UserWarning,
                     stacklevel=2,
                 )
+            lines.extend(self.image_section_declarations(section_ids))
         else:
             segments = [(int(load_start), int(load_end), None)]
+            section_ids = [None]
         boundary_labels = self._segment_boundary_labels(segments)
+
+        def section_of(binary_addr: int):
+            """The section id of the image holding ``binary_addr``."""
+            for (start, end, _image), section_id in zip(segments, section_ids):
+                if start <= binary_addr < end:
+                    return section_id
+            return None
+
+        # PHASE 1: emit move regions first, in source-binary-address
+        # order. Each move's emission is self-contained: org-to-src,
+        # source label, move-enter, body, move-exit.
+        for src_addr in sorted(moves_by_src):
+            move = moves_by_src[src_addr]
+            section_id = section_of(int(src_addr))
+            if section_id is not None:
+                lines.extend(self.image_section_start(section_id))
+            lines.extend(
+                self._emit_move_section(ir, move, moves_by_src, move_ids)
+            )
+            if section_id is not None:
+                lines.extend(self.image_section_end(section_id))
+
 
         # Skip ranges: any binary address covered by ANY move's
         # source range was emitted in phase 1.
@@ -452,6 +495,8 @@ class AssemblerRenderer(TextRenderer):
 
         for index, (seg_start, seg_end, _image) in enumerate(segments):
             start_label, end_label = boundary_labels[index]
+            if section_ids[index] is not None:
+                lines.extend(self.image_section_start(section_ids[index]))
             # ``org`` to the segment start (resetting PC after the moves'
             # restore-to-source positions left it somewhere arbitrary)
             # plus the boundary start marker.
@@ -488,6 +533,8 @@ class AssemblerRenderer(TextRenderer):
                 if expected_pc != seg_end:
                     lines.extend(self.set_origin(seg_end))
                 lines.append(self.inline_label(end_label))
+            if section_ids[index] is not None:
+                lines.extend(self.image_section_end(section_ids[index]))
 
         if len(segments) > 1:
             saves = [
