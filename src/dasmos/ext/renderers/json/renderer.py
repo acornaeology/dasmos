@@ -136,6 +136,7 @@ from dasmos.core.expr import (
 from dasmos.core.format_hint import FormatHint
 from dasmos.core.markdown_asm import markdown_normalize_headings
 from dasmos.core.memory import BinaryAddr, RuntimeAddr
+from dasmos.core.move import BASE_MOVE_ID
 from dasmos.cpu import Opcode, OperandKind
 from dasmos.output import StructuredOutput
 from dasmos.renderer import Renderer
@@ -846,17 +847,23 @@ class JsonRenderer(Renderer[StructuredOutput]):
                 symbol = "#" + self._small_int(value)
         elif kind is OperandKind.ADDRESS_8:
             v = ir.memory.get_u8(operand_addr)
-            symbol = self._addr_label_or_hex(ir, v, width=8)
+            symbol = self._addr_label_or_hex(
+                ir, v, width=8, binary_addr=binary_addr,
+            )
         elif kind in (OperandKind.ADDRESS_16, OperandKind.ADDRESS_16_INDIRECT):
             v = ir.memory.get_u16_le(operand_addr)
-            symbol = self._addr_label_or_hex(ir, v, width=16)
+            symbol = self._addr_label_or_hex(
+                ir, v, width=16, binary_addr=binary_addr,
+            )
         elif kind is OperandKind.RELATIVE_OFFSET:
             offset = ir.memory.get_u8(operand_addr)
             if offset >= 0x80:
                 offset -= 0x100
             base_runtime = int(ir.moves.b2r(BinaryAddr(binary_addr)))
             target = base_runtime + opcode.length() + offset
-            symbol = self._addr_label_or_hex(ir, target, width=16)
+            symbol = self._addr_label_or_hex(
+                ir, target, width=16, binary_addr=binary_addr,
+            )
         else:
             return None
 
@@ -980,9 +987,28 @@ class JsonRenderer(Renderer[StructuredOutput]):
             return f'ASC("{chr(value)}")'
         return f"'{chr(value)}'"
 
-    def _addr_label_or_hex(self, ir, addr: int, *, width: int) -> str:
+    def _addr_label_or_hex(
+        self, ir, addr: int, *, width: int, binary_addr: int | None = None,
+    ) -> str:
+        """An address operand's name, or a hex literal.
+
+        From an instruction stored at ``binary_addr`` inside a move that
+        overlays a shared run range, the overlay's own names and then its
+        own expression aliases are preferred over another overlay's
+        (#53, #54) — the same order as the assembler renderers.
+        """
         label = ir.labels.get_label(addr)
         if label is not None:
+            overlay = (
+                ir.moves.move_id_for_binary_addr(binary_addr)
+                if binary_addr is not None else BASE_MOVE_ID
+            )
+            visible_names = ir.labels.names_in_overlay(addr, overlay)
+            if visible_names:
+                return visible_names[0]
+            visible_exprs = ir.labels.expressions_in_overlay(addr, overlay)
+            if visible_exprs:
+                return canonical_text(visible_exprs[0])
             name = self._first_registered_name(label)
             if name is not None:
                 return name
@@ -1458,11 +1484,15 @@ class JsonRenderer(Renderer[StructuredOutput]):
         access is never masked by a base-only one.
         """
         runtime_addr = int(ir.moves.b2r(BinaryAddr(binary_addr)))
-        label = ir.labels.get_label(runtime_addr)
-        if label is None or not label.references:
+        # The item's own overlay's referrers only, where several moves
+        # overlay this run address (#54).
+        references = ir.labels.references_seen_from(
+            runtime_addr, ir.moves.move_id_for_binary_addr(binary_addr),
+        )
+        if not references:
             return []
         by_key: dict[tuple[int, int], "ReferenceKind"] = {}
-        for ref in label.references:
+        for ref in references:
             ba = int(ref.binary_addr)
             mid = int(getattr(ref, "move_id", 0) or 0)
             move_def = ir.moves.all_moves[mid]

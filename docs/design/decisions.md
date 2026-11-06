@@ -791,3 +791,36 @@ nothing changes.
 ADFS's three overlays of &0D0A, whose labels belong to no overlay. Driver
 authors can now label each overlay independently with `move=`.
 
+
+### D-029: An address several overlays refer to gets a label per overlay
+
+**Status**: accepted, implemented (dasmos#54). Extends D-028.
+
+**Context**: D-028 made an auto-label belong to a move only when every
+reference to it came from that one move's code. At a run address the
+overlays share and *both* refer to — the Dunjunz loader's keyboard and
+joystick images run the same code apart from the joystick handler — the
+label stayed unowned: emitted once, in the first overlay, named from an
+ambiguous lookup (`data_` for code), cited by the second overlay's
+operands, and its reference comment mixed both overlays' referrers.
+Expression aliases (`expr_label(..., move=)`) were still merged across
+overlays in operand resolution, as names had been before D-028.
+
+**Decision**: References to a shared run address are grouped by the
+overlay they come from, and each overlay without a name of its own there
+gets its own auto-label, owned by that move and named from its layout.
+Where overlays laid out alike would produce the same name, each colliding
+name is qualified with its move's name (`code_041e_low_keyboard` /
+`code_041e_low_joystick`) — a move name tells a reader which overlay,
+where a numeric suffix would not. Synthesised offset bases follow the
+same rule. References from outside the overlays are served by the
+overlays' labels; an unowned label is made only when no overlay gets
+one. Each overlay's reference comment and JSON `references` list only its
+own referrers (`LabelManager.references_seen_from`), and auto-label
+references now record the referrer's move. Operands prefer, in order,
+the overlay's own names, its own expression aliases
+(`LabelManager.expressions_in_overlay`), then any other.
+
+**Consequences**: All fixture listings are byte-identical. On the
+Dunjunz disc, all 34 auto-labelled addresses in the overlaid &0400-&07FF
+resolve per overlay and the listing still reassembles byte-for-byte.

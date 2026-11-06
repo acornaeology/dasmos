@@ -14,6 +14,7 @@ reaches it (D-023).
 """
 
 import os
+import re
 import shutil
 import subprocess
 
@@ -74,7 +75,8 @@ def _sections(text):
         if ln.startswith("; Move "):
             current = ln[2:].split(":")[0]
             sections.setdefault(current, [])
-        elif ln.strip().startswith("org &2000 + (*"):
+        elif re.match(r"org &[0-9a-f]+ \+ \(\*", ln.strip()):
+            # The move trailer's restore-PC line ends its section.
             sections[current].append(ln.strip())
             current = None
             continue
@@ -164,3 +166,114 @@ def test_tass64_round_trip(tmp_path, labels):
         f"=== stderr ===\n{result.stderr}"
     )
     assert out_path.read_bytes() == IMAGE
+
+
+# -- #54: an address referenced from both overlays ------------------------
+#
+# Identical code in both overlays (as in the Dunjunz loader, apart from
+# its joystick handler): each branches to run &0425, so the auto-label
+# there is referenced from both. Each overlay gets its own label, named
+# from its own layout and, because the names would otherwise collide,
+# qualified with its move's name.
+#   &0420: LDA #1 ; BNE &0425 ; NOP ; &0425: STA &0421 ; RTS
+SHARED_CODE = bytes([0xA9, 0x01, 0xD0, 0x01, 0xEA, 0x8D, 0x21, 0x04, 0x60])
+OVERLAY = bytes(0x20) + SHARED_CODE
+OVERLAY += bytes(0x40 - len(OVERLAY))
+SHARED_IMAGE = OVERLAY + OVERLAY + bytes([0x60])
+
+
+def _shared_ir(tmp_path, configure=None):
+    binpath = tmp_path / "shared.bin"
+    binpath.write_bytes(SHARED_IMAGE)
+    d = Disassembler.create("6502")
+    d.load(binpath, 0x2000)
+    keyboard = d.add_move(0x0400, 0x2000, 0x40, name="low_keyboard")
+    joystick = d.add_move(0x0400, 0x2040, 0x40, name="low_joystick")
+    d.entry(0x2080)
+    with keyboard:
+        d.entry(0x0420)
+    with joystick:
+        d.entry(0x0420)
+    if configure is not None:
+        configure(d, keyboard, joystick)
+    return d.disassemble()
+
+
+class TestAutoLabelReferencedFromBothOverlays:
+
+    def test_each_overlay_gets_its_own_label_in_its_own_section(self, tmp_path):
+        s = _sections(str(_shared_ir(tmp_path).render(BeebasmRenderer())))
+        assert ".code_0425_low_keyboard" in s["Move 1"]
+        assert ".code_0425_low_joystick" in s["Move 2"]
+        assert not any("low_joystick" in ln for ln in s["Move 1"])
+        assert not any("low_keyboard" in ln for ln in s["Move 2"])
+
+    def test_each_overlays_operands_use_its_own_label(self, tmp_path):
+        s = _sections(str(_shared_ir(tmp_path).render(BeebasmRenderer())))
+        assert "bne code_0425_low_keyboard" in s["Move 1"]
+        assert "bne code_0425_low_joystick" in s["Move 2"]
+
+    def test_each_reference_comment_lists_its_own_overlays_referrers(
+        self, tmp_path,
+    ):
+        # The BNEs are stored at &2022 (keyboard) and &2062 (joystick).
+        s = _sections(str(_shared_ir(tmp_path).render(BeebasmRenderer())))
+        assert "; &0425 referenced 1 time by &2022" in s["Move 1"]
+        assert "; &0425 referenced 1 time by &2062" in s["Move 2"]
+
+    def test_json_references_are_per_overlay(self, tmp_path):
+        items = _shared_ir(tmp_path).render(JsonRenderer()).data["items"]
+        refs = {
+            it["binary_addr"]: [r["addr"] for r in it.get("references", [])]
+            for it in items if it["addr"] == 0x0425
+        }
+        # Each referrer is cited at its own run address, &0422.
+        assert refs == {0x2025: [0x0422], 0x2065: [0x0422]}
+
+    def test_round_trips(self, tmp_path):
+        if BEEBASM is None:
+            pytest.skip("beebasm not found")
+        text = str(_shared_ir(tmp_path).render(BeebasmRenderer()))
+        asm_path = tmp_path / "out.asm"
+        asm_path.write_text(text, encoding="utf-8")
+        out_path = tmp_path / "out.bin"
+        result = subprocess.run(
+            [BEEBASM, "-i", str(asm_path), "-o", str(out_path)],
+            capture_output=True, text=True, cwd=str(tmp_path),
+        )
+        assert result.returncode == 0, (
+            f"beebasm failed:\n=== source ===\n{text}\n"
+            f"=== stderr ===\n{result.stderr}"
+        )
+        assert out_path.read_bytes() == SHARED_IMAGE
+
+
+class TestExpressionLabelsPerOverlay:
+    """``d.expr_label(..., move=)`` names a run address in one overlay,
+    just as ``d.label(..., move=)`` does (#54)."""
+
+    def _configure(self, d, keyboard, joystick):
+        d.label(0x0420, "keyboard_handler", move=keyboard)
+        d.label(0x0420, "joystick_handler", move=joystick)
+        d.expr_label(0x0421, "keyboard_handler+1", move=keyboard)
+        d.expr_label(0x0421, "joystick_handler+1", move=joystick)
+
+    def test_each_overlays_operand_uses_its_own_expression(self, tmp_path):
+        s = _sections(str(
+            _shared_ir(tmp_path, self._configure).render(BeebasmRenderer()),
+        ))
+        assert any(
+            ln.startswith("sta keyboard_handler") for ln in s["Move 1"]
+        ), s["Move 1"]
+        assert any(
+            ln.startswith("sta joystick_handler") for ln in s["Move 2"]
+        ), s["Move 2"]
+
+    def test_json_operands_use_their_own_overlays_expression(self, tmp_path):
+        items = _shared_ir(tmp_path, self._configure).render(JsonRenderer()).data["items"]
+        sta = {
+            it["binary_addr"]: it["operand"]
+            for it in items if it.get("mnemonic") == "sta"
+        }
+        assert sta[0x2025].startswith("keyboard_handler")
+        assert sta[0x2065].startswith("joystick_handler")

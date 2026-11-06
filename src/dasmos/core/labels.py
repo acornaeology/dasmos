@@ -350,11 +350,51 @@ class LabelManager:
                 if name.text not in out:
                     out.append(name.text)
         return out
+
+    def expressions_in_overlay(self, runtime_addr, move_id: int) -> list:
+        """The expression aliases at ``runtime_addr`` as seen from the
+        overlay laid out by ``move_id`` — the same visibility rule as
+        :meth:`names_in_overlay`, for labels registered with
+        ``expr_label(..., move=)`` (#54)."""
+        label = self.get_label(runtime_addr)
+        if label is None:
+            return []
         covering = self._move_manager.move_ids_for_runtime_addr(runtime_addr)
-        for bucket, name_list in label.explicit_names.items():
-            if bucket in covering and any(n.text == name for n in name_list):
-                return bucket
-        return None
+        out: list = []
+        for bucket, expr_list in label.expressions.items():
+            if len(covering) > 1 and bucket != move_id and bucket in covering:
+                continue
+            out.extend(e for e in expr_list if e not in out)
+        return out
+
+    def references_seen_from(self, runtime_addr, move_id: int) -> list:
+        """The references to ``runtime_addr`` as seen from the overlay
+        laid out by ``move_id``.
+
+        Where several moves overlay the address and ``move_id`` is one
+        of them with names of its own there, a referrer stored in another
+        of those overlays refers to *that* overlay's copy, so only this
+        overlay's referrers (and any outside the overlays) are returned
+        (#54). Otherwise every reference is.
+        """
+        label = self.get_label(runtime_addr)
+        if label is None:
+            return []
+        covering = self._move_manager.move_ids_for_runtime_addr(runtime_addr)
+        if (
+            len(covering) <= 1
+            or move_id not in covering
+            or not label.names_for_move(move_id)
+        ):
+            return list(label.references)
+        out = []
+        for reference in label.references:
+            referrer = self._move_manager.move_id_for_binary_addr(
+                int(reference.binary_addr),
+            )
+            if referrer == move_id or referrer not in covering:
+                out.append(reference)
+        return out
 
     def addr_for_name(self, name: str) -> RuntimeAddr | None:
         """Find the runtime address of a label by one of its names.

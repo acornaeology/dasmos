@@ -856,8 +856,14 @@ class AssemblerRenderer(TextRenderer):
             visible = ir.labels.names_in_overlay(runtime_addr, overlay)
             names = [n for n in visible if n not in self._inline_emitted_names]
             first_visit = runtime_addr not in self._inline_emitted_runtime_addrs
-            if first_visit and (names or not label.explicit_name_texts()):
-                xref = self._format_inline_xref_summary(label, runtime_addr)
+            # The reference summary accompanies the names it describes:
+            # each overlay's own names get their own overlay's referrers
+            # (#54). A nameless label's summary is emitted once.
+            if names or (first_visit and not label.explicit_name_texts()):
+                xref = self._format_inline_xref_summary(
+                    label, runtime_addr,
+                    ir.labels.references_seen_from(runtime_addr, overlay),
+                )
                 if xref is not None:
                     lines.append(xref)
             # Insertion order, not alphabetical — preserves the label
@@ -918,6 +924,7 @@ class AssemblerRenderer(TextRenderer):
                     # dump can correlate without translating.
                     inner_xref = self._format_inline_xref_summary(
                         inner_label, inner_binary,
+                        ir.labels.references_seen_from(inner_runtime, overlay),
                     )
                     if inner_xref is not None:
                         lines.append(inner_xref)
@@ -1192,26 +1199,34 @@ class AssemblerRenderer(TextRenderer):
                     lines.append(xref)
         return lines
 
-    def _format_inline_xref_summary(self, label, runtime_addr: int) -> str | None:
+    def _format_inline_xref_summary(
+        self, label, runtime_addr: int, references=None,
+    ) -> str | None:
         """Format the ``; &<addr> referenced N time(s) by &<r1>, …``
         line for a label, or return ``None`` when the label has no
         recorded references.
+
+        ``references`` restricts the summary to the given references
+        (one overlay's, see ``LabelManager.references_seen_from``);
+        default, all of the label's.
 
         References that only use this address as an *indexing base*
         (``ReferenceKind`` that doesn't touch the named byte) are
         reported separately as "used as index base", so the summary
         never implies a location is read or written when it is not.
         """
-        if not label.references:
+        if references is None:
+            references = label.references
+        if not references:
             return None
         direct = sorted({
             int(r.binary_addr)
-            for r in label.references
+            for r in references
             if r.kind.touches_named_address
         })
         indexed = sorted({
             int(r.binary_addr)
-            for r in label.references
+            for r in references
             if not r.kind.touches_named_address
         })
         # A binary addr classified both ways (different opcodes) counts
@@ -2256,24 +2271,22 @@ class AssemblerRenderer(TextRenderer):
             # they flow through this path naturally. Insertion order
             # picks the structural / first-registered name when an
             # address has multiple aliases.
-            # Inside a move that overlays a shared run range, prefer the
-            # names that overlay sees (its own, then any belonging to no
-            # overlay) over another overlay's (#53); every name at the
-            # address has the same value, so this is about readability.
+            # Inside a move that overlays a shared run range, prefer what
+            # that overlay sees — its own names, then its own expression
+            # aliases (``expr_label(..., move=)``), including any that
+            # belong to no overlay — over another overlay's (#53, #54).
+            # Every candidate has the same value; this is readability.
+            # Without overlays everything is visible, so this is simply
+            # names first, then expressions.
             overlay = (
                 active_move.move_id if active_move is not None else BASE_MOVE_ID
             )
-            visible = ir.labels.names_in_overlay(addr, overlay)
-            names = visible + [
+            visible_names = ir.labels.names_in_overlay(addr, overlay)
+            visible_exprs = ir.labels.expressions_in_overlay(addr, overlay)
+            other_names = [
                 n for n in label.explicit_names_in_insertion_order()
-                if n not in visible
+                if n not in visible_names
             ]
-            if names:
-                if not self._label_address_is_in_range(ir, addr):
-                    self._used_external_labels.add(addr)
-                if self._operand_label_refs is not None:
-                    self._operand_label_refs.add(addr)
-                return names[0]
             # No explicit name — fall back to an expression. Drivers
             # use ``d.expr_label(addr, "<base>-1")`` to register a
             # use-site form for an address that's a one-byte-before-
@@ -2281,11 +2294,25 @@ class AssemblerRenderer(TextRenderer):
             # pattern). py8dis renders those operands using the
             # expression form too; without this fallback dasmos's
             # operand stays as raw hex.
-            for expr_list in label.expressions.values():
-                if expr_list:
-                    if not self._label_address_is_in_range(ir, addr):
-                        self._used_external_labels.add(addr)
-                    return self.render_expression(expr_list[0], ir)
+            other_exprs = [
+                e for expr_list in label.expressions.values() for e in expr_list
+                if e not in visible_exprs
+            ]
+            for kind, candidates in (
+                ("name", visible_names), ("expr", visible_exprs),
+                ("name", other_names), ("expr", other_exprs),
+            ):
+                if not candidates:
+                    continue
+                if not self._label_address_is_in_range(ir, addr):
+                    self._used_external_labels.add(addr)
+                if kind == "name":
+                    if self._operand_label_refs is not None:
+                        self._operand_label_refs.add(addr)
+                    return candidates[0]
+                return self.render_expression(
+                    candidates[0], ir, active_move=active_move,
+                )
         return self.hex2(addr) if width == 8 else self.hex4(addr)
 
     @staticmethod
