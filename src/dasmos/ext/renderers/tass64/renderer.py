@@ -73,7 +73,9 @@ class Tass64Renderer(AssemblerRenderer):
             f"64tass --nostart -o {output} {listing}",
         ]
 
-    def _save_directive(self, load_start, load_end, program=None) -> str | None:
+    def _save_directive(
+        self, load_start, load_end, program=None, name=None,
+    ) -> str | None:
         """64tass writes the binary via ``-o``, so there is never an
         in-source save directive. Load-and-run exec/reload metadata
         (#45) has no representation in a raw 64tass output, so it is

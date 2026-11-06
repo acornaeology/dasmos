@@ -199,7 +199,9 @@ class BeebasmRenderer(AssemblerRenderer):
         here.)
         """
         listing = self.listing_filename or "<listing>.asm"
-        if self.output_filename is not None:
+        if self.output_filename is not None or self._saved_images:
+            # The listing's own ``save "<file>"`` directive(s) write the
+            # output — one per image when several are loaded (#49).
             return [
                 "Assemble with beebasm:",
                 f"beebasm -i {listing}",
@@ -210,7 +212,9 @@ class BeebasmRenderer(AssemblerRenderer):
             f"beebasm -i {listing} -o {output}",
         ]
 
-    def _save_directive(self, load_start, load_end, program=None) -> str:
+    def _save_directive(
+        self, load_start, load_end, program=None, name=None,
+    ) -> str:
         """Render the ``save`` directive for the loaded range.
 
         Uses the boundary marker labels when they're configured;
@@ -238,9 +242,19 @@ class BeebasmRenderer(AssemblerRenderer):
                 f"{self.hex4(int(load_start))}, {self.hex4(int(load_end))}"
             )
         save_args += self._exec_reload_suffix(load_start, program)
-        if self.output_filename is not None:
-            return f'save "{self.output_filename}", {save_args}'
+        filename = self.output_filename if self.output_filename is not None else name
+        if filename is not None:
+            return f'save "{filename}", {save_args}'
         return f"save {save_args}"
+
+    def _image_save_directive(self, image, start_ref: str, end_ref: str) -> str:
+        """``save "NAME", start, end[, exec, reload]`` for one of several
+        loaded images (#49): each is written as its own file under its
+        own name, with its own DFS exec/reload addresses when declared.
+        """
+        save_args = f"{start_ref}, {end_ref}"
+        save_args += self._exec_reload_suffix(image.start, image.program)
+        return f'save "{image.name}", {save_args}'
 
     def _exec_reload_suffix(self, load_start, program) -> str:
         """The ``, <exec>, <reload>`` tail of a ``save`` directive, or

@@ -19,6 +19,7 @@ subclass's syntax methods.
 
 from __future__ import annotations
 
+import re
 import warnings
 from typing import TYPE_CHECKING
 
@@ -220,7 +221,9 @@ class AssemblerRenderer(TextRenderer):
         """
         return None
 
-    def _save_directive(self, load_start, load_end, program=None) -> str | None:
+    def _save_directive(
+        self, load_start, load_end, program=None, name=None,
+    ) -> str | None:
         """A directive writing the loaded range to a binary file, or
         ``None`` when the assembler saves via a command-line flag
         instead. Default: ``None`` (no in-source save). Beebasm
@@ -229,9 +232,50 @@ class AssemblerRenderer(TextRenderer):
 
         ``program`` is the IR's :class:`~dasmos.core.program.ProgramInfo`
         (or ``None``) — load-and-run metadata (exec/reload addresses) a
-        backend may fold into its save directive.
+        backend may fold into its save directive. ``name`` is the
+        single image's declared name (``d.load(name=...)``), or
+        ``None``; an explicit :attr:`output_filename` takes precedence.
         """
         return None
+
+    def _image_save_directive(self, image, start_ref: str, end_ref: str) -> str | None:
+        """A directive saving one of several loaded images as its own
+        file (#49), or ``None`` when the assembler has no in-source save.
+
+        ``image`` is the :class:`~dasmos.core.program.LoadedImage`;
+        ``start_ref`` / ``end_ref`` are the expressions for its range —
+        its boundary labels, or hex literals when those are suppressed.
+        Default ``None``; beebasm overrides with its ``save``.
+        """
+        return None
+
+    def _segment_boundary_labels(
+        self, segments,
+    ) -> list[tuple[str | None, str | None]]:
+        """``(start_label, end_label)`` for each segment of the main walk.
+
+        A single segment uses the familiar ``{prefix}start`` /
+        ``{prefix}end``. Several (one per image) get
+        ``{prefix}{name}_start`` / ``{prefix}{name}_end``, the image
+        name made into an identifier (``Dunjun4`` -> ``dunjun4``, ``Game
+        B`` -> ``game_b``) and kept unique. Suppressed boundary labels
+        (an empty prefix) give ``(None, None)``.
+        """
+        if len(segments) == 1:
+            return [(self.boundary_start_label, self.boundary_end_label)]
+        if not self.emit_boundary_labels:
+            return [(None, None)] * len(segments)
+        labels: list[tuple[str | None, str | None]] = []
+        used: set[str] = set()
+        for _start, _end, image in segments:
+            stem = re.sub(r"[^0-9a-z_]+", "_", image.name.lower()).strip("_") or "image"
+            candidate, n = stem, 2
+            while candidate in used:
+                candidate, n = f"{stem}_{n}", n + 1
+            used.add(candidate)
+            prefix = self.boundary_label_prefix
+            labels.append((f"{prefix}{candidate}_start", f"{prefix}{candidate}_end"))
+        return labels
 
     def included_binary_directive(self, path: str) -> list[str]:
         """Lines emitting an external binary include for ``path`` (an
@@ -295,6 +339,10 @@ class AssemblerRenderer(TextRenderer):
         # addresses of the labels it names (see :meth:`_render_opcode`);
         # ``None`` otherwise.
         self._operand_label_refs: set[int] | None = None
+        # The images saved as separate files by this render — set when
+        # more than one is loaded (#49), so :meth:`build_command` can
+        # describe one output per image. Empty for a single image.
+        self._saved_images: list = []
 
     def render(self, ir: "IntermediateRepresentation") -> TextOutput:
         """Walk the IR's classifications and emit a beebasm source
@@ -375,12 +423,26 @@ class AssemblerRenderer(TextRenderer):
                 self._emit_move_section(ir, move, moves_by_src, move_ids)
             )
 
-        # PHASE 2: main code. ``org`` to the load start (resetting
-        # PC after the moves' restore-to-source positions left it
-        # somewhere arbitrary) plus the boundary start marker.
-        lines.extend(self.code_start(load_start, load_end, first=True))
-        if self.boundary_start_label is not None:
-            lines.append(self.inline_label(self.boundary_start_label))
+        # PHASE 2: main code, one segment per saved image. A single
+        # image (the usual case) is one segment spanning the whole load
+        # range. Several separately-loaded images (#49) are each their
+        # own segment — own ``org``, boundary labels and save — so the
+        # gaps between them are never assembled or saved.
+        images = sorted(ir.images, key=lambda image: image.start)
+        if len(images) > 1:
+            segments = [(image.start, image.end, image) for image in images]
+            self._saved_images = images
+            if self.output_filename is not None:
+                warnings.warn(
+                    f"output_filename {self.output_filename!r} is ignored: "
+                    f"{len(images)} images are loaded and each is saved "
+                    f"under its own name (see d.load(name=...))",
+                    UserWarning,
+                    stacklevel=2,
+                )
+        else:
+            segments = [(int(load_start), int(load_end), None)]
+        boundary_labels = self._segment_boundary_labels(segments)
 
         # Skip ranges: any binary address covered by ANY move's
         # source range was emitted in phase 1.
@@ -388,39 +450,63 @@ class AssemblerRenderer(TextRenderer):
             (src, src + mv.length) for src, mv in moves_by_src.items()
         ]
 
-        # Track PC through the walk so we can emit ``org &<addr>``
-        # whenever we resume after a skipped (move-source) range —
-        # the main walk needs to resume at the byte just after the
-        # last move source.
-        expected_pc = int(load_start)
-        for binary_addr, classification in ir.classifications.iter_classified_starts():
-            ba = int(binary_addr)
-            if not (int(load_start) <= ba < int(load_end)):
-                continue
-            if any(s <= ba < e for s, e in move_src_ranges):
-                continue
-            if ba != expected_pc:
-                lines.extend(self.set_origin(ba))
-                expected_pc = ba
-            lines.extend(self._emit_classification_at(
-                ir, ba, classification,
-                active_move=None, active_move_id=None,
-            ))
-            expected_pc = ba + classification.length()
+        for index, (seg_start, seg_end, _image) in enumerate(segments):
+            start_label, end_label = boundary_labels[index]
+            # ``org`` to the segment start (resetting PC after the moves'
+            # restore-to-source positions left it somewhere arbitrary)
+            # plus the boundary start marker.
+            lines.extend(self.code_start(seg_start, seg_end, first=index == 0))
+            if start_label is not None:
+                lines.append(self.inline_label(start_label))
 
-        # Position PC at load_end before emitting the boundary end
-        # marker so the label takes the load_end value (otherwise the
-        # marker lands wherever the last classification's last byte
-        # ended, which can be earlier when a move source extends to
-        # load_end).
-        if self.boundary_end_label is not None:
-            if expected_pc != int(load_end):
-                lines.extend(self.set_origin(int(load_end)))
-            lines.append(self.inline_label(self.boundary_end_label))
-        save = self._save_directive(load_start, load_end, ir.program)
-        if save is not None:
+            # Track PC through the walk so we can emit ``org &<addr>``
+            # whenever we resume after a skipped (move-source) range —
+            # the main walk needs to resume at the byte just after the
+            # last move source.
+            expected_pc = seg_start
+            for binary_addr, classification in ir.classifications.iter_classified_starts():
+                ba = int(binary_addr)
+                if not (seg_start <= ba < seg_end):
+                    continue
+                if any(s <= ba < e for s, e in move_src_ranges):
+                    continue
+                if ba != expected_pc:
+                    lines.extend(self.set_origin(ba))
+                    expected_pc = ba
+                lines.extend(self._emit_classification_at(
+                    ir, ba, classification,
+                    active_move=None, active_move_id=None,
+                ))
+                expected_pc = ba + classification.length()
+
+            # Position PC at the segment end before emitting the boundary
+            # end marker so the label takes that value (otherwise the
+            # marker lands wherever the last classification's last byte
+            # ended, which can be earlier when a move source extends to
+            # the end).
+            if end_label is not None:
+                if expected_pc != seg_end:
+                    lines.extend(self.set_origin(seg_end))
+                lines.append(self.inline_label(end_label))
+
+        if len(segments) > 1:
+            saves = [
+                self._image_save_directive(
+                    image,
+                    boundary_labels[index][0] or self.hex4(seg_start),
+                    boundary_labels[index][1] or self.hex4(seg_end),
+                )
+                for index, (seg_start, seg_end, image) in enumerate(segments)
+            ]
+        else:
+            # A single image's declared name names its save, unless the
+            # renderer was given an explicit output filename.
+            name = images[0].name if images and images[0].name_declared else None
+            saves = [self._save_directive(load_start, load_end, ir.program, name)]
+        saves = [save for save in saves if save is not None]
+        if saves:
             lines.append("")
-            lines.append(save)
+            lines.extend(saves)
         lines.extend(self.disassembly_end())
 
         # End-of-file label-reference frequency table.
