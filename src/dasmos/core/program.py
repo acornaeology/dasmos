@@ -61,3 +61,42 @@ class ProgramInfo:
         _validate_addr("load_addr", self.load_addr)
         _validate_addr("exec_addr", self.exec_addr)
         _validate_addr("reload_addr", self.reload_addr)
+
+
+@dataclass(frozen=True)
+class LoadedImage:
+    """One file brought into the disassembly by ``d.load()``.
+
+    A disassembly can span several separately-loaded files — a game's
+    DFS files at their own addresses, traced together so calls between
+    them resolve — and each is still its own image: it is saved as its
+    own file, under its own name, with its own load-and-run metadata.
+    These are exactly the facts a disc catalogue entry (or a ``.inf``
+    file) records for the file.
+
+    - ``start`` / ``end`` — the binary range ``[start, end)`` it was
+      loaded at.
+    - ``name`` — the file's name: as declared to ``d.load(name=...)``,
+      else the loaded file's own name. ``name_declared`` says which.
+    - ``exec_addr`` / ``reload_addr`` — as for :class:`ProgramInfo`;
+      ``None`` when not declared.
+    """
+
+    start: int
+    end: int
+    name: str
+    name_declared: bool = False
+    exec_addr: int | None = None
+    reload_addr: int | None = None
+
+    def __post_init__(self) -> None:
+        _validate_addr("exec_addr", self.exec_addr)
+        _validate_addr("reload_addr", self.reload_addr)
+
+    @property
+    def program(self) -> ProgramInfo | None:
+        """This image's load-and-run metadata, or ``None`` if neither an
+        exec nor a reload address was declared."""
+        if self.exec_addr is None and self.reload_addr is None:
+            return None
+        return ProgramInfo(exec_addr=self.exec_addr, reload_addr=self.reload_addr)

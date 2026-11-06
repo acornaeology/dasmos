@@ -2,7 +2,14 @@
   "meta": {
     "schema_version": 4,
     "load_addr": 8192,
-    "end_addr": 8204
+    "end_addr": 8204,
+    "images": [
+      {
+        "name": "golden.bin",
+        "load_addr": 8192,
+        "end_addr": 8204
+      }
+    ]
   },
   "constants": [
     {

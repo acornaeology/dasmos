@@ -254,6 +254,24 @@ class JsonRenderer(Renderer[StructuredOutput]):
             }
             if declared:
                 meta["program"] = declared
+        # Every loaded image (#49) — additive. A disassembly can span
+        # several separately-loaded files, each saved as its own file;
+        # consumers (fantasm, the site) use this to tell which file an
+        # item belongs to (each item carries an ``image`` index when
+        # there is more than one).
+        images = []
+        for image in ir.images:
+            entry: dict[str, Any] = {
+                "name": image.name,
+                "load_addr": image.start,
+                "end_addr": image.end,
+            }
+            if image.exec_addr is not None:
+                entry["exec_addr"] = image.exec_addr
+            if image.reload_addr is not None:
+                entry["reload_addr"] = image.reload_addr
+            images.append(entry)
+        meta["images"] = images
         return meta
 
     def _build_constants(self, ir) -> list[dict[str, Any]]:
@@ -592,6 +610,19 @@ class JsonRenderer(Renderer[StructuredOutput]):
     # -- per-item rendering ---------------------------------------------
 
     @staticmethod
+    def _image_index(ir, binary_addr: int) -> int | None:
+        """Index into ``meta.images`` of the image holding the stored
+        byte at ``binary_addr`` — or ``None`` when only one image is
+        loaded (the index would always be 0)."""
+        images = ir.images
+        if len(images) <= 1:
+            return None
+        for i, image in enumerate(images):
+            if image.start <= binary_addr < image.end:
+                return i
+        return None
+
+    @staticmethod
     def _names_seen_from(ir, runtime_addr: int, binary_addr: int) -> list[str]:
         """Explicit names at ``runtime_addr`` as seen from the stored
         byte at ``binary_addr`` — i.e. from the overlay of the move that
@@ -613,6 +644,9 @@ class JsonRenderer(Renderer[StructuredOutput]):
         }
         if binary_addr != runtime_addr:
             entry["binary_addr"] = binary_addr
+        image_index = self._image_index(ir, binary_addr)
+        if image_index is not None:
+            entry["image"] = image_index
 
         # Labels at the runtime address. Insertion order so the JSON
         # ``labels`` array matches the asm renderer's display sequence.

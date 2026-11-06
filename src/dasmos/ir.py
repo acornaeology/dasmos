@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from dasmos.core.labels import LabelManager
     from dasmos.core.memory import MemoryImage
     from dasmos.core.move import MoveManager
-    from dasmos.core.program import ProgramInfo
+    from dasmos.core.program import LoadedImage, ProgramInfo
     from dasmos.cpu import Cpu
     from dasmos.disassembler import Disassembler
     from dasmos.renderer import Renderer
@@ -109,6 +109,12 @@ class IntermediateRepresentation:
     @property
     def config(self) -> "Config":
         return self._disassembler.config
+
+    @property
+    def images(self) -> "list[LoadedImage]":
+        """Every file loaded into the disassembly, in load order
+        (see :meth:`Disassembler.load`)."""
+        return self._disassembler.images
 
     @property
     def program(self) -> "ProgramInfo | None":

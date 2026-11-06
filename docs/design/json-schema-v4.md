@@ -137,3 +137,25 @@ the owned `bytes`; its type-specific fields are:
 `path` is the include path as it appears in the assembler directive; the
 owned `bytes` are the canonical payload
 (`ir.write_included_binaries(dir)` writes them to `path`).
+
+### `meta.images` and `items[].image` — loaded images
+
+`meta.images` lists every file loaded with `d.load()`, in load order. A
+disassembly can span several separately-loaded files (a game's DFS
+files, traced together), each of which is saved as its own file:
+
+```jsonc
+"images": [
+  { "name": "Dunjun4", "load_addr": 1024, "end_addr": 3328,
+    "exec_addr": 1024 },
+  { "name": "Dunjun7", "load_addr": 3328, "end_addr": 4352 }
+]
+```
+
+`name` is the name declared to `d.load(name=...)`, else the loaded file's
+own name. `exec_addr` / `reload_addr` appear only when declared. A
+single-image disassembly has a one-entry list.
+
+When more than one image is loaded, each item carries `image`: the index
+into `meta.images` of the image holding its stored bytes (by
+`binary_addr`). It is omitted when there is only one image.

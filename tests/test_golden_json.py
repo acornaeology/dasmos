@@ -35,11 +35,13 @@ def _build_document() -> dict:
     # 12 bytes at 0x2000: lda #imm ; rts ; then a data run and a word.
     binary = bytes([0xA9, 0x00, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00,
                     0x00, 0x00, 0x00, 0x00])
-    tmp = Path(tempfile.mktemp())
-    tmp.write_bytes(binary)
+    # A fixed file name: the image's name (defaulting to the loaded
+    # file's) appears in ``meta.images``, so it must be stable.
+    binary_filepath = Path(tempfile.mkdtemp()) / "golden.bin"
+    binary_filepath.write_bytes(binary)
 
     d = Disassembler.create(cpu="6502")
-    d.load(tmp, 0x2000)
+    d.load(binary_filepath, 0x2000)
     d.entry(0x2000, name="start")
     d.subroutine(0x2000, name="start", title="Entry",
                  description="The entry point.")

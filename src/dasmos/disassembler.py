@@ -64,7 +64,7 @@ from dasmos.core.disassembly import (
 from dasmos.core.labels import LabelManager
 from dasmos.core.memory import BinaryAddr, MemoryImage
 from dasmos.core.move import BASE_MOVE_ID, Move, MoveManager
-from dasmos.core.program import ProgramInfo
+from dasmos.core.program import LoadedImage, ProgramInfo
 from dasmos.core.regions import IndexRegion, RegionManager
 from dasmos.cpu import Cpu, create_cpu
 from dasmos.exceptions import DasmosError
@@ -224,6 +224,8 @@ class Disassembler:
         # addresses) declared via :meth:`program`. ``None`` for a
         # plain position-fixed ROM disassembly.
         self._program_info: ProgramInfo | None = None
+        # Every file loaded with :meth:`load`, in load order (#49).
+        self._images: list[LoadedImage] = []
         # Deprecated → replacement constant-name aliases registered by
         # environments via :meth:`register_deprecated_constant_name`.
         # When a driver calls :meth:`constant` with a key in this dict,
@@ -351,10 +353,21 @@ class Disassembler:
         return self._file_header
 
     @property
+    def images(self) -> list[LoadedImage]:
+        """Every file loaded with :meth:`load`, in load order."""
+        return list(self._images)
+
+    @property
     def program_info(self) -> "ProgramInfo | None":
-        """Declared load-and-run program metadata, or ``None``
-        (see :meth:`program`)."""
-        return self._program_info
+        """Load-and-run metadata of a single-image program — declared
+        with :meth:`program`, or as ``exec_addr`` / ``reload_addr`` on
+        its :meth:`load` — or ``None``. A disassembly of several images
+        has no single program; see :attr:`images`."""
+        if self._program_info is not None:
+            return self._program_info
+        if len(self._images) == 1:
+            return self._images[0].program
+        return None
 
     def program(
         self,
@@ -386,6 +399,17 @@ class Disassembler:
         when a renderer needs it and it was not declared.
         """
         self._raise_if_disassembled("program")
+        if len(self._images) > 1:
+            raise DisassemblerError(
+                "program() describes a single-image program, but "
+                f"{len(self._images)} images are loaded; give each image "
+                "its exec_addr= / reload_addr= on d.load() instead"
+            )
+        if self._images and self._images[0].program is not None:
+            raise DisassemblerError(
+                "this image's exec_addr= / reload_addr= were already "
+                "given to d.load(); declare them in one place"
+            )
         self._program_info = ProgramInfo(
             load_addr=load_addr,
             exec_addr=exec_addr,
@@ -468,12 +492,55 @@ class Disassembler:
 
     # -- driver-script API: setup ---------------------------------------
 
-    def load(self, filepath, binary_addr, md5sum: str | None = None):
-        """Load a binary file at ``binary_addr``. Delegates to
+    def load(
+        self,
+        filepath,
+        binary_addr,
+        md5sum: str | None = None,
+        *,
+        name: str | None = None,
+        exec_addr: int | None = None,
+        reload_addr: int | None = None,
+    ):
+        """Load a binary file at ``binary_addr``, returning its
+        ``(start, end)`` binary range. Delegates to
         :class:`~dasmos.core.memory.MemoryImage.load`.
+
+        Each call loads one *image*. Several images can be disassembled
+        together so the trace follows calls between them — a game made
+        of separately-loaded files, say — and each remains its own file:
+
+        - ``name`` is the file's name, as a disc catalogue records it;
+          it defaults to the loaded file's own name.
+        - ``exec_addr`` / ``reload_addr`` are its load-and-run addresses
+          (see :meth:`program`, the shorthand for a single image).
+
+        With more than one image the beebasm renderer saves each as its
+        own file and the JSON lists them in ``meta.images``. A single
+        image renders as before.
         """
+        from pathlib import Path
         self._raise_if_disassembled("load")
-        return self._memory.load(filepath, binary_addr, md5sum=md5sum)
+        if self._program_info is not None:
+            raise DisassemblerError(
+                "program() describes a single-image program; to load "
+                "several images, give each its exec_addr= / reload_addr= "
+                "on d.load() instead"
+            )
+        # Validate the addresses before touching memory.
+        ProgramInfo(exec_addr=exec_addr, reload_addr=reload_addr)
+        start, end = self._memory.load(filepath, binary_addr, md5sum=md5sum)
+        self._images.append(
+            LoadedImage(
+                start=int(start),
+                end=int(end),
+                name=name if name is not None else Path(filepath).name,
+                name_declared=name is not None,
+                exec_addr=exec_addr,
+                reload_addr=reload_addr,
+            )
+        )
+        return start, end
 
     def add_move(
         self,
