@@ -54,7 +54,7 @@ from dasmos.core.expr import (
 from dasmos.core.format_hint import FormatHint
 from dasmos.core.markdown_asm import markdown_to_asm_text, strip_address_uri_links
 from dasmos.core.memory import BinaryAddr
-from dasmos.core.move import Move
+from dasmos.core.move import BASE_MOVE_ID, Move
 from dasmos.cpu import Opcode, OperandKind
 from dasmos.exceptions import MacroRenderError
 from dasmos.output import TextOutput
@@ -272,6 +272,10 @@ class AssemblerRenderer(TextRenderer):
         # uses ``b2r`` (most-recent move) and so misses inline anchors
         # from a non-most-recent move's body emission.
         self._inline_emitted_runtime_addrs: set[int] = set()
+        # Every label name emitted inline so far (as ``.name`` or as an
+        # inline ``name = base+offset``), so each is defined exactly
+        # once however many overlays reach its address.
+        self._inline_emitted_names: set[str] = set()
         # Macros invoked *natively* (as a value function or a statement)
         # during this render — only these get a definition emitted; a
         # macro used only via inline-expansion needs none.
@@ -626,7 +630,10 @@ class AssemblerRenderer(TextRenderer):
         end = src_addr + length
         move_id = move_ids.get(id(move))
         src_label = self._first_explicit_name(ir, src_addr)
-        dest_label = self._first_explicit_name(ir, dest_addr)
+        # The anchor for the trailer's copyblock / clear: a name this
+        # move's own body defines (or one belonging to no overlay), never
+        # another overlay's name from a later section.
+        dest_label = self._first_explicit_name(ir, dest_addr, move.move_id)
 
         # Position PC at the move's source binary address. Every
         # move emits this so the moves can appear in any order in
@@ -635,6 +642,7 @@ class AssemblerRenderer(TextRenderer):
         if src_label is not None:
             lines.append(self.inline_label(src_label))
             self._inline_emitted_runtime_addrs.add(src_addr)
+            self._inline_emitted_names.add(src_label)
 
         # Switch PC into the relocated destination range via the
         # backend's pseudo-PC hook (beebasm ``org``+``copyblock`` idiom;
@@ -699,31 +707,33 @@ class AssemblerRenderer(TextRenderer):
         for ann in ir.annotations.get_for_align(binary_addr, Align.BEFORE_LABEL):
             lines.extend(self._render_annotation(ann))
 
-        # Inline labels at this runtime address. Skip if a previous
-        # body walk has already emitted the inline anchor — this
-        # happens for multi-source-same-destination moves: the label
-        # at the shared destination is emitted once (during the move
-        # whose body walk reaches the address first), and the
-        # subsequent moves' body walks hit the same runtime address
-        # and would otherwise re-emit ``.<name>`` (which beebasm
-        # rejects with "Symbol already defined"). The ``copyblock``
-        # / ``clear`` directives in the per-move trailers still
-        # resolve the name correctly via the single inline definition.
+        # Inline labels at this runtime address. A name is emitted once:
+        # moves that overlay the same run range (ADFS's three NMI
+        # handlers at &0D0A) each walk the shared addresses, and beebasm
+        # rejects a second ``.<name>`` (D-023). Each overlay emits the
+        # names visible from it — its own (declared with ``move=``, or
+        # made for its references) plus any belonging to no overlay — so
+        # a name lands in the section of the move it describes (#53),
+        # and a name belonging to no overlay lands in the first section
+        # to reach it. The ``copyblock`` / ``clear`` directives in the
+        # per-move trailers resolve names wherever they are defined.
         label = ir.labels.get_label(runtime_addr)
-        if (
-            label is not None
-            and runtime_addr not in self._inline_emitted_runtime_addrs
-        ):
-            xref = self._format_inline_xref_summary(label, runtime_addr)
-            if xref is not None:
-                lines.append(xref)
+        overlay = active_move.move_id if active_move is not None else BASE_MOVE_ID
+        if label is not None:
+            visible = ir.labels.names_in_overlay(runtime_addr, overlay)
+            names = [n for n in visible if n not in self._inline_emitted_names]
+            first_visit = runtime_addr not in self._inline_emitted_runtime_addrs
+            if first_visit and (names or not label.explicit_name_texts()):
+                xref = self._format_inline_xref_summary(label, runtime_addr)
+                if xref is not None:
+                    lines.append(xref)
             # Insertion order, not alphabetical — preserves the label
             # author's intended sequence at addresses with multiple
             # names. The first-registered name is the structural one
             # and should lead.
-            names = label.explicit_names_in_insertion_order()
             for name in names:
                 lines.append(self.inline_label(name))
+                self._inline_emitted_names.add(name)
             if names:
                 self._inline_emitted_runtime_addrs.add(runtime_addr)
             # Mid-instruction labels INSIDE this classification's span
@@ -735,9 +745,8 @@ class AssemblerRenderer(TextRenderer):
             # against the inline anchor's PC, which IS at the base's
             # runtime. (Example: ``tube_cmd_lo = tube_dispatch_cmd+1``
             # inside move 1 of NFS-3.65.)
-            base_names = label.explicit_names_in_insertion_order()
-            if base_names:
-                base_name = base_names[0]
+            if visible:
+                base_name = visible[0]
                 for off in range(1, classification.length()):
                     inner_binary = binary_addr + off
                     if active_move is not None:
@@ -749,6 +758,19 @@ class AssemblerRenderer(TextRenderer):
                         inner_runtime = inner_binary
                     inner_label = ir.labels.get_label(inner_runtime)
                     if inner_label is None:
+                        continue
+                    inner_names = [
+                        name for name in ir.labels.names_in_overlay(
+                            inner_runtime, overlay,
+                        )
+                        if name not in self._inline_emitted_names
+                    ]
+                    # A nameless inner label (references only) still gets
+                    # its xref summary and annotations, once. Names that
+                    # are already defined, or that belong to another
+                    # overlay of this run range, are left alone.
+                    nameless = not inner_label.explicit_name_texts()
+                    if not inner_names and not (nameless and first_visit):
                         continue
                     # Mid-instruction labels live inside an opcode's
                     # operand bytes — the addr the human cares about
@@ -781,8 +803,9 @@ class AssemblerRenderer(TextRenderer):
                         inner_binary, Align.BEFORE_LINE,
                     ):
                         lines.extend(self._render_annotation(ann))
-                    for inner_name in inner_label.explicit_names_in_insertion_order():
+                    for inner_name in inner_names:
                         lines.append(f"{inner_name} = {base_name}+{off}")
+                        self._inline_emitted_names.add(inner_name)
                     self._inline_emitted_runtime_addrs.add(inner_runtime)
 
         for ann in ir.annotations.get_for_align(binary_addr, Align.AFTER_LABEL):
@@ -971,29 +994,35 @@ class AssemblerRenderer(TextRenderer):
             # emission yet (e.g. user added them after rendering
             # started — currently impossible but the codepath is
             # defensive).
-            if runtime_addr in self._inline_emitted_runtime_addrs:
-                continue
-            inline_anchor = (
-                in_range
-                and self._label_address_is_classification_start(ir, runtime_addr)
-            )
-            if inline_anchor:
-                continue
-            # Mid-instruction labels with a named base are emitted
-            # inline under the base as ``name = base+offset`` — skip
-            # the equate table to avoid double-definition.
-            if (
-                in_range
-                and self._label_has_inline_offset_base(ir, runtime_addr)
-            ):
-                continue
+            #
+            # The test is per name: where several moves overlay the
+            # address, each overlay anchors only its own names (#53), so
+            # one name can be anchored while another at the same address
+            # still needs its equate here.
             explicit_names = sorted({
                 name.text
                 for name_list in label.explicit_names.values()
                 for name in name_list
-            })
+            } - self._inline_emitted_names)
             if not explicit_names:
                 continue
+            if runtime_addr not in self._inline_emitted_runtime_addrs:
+                inline_anchor = (
+                    in_range
+                    and self._label_address_is_classification_start(
+                        ir, runtime_addr,
+                    )
+                )
+                if inline_anchor:
+                    continue
+                # Mid-instruction labels with a named base are emitted
+                # inline under the base as ``name = base+offset`` — skip
+                # the equate table to avoid double-definition.
+                if (
+                    in_range
+                    and self._label_has_inline_offset_base(ir, runtime_addr)
+                ):
+                    continue
             if (
                 not in_range
                 and not label.required
@@ -1085,16 +1114,16 @@ class AssemblerRenderer(TextRenderer):
         return out
 
     @staticmethod
-    def _first_explicit_name(ir, runtime_addr: int) -> str | None:
-        """First (alphabetically) explicit name on the label at this
-        runtime address, or ``None``. Used as the symbolic anchor for
-        relocation directives — beebasm's ``copyblock`` / ``clear`` /
-        ``org`` need named anchors to reference.
+    def _first_explicit_name(
+        ir, runtime_addr: int, move_id: int = BASE_MOVE_ID,
+    ) -> str | None:
+        """First-registered explicit name at this runtime address as seen
+        from the overlay laid out by ``move_id``, or ``None``. Used as
+        the symbolic anchor for relocation directives — beebasm's
+        ``copyblock`` / ``clear`` / ``org`` need named anchors to
+        reference.
         """
-        label = ir.labels.get_label(runtime_addr)
-        if label is None:
-            return None
-        names = label.explicit_names_in_insertion_order()
+        names = ir.labels.names_in_overlay(runtime_addr, move_id)
         return names[0] if names else None
 
     def _build_stats_block(self, ir) -> list[str]:
@@ -2011,11 +2040,17 @@ class AssemblerRenderer(TextRenderer):
 
         if kind is OperandKind.ADDRESS_8:
             v = ir.memory.get_u8(operand_addr)
-            return self._addr_text(ir, v, width=8, using_binary_addr=using_addr)
+            return self._addr_text(
+                ir, v, width=8, using_binary_addr=using_addr,
+                active_move=active_move,
+            )
 
         if kind in (OperandKind.ADDRESS_16, OperandKind.ADDRESS_16_INDIRECT):
             v = ir.memory.get_u16_le(operand_addr)
-            return self._addr_text(ir, v, width=16, using_binary_addr=using_addr)
+            return self._addr_text(
+                ir, v, width=16, using_binary_addr=using_addr,
+                active_move=active_move,
+            )
 
         if kind is OperandKind.RELATIVE_OFFSET:
             offset = ir.memory.get_u8(operand_addr)
@@ -2041,6 +2076,7 @@ class AssemblerRenderer(TextRenderer):
             target = base_runtime + opcode.length() + offset
             return self._addr_text(
                 ir, target, width=16, using_binary_addr=using_addr,
+                active_move=active_move,
             )
 
         # Defensive — the mode-name dispatch in _render_operand
@@ -2054,6 +2090,7 @@ class AssemblerRenderer(TextRenderer):
         *,
         width: int,
         using_binary_addr: int | None = None,
+        active_move=None,
     ) -> str:
         """Render an address operand: a label name if one is
         registered, otherwise the appropriate hex literal.
@@ -2086,7 +2123,18 @@ class AssemblerRenderer(TextRenderer):
             # they flow through this path naturally. Insertion order
             # picks the structural / first-registered name when an
             # address has multiple aliases.
-            names = label.explicit_names_in_insertion_order()
+            # Inside a move that overlays a shared run range, prefer the
+            # names that overlay sees (its own, then any belonging to no
+            # overlay) over another overlay's (#53); every name at the
+            # address has the same value, so this is about readability.
+            overlay = (
+                active_move.move_id if active_move is not None else BASE_MOVE_ID
+            )
+            visible = ir.labels.names_in_overlay(addr, overlay)
+            names = visible + [
+                n for n in label.explicit_names_in_insertion_order()
+                if n not in visible
+            ]
             if names:
                 if not self._label_address_is_in_range(ir, addr):
                     self._used_external_labels.add(addr)
@@ -2658,7 +2706,9 @@ class AssemblerRenderer(TextRenderer):
     def _render_ref_node(self, ir, node: Ref, active_move) -> str:
         """Resolve a :class:`Ref` to its label's best name, or a hex
         literal when the address has no name."""
-        return self._addr_text(ir, int(node.runtime_addr), width=16)
+        return self._addr_text(
+            ir, int(node.runtime_addr), width=16, active_move=active_move,
+        )
 
     #: Unary operators rendered as a *function-like* form that brackets
     #: its own operand (so operand precedence is irrelevant and no

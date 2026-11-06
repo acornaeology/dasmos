@@ -110,6 +110,12 @@ class Move:
         self._manager = manager
         self._move_id = move_id
 
+    @property
+    def move_id(self) -> int:
+        """This move's id within its :class:`MoveManager` (the key its
+        labels and annotations are recorded under)."""
+        return self._move_id
+
     def __enter__(self) -> "Move":
         self._manager._push_active(self._move_id)
         return self
@@ -385,6 +391,12 @@ class MoveManager:
                 f"on the active-move stack {self._active_move_ids}"
             )
         return BinaryLocation(binary_addr, move_id)
+
+    def move_id_for_binary_addr(self, binary_addr) -> int:
+        """The id of the move whose stored range holds ``binary_addr``
+        (the most recently added one, if several do), or
+        ``BASE_MOVE_ID`` for an unmoved byte."""
+        return self._move_id_for_binary_addr[int(binary_addr)]
 
     def move_ids_for_runtime_addr(self, runtime_addr) -> set[int]:
         """All move_ids whose dest range covers ``runtime_addr``.

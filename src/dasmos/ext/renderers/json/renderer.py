@@ -412,11 +412,9 @@ class JsonRenderer(Renderer[StructuredOutput]):
                 # positional arg becomes the entry's ``name``.
                 # Insertion order picks the structural / first-
                 # registered name (matches the asm renderer choice).
-                label = ir.labels.get_label(runtime_addr)
-                if label is not None:
-                    names = label.explicit_names_in_insertion_order()
-                    if names:
-                        entry["name"] = names[0]
+                names = self._names_seen_from(ir, runtime_addr, ba)
+                if names:
+                    entry["name"] = names[0]
                 if ann.title:
                     entry["title"] = markdown_normalize_headings(ann.title)
                 if ann.description:
@@ -593,6 +591,15 @@ class JsonRenderer(Renderer[StructuredOutput]):
 
     # -- per-item rendering ---------------------------------------------
 
+    @staticmethod
+    def _names_seen_from(ir, runtime_addr: int, binary_addr: int) -> list[str]:
+        """Explicit names at ``runtime_addr`` as seen from the stored
+        byte at ``binary_addr`` — i.e. from the overlay of the move that
+        byte belongs to (see ``LabelManager.names_in_overlay``)."""
+        return ir.labels.names_in_overlay(
+            runtime_addr, ir.moves.move_id_for_binary_addr(binary_addr),
+        )
+
     def _build_item(self, ir, binary_addr: int, c) -> dict[str, Any]:
         runtime_addr = int(ir.moves.b2r(BinaryAddr(binary_addr)))
         length = c.length()
@@ -609,20 +616,20 @@ class JsonRenderer(Renderer[StructuredOutput]):
 
         # Labels at the runtime address. Insertion order so the JSON
         # ``labels`` array matches the asm renderer's display sequence.
-        label = ir.labels.get_label(runtime_addr)
-        if label is not None:
-            names = label.explicit_names_in_insertion_order()
-            if names:
-                entry["labels"] = names
+        # Where several moves overlay this run address, an item carries
+        # its own overlay's names (and any belonging to no overlay), not
+        # another overlay's (#53).
+        names = self._names_seen_from(ir, runtime_addr, binary_addr)
+        if names:
+            entry["labels"] = names
 
         # Mid-instruction labels (sub-labels at addr+1..addr+length-1).
         sub_labels: dict[int, list[str]] = {}
         for off in range(1, length):
             inner_runtime = int(ir.moves.b2r(BinaryAddr(binary_addr + off)))
-            inner_label = ir.labels.get_label(inner_runtime)
-            if inner_label is None:
-                continue
-            inner_names = inner_label.explicit_names_in_insertion_order()
+            inner_names = self._names_seen_from(
+                ir, inner_runtime, binary_addr + off,
+            )
             if inner_names:
                 sub_labels[inner_runtime] = inner_names
         if sub_labels:
@@ -745,8 +752,10 @@ class JsonRenderer(Renderer[StructuredOutput]):
                 # ``target_label`` carries the EXPLICIT name only —
                 # expression aliases (``dispatch_0_hi-1``,
                 # ``evntv+1``) are emitted in the ``operand`` text
-                # but not as a target_label.
-                name = self._first_explicit_name(target_label)
+                # but not as a target_label. From inside an overlay of a
+                # shared run range, that overlay's own name is preferred.
+                seen = self._names_seen_from(ir, target, binary_addr)
+                name = seen[0] if seen else self._first_explicit_name(target_label)
                 if name is not None:
                     entry["target_label"] = name
 

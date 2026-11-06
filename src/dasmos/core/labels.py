@@ -216,6 +216,15 @@ class Label:
             for name in name_list
         }
 
+    def names_for_move(self, move_id: int) -> list[str]:
+        """The explicit names recorded for ``move_id``, de-duplicated,
+        in registration order."""
+        out: list[str] = []
+        for name in self.explicit_names.get(move_id, []):
+            if name.text not in out:
+                out.append(name.text)
+        return out
+
     def explicit_names_in_insertion_order(self) -> list[str]:
         """The explicit-name strings, de-duplicated but in registration
         order. Use this when rendering the visible label sequence at
@@ -313,6 +322,39 @@ class LabelManager:
 
     def get_label(self, runtime_addr) -> Label | None:
         return self._labels.get(RuntimeAddr(runtime_addr))
+
+    def names_in_overlay(self, runtime_addr, move_id: int) -> list[str]:
+        """The explicit names at ``runtime_addr`` as seen from the
+        overlay laid out by ``move_id`` (``BASE_MOVE_ID`` for unmoved
+        code), in registration order.
+
+        Several moves can share a run range — alternative overlays of
+        the same RAM. A name recorded for one of the moves covering
+        ``runtime_addr`` names that move's layout, so the other
+        overlays don't see it (#53); a name recorded for no covering
+        move is visible from all of them. Where at most one move covers
+        the address there is nothing to tell apart and every name is
+        returned.
+        """
+        label = self.get_label(runtime_addr)
+        if label is None:
+            return []
+        covering = self._move_manager.move_ids_for_runtime_addr(runtime_addr)
+        if len(covering) <= 1:
+            return label.explicit_names_in_insertion_order()
+        out: list[str] = []
+        for bucket, name_list in label.explicit_names.items():
+            if bucket != move_id and bucket in covering:
+                continue
+            for name in name_list:
+                if name.text not in out:
+                    out.append(name.text)
+        return out
+        covering = self._move_manager.move_ids_for_runtime_addr(runtime_addr)
+        for bucket, name_list in label.explicit_names.items():
+            if bucket in covering and any(n.text == name for n in name_list):
+                return bucket
+        return None
 
     def addr_for_name(self, name: str) -> RuntimeAddr | None:
         """Find the runtime address of a label by one of its names.

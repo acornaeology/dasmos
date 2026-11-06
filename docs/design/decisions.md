@@ -481,7 +481,9 @@ directly; `Disassembler.using_move` is removed.
 
 ### D-023: Multi-source-same-destination moves render via inline-label dedup
 
-**Status**: accepted, implemented (commit `2bfda49`).
+**Status**: accepted, implemented (commit `2bfda49`); amended by D-028,
+which makes the dedup per name and places each move's own labels in
+its own section.
 
 **Context**: Acorn ROMs commonly stage three different routine
 variants into the same RAM region (NMI handler, Tube write, Tube
@@ -744,3 +746,48 @@ backend, split by a `macro_calls_are_values` capability:
 - Refines the D-025 sketch: native emission is the *default* (the whole
   point is to see macros in the listing), with D-025's inline-expansion
   kept as the fallback for constructs a backend can't express.
+
+
+## 2026-11-06 — labels on overlaid run ranges
+
+### D-028: A label belongs to the move it names; overlays show their own
+
+**Status**: accepted, implemented (dasmos#53). Amends D-023.
+
+**Context**: D-023 emitted each label at a run address shared by several
+moves once, in whichever move's section reached it first, and recorded
+that "no downstream consumer cares about which move owns the inline
+anchor". Real use disproved that. The Dunjunz loader overlays keyboard
+and joystick images of &0400-&07FF; a handler declared with
+`move=low_joystick` rendered inside the keyboard section, over zeros,
+with the joystick code's own branch targets expressed as offsets of it.
+Readers, the JSON consumers and the website all see the wrong layout.
+The label model already recorded each name per move; the renderers
+flattened that away, and the auto-labeller, leftover splitting and
+offset-base synthesis resolved a shared run address without asking
+which move it belonged to.
+
+**Decision**: A name recorded for a move whose run range covers the
+address names that move's layout. `LabelManager.names_in_overlay()`
+gives the names visible from an overlay — its own plus those belonging
+to no covering move — and is the single rule every consumer applies:
+
+- each move's section emits the names visible from it, deduplicated
+  per *name* (beebasm still rejects a second definition), so a name
+  belonging to no overlay is still emitted once, in the first section,
+  exactly as under D-023;
+- operands inside an overlay prefer its visible names, and a move's
+  `copyblock` / `clear` anchor is one its own body defines;
+- JSON items list the names visible from their own move;
+- an auto-label made for references that all come from one move's code
+  belongs to that move, and is named after that move's layout; leftover
+  splitting and offset-base synthesis place each name in its owner's
+  layout.
+
+Where at most one move covers an address, every name is visible and
+nothing changes.
+
+**Consequences**: All fixture listings are byte-identical, including
+ADFS's three overlays of &0D0A, whose labels belong to no overlay. Driver
+authors can now label each overlay independently with `move=`.
+
