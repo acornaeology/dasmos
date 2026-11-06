@@ -741,9 +741,9 @@ nmi_patched_addr           = &ffff
 .nmi_workspace
     pha                                                               ; bc79: 48          H :0d00[1]          ; Save A (NMI must preserve all regs)
     lda fdc_1770_command_or_status                                    ; bc7a: ad 84 fe    ... :0d01[1]        ; Read WD1770 status register
-.sub_c0d04
+.c0d04
 ; &bc7e referenced 1 time by &bc0f
-nmi_rw_opcode = sub_c0d04+1
+nmi_rw_opcode = c0d04+1
     and #&1f                                                          ; bc7d: 29 1f       ). :0d04[1]         ; Mask to low 5 status bits
     cmp #3                                                            ; bc7f: c9 03       .. :0d06[1]         ; Status = 3 (data request)?
     bne nmi_check_status_error                                        ; bc81: d0 10       .. :0d08[1]         ; No: check for error or completion
@@ -796,9 +796,9 @@ nmi_write_addr_hi = nmi_rw_code+2
     bvc nmi_set_transfer_complete                                     ; bca7: 50 f5       P. :0d2e[1]         ; No: mark complete and return
     lda romsel_copy                                                   ; bca9: a5 f4       .. :0d30[1]         ; Save current ROM bank number
     pha                                                               ; bcab: 48          H :0d32[1]          ; Push onto stack
-.sub_c0d33
+.c0d33
 ; &bcad referenced 1 time by &bc29
-nmi_saved_rom = sub_c0d33+1
+nmi_saved_rom = c0d33+1
     lda #0                                                            ; bcac: a9 00       .. :0d33[1]         ; Select ROM bank 0
     sta romsel_copy                                                   ; bcae: 85 f4       .. :0d35[1]         ; Update ROM select shadow copy
     sta romsel                                                        ; bcb0: 8d 30 fe    .0. :0d37[1]        ; Switch to ROM bank 0
@@ -6348,9 +6348,9 @@ str_run_boot = str_l_boot+2
     jsr osbyte                                                        ; 9b75: 20 f4 ff     ..      ; Write all keys pressed information
     jsr print_inline_string                                           ; 9b78: 20 a0 92     ..   
     equs "Acorn ADFS", &0d                                            ; 9b7b: 41 63 6f... Aco...
-.sub_c9b86
+.c9b86
 ; &9b87 referenced 2 times by &9b3f, &9d0e
-boot_run_option = sub_c9b86+1
+boot_run_option = c9b86+1
     sta ext_vec_fsc_lo                                                ; 9b86: 8d a9 06    ...   
     jsr jmp_indirect_fscv                                             ; 9b89: 20 43 9a     C.   
     lda #osbyte_issue_service_request                                 ; 9b8c: a9 8f       ..       ; OSBYTE &8F: issue service 10
@@ -7423,9 +7423,9 @@ help_param_none = help_param_title+7
     sta wksp_csd_name,x                                               ; a14e: 9d 00 11    ...      ; Store in CSD/lib name workspace
     inx                                                               ; a151: e8          .        ; Next workspace byte
     dey                                                               ; a152: 88          .        ; Next table byte (backwards)
-.sub_ca153
+.ca153
 ; &a154 used as index base 1 time by &a14b
-la154 = sub_ca153+1
+la154 = ca153+1
     bpl copy_default_name_loop                                        ; a153: 10 f6       ..       ; Loop for 10 bytes
     rts                                                               ; a155: 60          `        ; Return
     equb &0d                                                          ; a156: 0d          .        ; CR (read backwards as name terminator)
@@ -13851,7 +13851,11 @@ save pydis_start, pydis_end
 ;     zp_osbyte_last_y:                          1
 
 ; Automatically generated labels:
+;     c0d04
+;     c0d33
 ;     c8dab
+;     c9b86
+;     ca153
 ;     l941f
 ;     l9dd3
 ;     l9ee4
@@ -13910,10 +13914,6 @@ save pydis_start, pydis_end
 ;     return_7
 ;     return_8
 ;     return_9
-;     sub_c0d04
-;     sub_c0d33
-;     sub_c9b86
-;     sub_ca153
 
 ; Stats:
 ;     Total size (Code + Data) = 16384 bytes

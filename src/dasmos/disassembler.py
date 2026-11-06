@@ -200,6 +200,10 @@ class Disassembler:
         self._annotations = AnnotationStore()
         self._entry_points: list[BinaryAddr] = []
         self._traced: set[int] = set()
+        # Binary start addresses of the ``Byte`` runs created by
+        # :meth:`_classify_leftovers` (as opposed to data the driver
+        # declared), so labels added later can still split them.
+        self._leftover_run_starts: set[int] = set()
         # Named values registered via :meth:`constant`. Distinct from
         # labels — these are arbitrary values (e.g. magic numbers,
         # hardware register addresses) the driver wants to give a name
@@ -1626,6 +1630,7 @@ class Disassembler:
         refs_by_addr = self._compute_references()
         if self.auto_labels_enabled:
             self._generate_auto_labels(refs_by_addr)
+            self._split_leftover_runs_at_labels()
             self._synthesise_offset_bases()
         self._disassembled = True
         return IntermediateRepresentation(self)
@@ -2008,6 +2013,7 @@ class Disassembler:
                 self._classifications.add_classification(
                     addr, Byte(run_end - addr),
                 )
+                self._leftover_run_starts.add(addr)
                 addr = run_end
 
     # -- internals: post-trace CPU-state pass ---------------------------
@@ -2326,21 +2332,64 @@ class Disassembler:
 
         return f"{self.auto_label_code_prefix}{addr_hex}"
 
-    def _synthesise_offset_bases(self) -> None:
-        """For every label at a *mid-instruction* runtime address,
-        ensure the start of the containing classification has a label
-        — synthesising an auto-label there if it doesn't.
+    def _split_leftover_runs_at_labels(self) -> None:
+        """Split leftover ``Byte`` runs at labels added after they were
+        formed.
 
-        Lets the renderer express the mid-instruction label as an
-        offset of the base (``nmi1_transfer_addr = sub_cfe15+1``)
-        instead of as a literal hex equate.
-
-        Uses ``auto_label_subroutine_prefix`` for the synthesised
-        base name regardless of the actual flow control at the base
-        address — the ``sub_c`` form is the right shape for an offset
-        target whether or not the byte happens to be a JSR target.
+        :meth:`_classify_leftovers` ends a run at every labelled address
+        so each label gets a line of its own, but it runs before
+        auto-labelling: a label that auto-labelling then puts on a data
+        byte (``LDA &0410`` into unclassified bytes) would land mid-run
+        and need an offset base instead (#50). Splitting the run there
+        restores the leftover rule. Only runs the leftover pass created
+        are split; the grouping of data the driver declared is kept.
         """
+        from dasmos.core.memory import BinaryAddr, RuntimeAddr
+        for runtime_addr, label in list(self._labels.items()):
+            if not label.explicit_name_texts():
+                continue
+            binary_loc, _ = self._moves.r2b(RuntimeAddr(int(runtime_addr)))
+            if binary_loc is None:
+                continue
+            binary_addr = int(binary_loc)
+            if int(self._moves.b2r(BinaryAddr(binary_addr))) != int(runtime_addr):
+                continue
+            start = self._classification_start(binary_addr)
+            if start is None or start == binary_addr:
+                continue
+            if start not in self._leftover_run_starts:
+                continue
+            self._classifications.split_at(binary_addr)
+            self._leftover_run_starts.add(binary_addr)
+
+    def _classification_start(self, binary_addr: int) -> int | None:
+        """The binary start of the classification covering
+        ``binary_addr``, or ``None`` when the byte is unclassified."""
         from dasmos.core.disassembly import INSIDE_A_CLASSIFICATION
+        start = binary_addr
+        while start >= 0:
+            c = self._classifications.get_classification(start)
+            if c is None:
+                return None
+            if c is not INSIDE_A_CLASSIFICATION:
+                return start
+            start -= 1
+        return None
+
+    def _synthesise_offset_bases(self) -> None:
+        """For every label inside a classification (an instruction, or
+        data the driver declared), ensure the start of the containing
+        classification has a label — synthesising an auto-label there
+        if it doesn't.
+
+        Lets the renderer express the inner label as an offset of the
+        base (``nmi1_transfer_addr = code_cfe15+1``) instead of as a
+        literal hex equate. The synthesised base is named by the same
+        rules as any other auto-label at that address — ``data_`` at the
+        start of data, ``code_`` at an instruction nobody calls — rather
+        than always as a subroutine (#50): nothing references the base,
+        it only anchors the offset.
+        """
         from dasmos.core.memory import BinaryAddr, RuntimeAddr
         bases_to_add: list[int] = []
         for runtime_addr, label in list(self._labels.items()):
@@ -2357,20 +2406,8 @@ class Disassembler:
             # instead.
             if int(self._moves.b2r(BinaryAddr(binary_addr))) != int(runtime_addr):
                 continue
-            c = self._classifications.get_classification(binary_addr)
-            if c is not INSIDE_A_CLASSIFICATION:
-                continue
-            # Walk back to find the classification's start.
-            start = binary_addr - 1
-            while start >= 0:
-                sc = self._classifications.get_classification(start)
-                if sc is None:
-                    start = -1
-                    break
-                if sc is not INSIDE_A_CLASSIFICATION:
-                    break
-                start -= 1
-            if start < 0:
+            start = self._classification_start(binary_addr)
+            if start is None or start == binary_addr:
                 continue
             start_runtime = int(self._moves.b2r(BinaryAddr(start)))
             existing = self._labels.get_label(start_runtime)
@@ -2379,7 +2416,7 @@ class Disassembler:
             if start_runtime not in bases_to_add:
                 bases_to_add.append(start_runtime)
         for start_runtime in bases_to_add:
-            name = f"{self.auto_label_subroutine_prefix}{start_runtime:04x}"
+            name = self._synthesise_auto_label_name(start_runtime, [])
             self._labels.add_label(
                 start_runtime, name,
                 is_autogenerated=True, is_optional=True,

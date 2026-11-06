@@ -1584,11 +1584,11 @@ lfe03 = nmi0_read_byte+2
 .nmi_single_byte_from_tube
     pha                                                               ; fe11: 48          H        ; Save A
     lda tube_r3_data                                                  ; fe12: ad fd fe    ...      ; Read byte from Tube R3
-.sub_cfe15
+.cfe15
 ; &fe16 referenced 1 time by &fe18
-nmi1_transfer_addr = sub_cfe15+1
+nmi1_transfer_addr = cfe15+1
 ; &fe17 referenced 1 time by &fe1d
-lfe17 = sub_cfe15+2
+lfe17 = cfe15+2
     sta irq_vector_hi                                                 ; fe15: 8d ff ff    ...      ; Store byte (address patched by setup)
     inc nmi1_transfer_addr                                            ; fe18: ee 16 fe    ...      ; Increment address low byte
     bne nmi1_done                                                     ; fe1b: d0 03       ..       ; No carry: skip high byte increment
@@ -2283,9 +2283,9 @@ save pydis_start, pydis_end
 ;     wrchv:                          1
 
 ; Automatically generated labels:
+;     cfe15
 ;     lfe03
 ;     lfe17
-;     sub_cfe15
 
 ; Stats:
 ;     Total size (Code + Data) = 2048 bytes

@@ -7071,8 +7071,8 @@ boot_string_offsets = boot_option_offsets+1
     sta l0d58,y                                                       ; 9ab8: 99 58 0d    .X.      ; Store to exec address workspace
     dey                                                               ; 9abb: 88          .        ; Next byte (descending)
     bpl copy_addr_loop                                                ; 9abc: 10 f7       ..       ; Loop until all 4 bytes copied
-.sub_c9abe
-svc5_dispatch_lo = sub_c9abe+1
+.c9abe
+svc5_dispatch_lo = c9abe+1
     jmp send_data_rx_ack                                              ; 9abe: 4c eb 97    L..      ; Enter common data-receive path  Svc 5 dispatch table low bytes
 ; ***************************************************************************************
 ; RX immediate: POKE setup
@@ -8914,6 +8914,7 @@ save pydis_start, pydis_end
 ;     zero_exec_header:                         1
 
 ; Automatically generated labels:
+;     c9abe
 ;     c9c15
 ;     c9c1f
 ;     c9c58
@@ -8926,7 +8927,6 @@ save pydis_start, pydis_end
 ;     l4655
 ;     l7845
 ;     l7dfd
-;     sub_c9abe
 
 ; Stats:
 ;     Total size (Code + Data) = 8192 bytes

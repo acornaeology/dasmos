@@ -3743,8 +3743,8 @@ listen_jmp_hi = reset_enter_listen+2
     ldx ws_0d6a                                                       ; 8a66: ae 6a 0d    .j.      ; Already initialised?
     bne start_rom_scan                                                ; 8a69: d0 04       ..       ; Yes: skip first-time init
     inx                                                               ; 8a6b: e8          .        ; X=1 (mark as initialised)
-.sub_c8a6c
-init_rom_scan = sub_c8a6c+2
+.c8a6c
+init_rom_scan = c8a6c+2
     stx last_break_type                                               ; 8a6c: 8e 8d 02    ...      ; Set ROM present flag
 ; &8a6f referenced 1 time by &8a69
 .start_rom_scan
@@ -13716,8 +13716,8 @@ net_channel_err_string = err_net_chan_not_found+2
     pha                                                               ; bb03: 48          H        ; Save byte value on stack
     jsr print_hex_byte                                                ; bb04: 20 2f 91     /.   
     lda #&20 ; ' '                                                    ; bb07: a9 20       .        ; A=&20: space character
-.sub_cbb09
-osasci_offset = sub_cbb09+2
+.cbb09
+osasci_offset = cbb09+2
     jsr osasci                                                        ; bb09: 20 e3 ff     ..      ; Print space character
 .done_print_hex_space
     pla                                                               ; bb0c: 68          h        ; Restore byte value from stack
@@ -15523,6 +15523,8 @@ save pydis_start, pydis_end
 ;     zp_0078:                                  1
 
 ; Automatically generated labels:
+;     c8a6c
+;     cbb09
 ;     l00ed
 ;     l0d71
 ;     l0e08
@@ -15540,8 +15542,6 @@ save pydis_start, pydis_end
 ;     loop_cbaf2
 ;     return_1
 ;     return_2
-;     sub_c8a6c
-;     sub_cbb09
 
 ; Stats:
 ;     Total size (Code + Data) = 16384 bytes
