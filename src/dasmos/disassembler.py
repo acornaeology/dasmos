@@ -63,7 +63,7 @@ from dasmos.core.disassembly import (
     ClassificationStore,
 )
 from dasmos.core.labels import LabelManager
-from dasmos.core.memory import BinaryAddr, MemoryImage
+from dasmos.core.memory import BinaryAddr, MemoryImage, RuntimeAddr
 from dasmos.core.move import BASE_MOVE_ID, Move, MoveManager
 from dasmos.core.program import LoadedImage, ProgramInfo
 from dasmos.core.regions import IndexRegion, RegionManager
@@ -199,8 +199,11 @@ class Disassembler:
         self._expressions = ExpressionRegistry()
         self._format_hints = FormatHintRegistry()
         self._annotations = AnnotationStore()
-        self._entry_points: list[BinaryAddr] = []
-        self._traced: set[int] = set()
+        # Trace seeds as ``(binary_addr, layout)``: the move the entry
+        # was resolved through (``BASE_MOVE_ID`` for in place) — see
+        # :meth:`_trace`.
+        self._entry_points: list[tuple[int, int]] = []
+        self._traced: set[tuple[int, int]] = set()
         # Binary start addresses of the ``Byte`` runs created by
         # :meth:`_classify_leftovers` (as opposed to data the driver
         # declared), so labels added later can still split them.
@@ -666,7 +669,7 @@ class Disassembler:
                 f"override=True to reclaim them as code.",
                 stacklevel=2,
             )
-        self._entry_points.append(binary_addr)
+        self._entry_points.append((int(binary_addr), binary_loc.move_id))
         if name is not None:
             self.label(runtime_addr, name, **label_kwargs)
 
@@ -1630,7 +1633,9 @@ class Disassembler:
         binary_addr = self._resolve_to_binary_addr(runtime_addr, move)
         move_id = self._move_to_id(move)
         if is_entry_point:
-            self._entry_points.append(binary_addr)
+            self._entry_points.append(
+                (int(binary_addr), self._entry_layout(runtime_addr, move, binary_addr)),
+            )
         if name is not None:
             self._labels.add_label(
                 runtime_addr, name,
@@ -1723,13 +1728,13 @@ class Disassembler:
         their respective trace paths.
         """
         opcodes = self._cpu.opcodes()
-        pending: deque[int] = deque(int(a) for a in self._entry_points)
+        pending: deque[tuple[int, int]] = deque(self._entry_points)
 
         while pending:
-            addr = pending.popleft()
-            if addr in self._traced:
+            addr, layout = pending.popleft()
+            if (addr, layout) in self._traced:
                 continue
-            self._traced.add(addr)
+            self._traced.add((addr, layout))
 
             if not self._memory.is_loaded(addr):
                 continue
@@ -1744,14 +1749,24 @@ class Disassembler:
             # tracing inside move N, prefer move N for ambiguous
             # runtime→binary lookups". For bytes outside any user
             # move (BASE_MOVE_ID), the active stack is left unchanged.
-            owning_move_id = self._moves._move_id_for_binary_addr[addr]
-            owning_move_ctx = (
-                self._moves.move_for_id(owning_move_id)
-                if owning_move_id != BASE_MOVE_ID
-                else nullcontext()
+            #
+            # The step runs in the path's *layout* (#55): the move it was
+            # reached through, or in place. Usually that is the move that
+            # owns the stored byte, but a ROM can also run moved bytes in
+            # place — ANFS's initialisation code at &BE83 is both the tail
+            # of page 6's source and the routine that performs the copy.
+            layout_move = (
+                self._moves.move_for_id(layout)
+                if layout != BASE_MOVE_ID
+                else None
+            )
+            to_runtime = (
+                layout_move.convert_binary_to_runtime_addr
+                if layout_move is not None
+                else (lambda binary: binary)
             )
 
-            with owning_move_ctx:
+            with layout_move if layout_move is not None else nullcontext():
                 opcode_byte = self._memory.get_u8(addr)
                 opcode = opcodes.get(opcode_byte)
                 if opcode is None:
@@ -1831,10 +1846,10 @@ class Disassembler:
                 # where execution resumes after the JSR, so its
                 # return value is enqueued unconverted.
                 from dasmos.cpu import FlowControl as _FlowControl
-                fall_through = addr + opcode.length()
+                fall_through = self._fall_through(addr, opcode.length(), layout)
                 flow = opcode.flow_control
                 if flow is _FlowControl.SEQUENTIAL:
-                    if 0 <= fall_through < self._memory.address_space_size:
+                    if fall_through is not None:
                         pending.append(fall_through)
                 elif flow in (
                     _FlowControl.RETURN,
@@ -1844,7 +1859,7 @@ class Disassembler:
                     pass
                 else:
                     target_runtime = opcode._compute_target_runtime(
-                        self._memory, addr, self._moves.b2r,
+                        self._memory, addr, to_runtime,
                     )
                     if (
                         flow is _FlowControl.SUBROUTINE_CALL
@@ -1857,27 +1872,94 @@ class Disassembler:
                             continuation is not None
                             and 0 <= continuation < self._memory.address_space_size
                         ):
-                            pending.append(continuation)
-                        target_binary = self._target_runtime_to_binary(
-                            target_runtime,
-                        )
-                        if target_binary is not None:
-                            pending.append(target_binary)
+                            # The hook resumes the same code stream.
+                            pending.append((
+                                continuation,
+                                self._layout_of(continuation, layout),
+                            ))
+                        target = self._resolve_trace_target(target_runtime)
+                        if target is not None:
+                            pending.append(target)
                         continue
-                    target_binary = self._target_runtime_to_binary(
-                        target_runtime,
-                    )
+                    target = self._resolve_trace_target(target_runtime)
                     if flow is _FlowControl.JUMP:
-                        if target_binary is not None:
-                            pending.append(target_binary)
+                        if target is not None:
+                            pending.append(target)
                     else:
                         # SUBROUTINE_CALL or CONDITIONAL_BRANCH: both
                         # have an implicit fall-through alongside the
                         # target.
-                        if 0 <= fall_through < self._memory.address_space_size:
+                        if fall_through is not None:
                             pending.append(fall_through)
-                        if target_binary is not None:
-                            pending.append(target_binary)
+                        if target is not None:
+                            pending.append(target)
+
+    def _entry_layout(self, runtime_addr, move, binary_addr) -> int:
+        """The layout a trace seed at ``runtime_addr`` runs in: the move it
+        is resolved through, or ``BASE_MOVE_ID`` for in place. A
+        :class:`~dasmos.core.memory.BinaryAddr` names a stored byte with
+        no layout of its own, so it runs as that byte's move lays it out."""
+        if isinstance(runtime_addr, BinaryAddr):
+            return self._moves.move_id_for_binary_addr(binary_addr)
+        if move is not None:
+            return self._move_to_id(move)
+        _binary, move_id = self._moves.r2b(RuntimeAddr(int(runtime_addr)))
+        if move_id is None:
+            return self._moves.move_id_for_binary_addr(binary_addr)
+        return move_id
+
+    def _layout_of(self, binary_addr: int, layout: int) -> int:
+        """``layout`` if its move stores ``binary_addr`` (or it is the
+        in-place layout), else the move that owns the byte."""
+        if layout == BASE_MOVE_ID:
+            return layout
+        if self._moves.move_for_id(layout).is_in_move_src(
+            binary_addr, include_end_address=False,
+        ):
+            return layout
+        return self._moves.move_id_for_binary_addr(binary_addr)
+
+    def _fall_through(
+        self, binary_addr: int, length: int, layout: int,
+    ) -> tuple[int, int] | None:
+        """Where execution continues after the ``length``-byte
+        instruction at ``binary_addr`` on a path running in ``layout``,
+        as ``(binary_addr, layout)``, or ``None`` when it can't be
+        resolved.
+
+        In place, that is the next stored byte. In a move's layout it is
+        the next *run* address, resolved like any other control-flow
+        target (#55): inside the move, the next stored byte; off the end
+        of the move, ``dest + length`` — in place, or in another move —
+        never the byte after the move's source.
+        """
+        if layout == BASE_MOVE_ID:
+            nxt = binary_addr + length
+            if 0 <= nxt < self._memory.address_space_size:
+                return nxt, BASE_MOVE_ID
+            return None
+        runtime = int(
+            self._moves.move_for_id(layout).convert_binary_to_runtime_addr(
+                BinaryAddr(binary_addr),
+            )
+        )
+        return self._resolve_trace_target(runtime + length)
+
+    def _resolve_trace_target(
+        self, target_runtime: int | None,
+    ) -> tuple[int, int] | None:
+        """Resolve a control-flow target's run address to the
+        ``(binary_addr, layout)`` the trace continues at, or ``None``.
+
+        The layout is the move the run address resolves through — the
+        active (current) move is preferred where several overlay it — or
+        ``BASE_MOVE_ID`` for an address that runs in place.
+        """
+        binary = self._target_runtime_to_binary(target_runtime)
+        if binary is None:
+            return None
+        _binary, move_id = self._moves.r2b(RuntimeAddr(int(target_runtime) & 0xffff))
+        return binary, BASE_MOVE_ID if move_id is None else move_id
 
     def _target_runtime_to_binary(
         self, target_runtime: int | None,

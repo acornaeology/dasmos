@@ -824,3 +824,46 @@ the overlay's own names, its own expression aliases
 **Consequences**: All fixture listings are byte-identical. On the
 Dunjunz disc, all 34 auto-labelled addresses in the overlaid &0400-&07FF
 resolve per overlay and the listing still reassembles byte-for-byte.
+
+
+## 2026-11-06 — tracing moved bytes
+
+### D-030: A trace path runs in the layout it was reached through
+
+**Status**: accepted, implemented (dasmos#55).
+
+**Context**: The tracer decided each step's layout from the move that
+*owns* the stored byte, a convention inherited from py8dis (`with
+movemanager.move_id_for_binary_addr[addr]:`), but computed a fall-through
+as the next *stored* byte. So code at the end of a move fell through to
+the byte after the move's source instead of to the run address after the
+move (Dunjunz: zeros at &4740 decoded as `brk`). Simply computing the
+fall-through in run space exposed the other half of the problem: ROMs
+also run moved bytes **in place**. ANFS 4.18's initialisation routine at
+&BE83 is both the tail of page 6's source and the routine that performs
+the copy, entered in place; NFS 3.65 runs the tail of page 6's source in
+place as its service-5 IRQ check, whose in-place `BNE` reaches the
+handler at &9666 — under the owning-move convention that branch was read
+as relocated and the handler was never traced.
+
+**Decision**: Each trace step carries its *layout*: the move its address
+was resolved through, or the base (in-place) layout. An entry point gets
+the layout of its resolution (`d.entry(run_addr)` inside `with move:` is
+relocated; the stored ROM address is in place); a control-flow target
+gets the layout its run address resolves through, the current layout
+preferred where moves overlay it. Within a step, relative branches and
+the fall-through are computed in that layout — in a move's layout the
+fall-through is the next *run* address (`dest + length` off the end), in
+place it is the next stored byte. The visited set is keyed by
+`(binary_addr, layout)`, so bytes run both ways are traced both ways.
+
+Only which bytes are traced as code depends on the layout. References,
+labels and rendering still read each stored byte as its owning move lays
+it out.
+
+**Consequences**: ANFS 4.18 is byte-identical. NFS 3.65 gains its
+service-5 IRQ handler (&9666-&9698), previously bare `equb`, and keeps
+the in-place `rts` at &9665. The other fixtures are unchanged. On
+Dunjunz, the stored bytes after `game_core`'s source are no longer
+decoded, so the driver's `d.byte(0x4740, ...)` workaround becomes
+optional.

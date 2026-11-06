@@ -369,8 +369,8 @@ class TestSubroutines:
         d = Disassembler(cpu=_StubCpu())
         d.subroutine(0x8000, "init")
         # Trace seeded:
-        from dasmos.core.memory import BinaryAddr
-        assert BinaryAddr(0x8000) in d._entry_points
+        from dasmos.core.move import BASE_MOVE_ID
+        assert (0x8000, BASE_MOVE_ID) in d._entry_points
         # Label defined:
         label = d.labels.get_label(0x8000)
         assert label is not None

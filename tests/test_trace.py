@@ -483,7 +483,8 @@ class TestEntryRegistration:
         d = Disassembler.create(cpu="6502")
         d.load(binary, 0x8000)
         d.entry(0x8000)
-        assert d._entry_points == [BinaryAddr(0x8000)]
+        # Seeds record the layout they run in: in place, here.
+        assert d._entry_points == [(0x8000, 0)]
 
     def test_entry_with_name_creates_label(self, tmp_path):
         binary = tmp_path / "p.bin"

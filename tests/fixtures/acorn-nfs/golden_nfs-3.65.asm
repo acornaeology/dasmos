@@ -271,10 +271,10 @@ tx_index                               = &0d4f
 tx_length                              = &0d50
 ; &0d50 referenced 4 times by &9bf3, &9c8b, &9ccd, &9d18
 tx_work_51                             = &0d51
-; &0d51 referenced 1 time by &9b2f
+; &0d51 referenced 2 times by &966f, &9b2f
 tx_in_progress                         = &0d52
 tx_work_57                             = &0d57
-; &0d57 referenced 1 time by &9b22
+; &0d57 referenced 2 times by &9680, &9b22
 l0d58                                  = &0d58
 ; &0d58 referenced 3 times by &9b4d, &9b52, &9b5e; also used as index base 1 time by &9ab8
 l0d59                                  = &0d59
@@ -288,11 +288,11 @@ printer_buf_ptr                        = &0d61
 tx_clear_flag                          = &0d62
 ; &0d62 referenced 7 times by &82c6, &85fb, &8ec5, &96ca, &9c52, &9ee7, &9fa7
 prot_status                            = &0d63
-; &0d63 referenced 5 times by &82e0, &8f34, &8f39, &92f6, &9a7c
+; &0d63 referenced 7 times by &82e0, &8f34, &8f39, &92f6, &9687, &968f, &9a7c
 rx_flags                               = &0d64
 ; &0d64 referenced 14 times by &8310, &8521, &852b, &854a, &8f85, &8fd4, &978b, &97ce, &9b6c, &9b71, &9b74, &9b7a, &9b81, &9b86
 saved_jsr_mask                         = &0d65
-; &0d65 referenced 2 times by &8f3c, &92f3
+; &0d65 referenced 3 times by &8f3c, &92f3, &968a
 econet_init_flag                       = &0d66
 ; &0d66 referenced 4 times by &96a4, &96cd, &9f8a, &9faa
 tube_flag                              = &0d67
@@ -408,13 +408,13 @@ video_ula_control                      = &fe20
 romsel                                 = &fe30
 ; &fe30 referenced 2 times by &9fba, &9fc8
 system_via_sr                          = &fe4a
-; &fe4a referenced 1 time by &9b3c
+; &fe4a referenced 2 times by &9675, &9b3c
 system_via_acr                         = &fe4b
-; &fe4b referenced 3 times by &9b2a, &9b32, &9b39
+; &fe4b referenced 5 times by &966a, &9672, &9b2a, &9b32, &9b39
 system_via_ifr                         = &fe4d
-; &fe4d referenced 1 time by &965e
+; &fe4d referenced 2 times by &965e, &967a
 system_via_ier                         = &fe4e
-; &fe4e referenced 1 time by &9b27
+; &fe4e referenced 2 times by &967d, &9b27
 econet_control1_or_status1             = &fea0
 ; &fea0 referenced 33 times by &80f8, &970c, &975a, &9773, &97ed, &97fe, &982a, &9848, &98a0, &98e7, &991d, &9932, &994a, &9afa, &9c10, &9c1a, &9c5a, &9c62, &9d02, &9d1d, &9d49, &9d83, &9db1, &9dc1, &9dd9, &9dfd, &9e20, &9e42, &9e73, &9e85, &9eaf, &9f72, &9f81
 econet_control23_or_status2            = &fea1
@@ -6224,20 +6224,31 @@ boot_string_offsets = boot_option_offsets+1
 
     org &9665
     rts                                                               ; 9665: 60          `        ; RTS (end of save_vdu_state data)
-    equb &8a, &48, &98, &48, &ad, &4b, &fe, &29, &e3, &0d, &51, &0d   ; 9666: 8a 48 98... .H....
-    equb &8d, &4b, &fe, &ad, &4a, &fe, &a9, &04, &8d, &4d, &fe, &8d   ; 9672: 8d 4b fe... .K....
-    equb &4e, &fe, &ac, &57, &0d                                      ; 967e: 4e fe ac... N.....
-    equb &c0, &86                                                     ; 9683: c0 86       ..       ; Y >= &86: above dispatch range
-    equb &b0, &0b                                                     ; 9685: b0 0b       ..       ; Out of range: skip protection
-    equb &ad, &63, &0d                                                ; 9687: ad 63 0d    .c.      ; Save current JSR protection mask
-    equb &8d, &65, &0d                                                ; 968a: 8d 65 0d    .e.      ; Backup to saved_jsr_mask
-    equb &09, &1c                                                     ; 968d: 09 1c       ..       ; Set protection bits 2-4
-    equb &8d, &63, &0d                                                ; 968f: 8d 63 0d    .c.      ; Apply protection during dispatch
+    txa                                                               ; 9666: 8a          .     
+    pha                                                               ; 9667: 48          H     
+    tya                                                               ; 9668: 98          .     
+    pha                                                               ; 9669: 48          H     
+    lda system_via_acr                                                ; 966a: ad 4b fe    .K.   
+    and #&e3                                                          ; 966d: 29 e3       ).    
+    ora tx_work_51                                                    ; 966f: 0d 51 0d    .Q.   
+    sta system_via_acr                                                ; 9672: 8d 4b fe    .K.   
+    lda system_via_sr                                                 ; 9675: ad 4a fe    .J.   
+    lda #4                                                            ; 9678: a9 04       ..    
+    sta system_via_ifr                                                ; 967a: 8d 4d fe    .M.   
+    sta system_via_ier                                                ; 967d: 8d 4e fe    .N.   
+    ldy tx_work_57                                                    ; 9680: ac 57 0d    .W.   
+    cpy #&86                                                          ; 9683: c0 86       ..       ; Y >= &86: above dispatch range
+    bcs dispatch_svc5                                                 ; 9685: b0 0b       ..       ; Out of range: skip protection
+    lda prot_status                                                   ; 9687: ad 63 0d    .c.      ; Save current JSR protection mask
+    sta saved_jsr_mask                                                ; 968a: 8d 65 0d    .e.      ; Backup to saved_jsr_mask
+    ora #&1c                                                          ; 968d: 09 1c       ..       ; Set protection bits 2-4
+    sta prot_status                                                   ; 968f: 8d 63 0d    .c.      ; Apply protection during dispatch
+; &9692 referenced 1 time by &9685
 .dispatch_svc5
-    equb &a9, &9b                                                     ; 9692: a9 9b       ..       ; Push return addr high (&9B)
-    equb &48                                                          ; 9694: 48          H        ; High byte on stack for RTS
-    equb &b9, &bf, &9a                                                ; 9695: b9 bf 9a    ...      ; Load dispatch target low byte
-    equb &48                                                          ; 9698: 48          H        ; Low byte on stack for RTS
+    lda #&9b                                                          ; 9692: a9 9b       ..       ; Push return addr high (&9B)
+    pha                                                               ; 9694: 48          H        ; High byte on stack for RTS
+    lda svc5_dispatch_lo,y                                            ; 9695: b9 bf 9a    ...      ; Load dispatch target low byte
+    pha                                                               ; 9698: 48          H        ; Low byte on stack for RTS
 .svc_5_unknown_irq
     rts                                                               ; 9699: 60          `        ; RTS = dispatch to PHA'd address
 ; ***************************************************************************************
@@ -7072,6 +7083,7 @@ boot_string_offsets = boot_option_offsets+1
     dey                                                               ; 9abb: 88          .        ; Next byte (descending)
     bpl copy_addr_loop                                                ; 9abc: 10 f7       ..       ; Loop until all 4 bytes copied
 .c9abe
+; &9abf used as index base 1 time by &9695
 svc5_dispatch_lo = c9abe+1
     jmp send_data_rx_ack                                              ; 9abe: 4c eb 97    L..      ; Enter common data-receive path  Svc 5 dispatch table low bytes
 ; ***************************************************************************************
@@ -8152,6 +8164,7 @@ save pydis_start, pydis_end
 ;     fs_work_4:                                7
 ;     install_nmi_handler:                      7
 ;     prot_flags:                               7
+;     prot_status:                              7
 ;     reject_reply:                             7
 ;     restore_args_return:                      7
 ;     rx_buf_offset:                            7
@@ -8178,7 +8191,6 @@ save pydis_start, pydis_end
 ;     need_release_tube:                        5
 ;     os_text_ptr:                              5
 ;     printer_buf_ptr:                          5
-;     prot_status:                              5
 ;     restore_xy_return:                        5
 ;     rx_ctrl:                                  5
 ;     rx_port:                                  5
@@ -8186,6 +8198,7 @@ save pydis_start, pydis_end
 ;     scout_status:                             5
 ;     set_fs_flag:                              5
 ;     stk_frame_p:                              5
+;     system_via_acr:                           5
 ;     tube_flag:                                5
 ;     tube_send_r1:                             5
 ;     tx_dst_net:                               5
@@ -8261,8 +8274,8 @@ save pydis_start, pydis_end
 ;     rx_complete_update_rxcb:                  3
 ;     save_fscv_args:                           3
 ;     save_fscv_args_with_ptrs:                 3
+;     saved_jsr_mask:                           3
 ;     setup_tx_and_send:                        3
-;     system_via_acr:                           3
 ;     test_inactive_retry:                      3
 ;     tube_claim_loop:                          3
 ;     tube_data_register_1:                     3
@@ -8381,7 +8394,6 @@ save pydis_start, pydis_end
 ;     run_fscv_cmd:                             2
 ;     rx_extra_byte:                            2
 ;     rxpol2:                                   2
-;     saved_jsr_mask:                           2
 ;     scan_for_colon:                           2
 ;     scout_complete:                           2
 ;     scout_copy_done:                          2
@@ -8405,6 +8417,9 @@ save pydis_start, pydis_end
 ;     store_tx_error:                           2
 ;     string_buf:                               2
 ;     sub_3_from_y:                             2
+;     system_via_ier:                           2
+;     system_via_ifr:                           2
+;     system_via_sr:                            2
 ;     terminate_filename:                       2
 ;     transfer_file_blocks:                     2
 ;     try_nfs_port_list:                        2
@@ -8427,6 +8442,8 @@ save pydis_start, pydis_end
 ;     tx_src_stn:                               2
 ;     tx_store_result:                          2
 ;     tx_tdra_error:                            2
+;     tx_work_51:                               2
+;     tx_work_57:                               2
 ;     zp_work_2:                                2
 ;     accept_frame:                             1
 ;     accept_local_net:                         1
@@ -8543,6 +8560,7 @@ save pydis_start, pydis_end
 ;     dispatch_cmd:                             1
 ;     dispatch_fs_error:                        1
 ;     dispatch_imm_op:                          1
+;     dispatch_svc5:                            1
 ;     divide_subtract:                          1
 ;     do_svc_dispatch:                          1
 ;     dofs01:                                   1
@@ -8838,11 +8856,9 @@ save pydis_start, pydis_end
 ;     strnh:                                    1
 ;     sub_4_from_y:                             1
 ;     subtract_adjust:                          1
+;     svc5_dispatch_lo:                         1
 ;     svc_dispatch_range:                       1
 ;     svc_unhandled_return:                     1
-;     system_via_ier:                           1
-;     system_via_ifr:                           1
-;     system_via_sr:                            1
 ;     tbcop1:                                   1
 ;     toggle_print_flag:                        1
 ;     transfer_loop_top:                        1
@@ -8894,8 +8910,6 @@ save pydis_start, pydis_end
 ;     tx_src_net:                               1
 ;     tx_store_error:                           1
 ;     tx_success_exit:                          1
-;     tx_work_51:                               1
-;     tx_work_57:                               1
 ;     txcb_dest:                                1
 ;     txcb_pos:                                 1
 ;     update_sequence_return:                   1
@@ -8930,11 +8944,11 @@ save pydis_start, pydis_end
 
 ; Stats:
 ;     Total size (Code + Data) = 8192 bytes
-;     Code                     = 7508 bytes (92%)
-;     Data                     = 684 bytes (8%)
+;     Code                     = 7559 bytes (92%)
+;     Data                     = 633 bytes (8%)
 ;
-;     Number of instructions   = 3634
-;     Number of data bytes     = 411 bytes
+;     Number of instructions   = 3657
+;     Number of data bytes     = 360 bytes
 ;     Number of data words     = 52 bytes
 ;     Number of string bytes   = 221 bytes
 ;     Number of strings        = 36
