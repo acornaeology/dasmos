@@ -867,3 +867,32 @@ the in-place `rts` at &9665. The other fixtures are unchanged. On
 Dunjunz, the stored bytes after `game_core`'s source are no longer
 decoded, so the driver's `d.byte(0x4740, ...)` workaround becomes
 optional.
+
+## 2026-11-07 — tracing into data
+
+### D-031: A trace path ends at bytes declared as data
+
+**Status**: accepted, implemented (dasmos#58).
+
+**Context**: The tracer never re-classifies bytes, but it followed the
+control flow of whatever opcode the bytes encoded even when they were
+already classified as data — a py8dis-compatible behaviour, pinned by a
+test. So a string after a call that never returns was rendered as a
+string, yet its leading bytes were decoded for flow: on the Dunjunz
+Master side, "L. Code" (`4C 2E 20`) was followed as `JMP &202E`, and
+"LOAD SCREEN" (`4C 4F 41`) as `JMP &414F`. Both targets split real
+instructions in another file.
+
+**Decision**: A trace step whose instruction would overlap any byte of a
+non-code classification ends its path, with no fall-through, no target
+and no subroutine hook. Bytes classified as *code* are still followed
+from every path that reaches them, including an instruction overlapping
+another (the `BIT`-skip idiom), since both decodings are real.
+`entry()` onto declared data therefore has no effect, as its warning
+says; `override=True` still reclaims the bytes as code.
+
+**Consequences**: None of the sibling projects' outputs change, and nor
+do the golden outputs. A driver no longer needs an extra `entry` or a
+non-returning `hook_subroutine` just to keep the trace out of a string
+it has already declared.
+

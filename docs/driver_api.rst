@@ -110,6 +110,14 @@ The optional second argument names the entry point, equivalent to a
 trace follows reachable code from each seed; bytes that no seed can
 reach end up classified as data unless you intervene.
 
+A path ends where it runs into bytes you have declared as data — with
+:meth:`~dasmos.Disassembler.byte`, :meth:`~dasmos.Disassembler.string`
+and the like, or bytes a subroutine hook classified as inline data.
+Whatever those bytes happen to look like is not followed: a command
+string that begins ``4C 2E 20`` is not a ``JMP &202E``. So declaring
+the string after a call that never returns is enough to stop the trace
+running into it.
+
 
 Naming things: labels and constants
 -----------------------------------

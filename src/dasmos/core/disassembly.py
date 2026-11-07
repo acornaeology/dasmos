@@ -98,6 +98,23 @@ class ClassificationStore:
         """
         return self._classifications.get(int(BinaryAddr(binary_addr)))
 
+    def holds_data(self, binary_addr, length: int = 1) -> bool:
+        """True iff any byte in the range belongs to a classification
+        that isn't code — bytes declared (or found) to be data."""
+        for addr in range(int(BinaryAddr(binary_addr)), int(binary_addr) + length):
+            start = self._span_start(addr)
+            if start is not None and not self._classifications[start].is_code(start):
+                return True
+        return False
+
+    def _span_start(self, binary_addr: int) -> int | None:
+        """The start of the classification span holding ``binary_addr``,
+        or ``None`` if the byte is unclassified."""
+        start = binary_addr
+        while self._classifications.get(start) is INSIDE_A_CLASSIFICATION:
+            start -= 1
+        return start if start in self._classifications else None
+
     def iter_classified_starts(self) -> Iterator[tuple[BinaryAddr, Classification]]:
         """Yield ``(addr, classification)`` for each *start* address,
         sorted by address. Inside-marker bytes are skipped.

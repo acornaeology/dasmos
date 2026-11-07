@@ -635,13 +635,13 @@ class Disassembler:
         **Precedence over eager classifications.** Environments (and
         earlier driver calls) may classify bytes *before* this call —
         e.g. ``acorn_sideways_rom`` classifying a non-``JMP`` entry slot
-        as data. The trace cannot reclassify already-classified bytes,
-        so a plain ``entry()`` on such an address would render the bytes
-        as data and *silently do nothing*. To make that footgun visible:
+        as data. The trace stops at bytes declared as data (#58), so a
+        plain ``entry()`` on such an address would *silently do
+        nothing*. To make that footgun visible:
 
         - ``override=False`` (the default): if any byte at the target is
           already classified, emit a :class:`UserWarning` — the entry
-          will not change how those bytes render.
+          has no effect on data, and won't reclassify code.
         - ``override=True``: clear the entire conflicting classification
           span at the target first, so the trace can claim the bytes as
           code. An explicit driver call made after ``use_environment()``
@@ -664,9 +664,9 @@ class Disassembler:
             )
             warnings.warn(
                 f"entry() at &{int(binary_addr):04x} targets bytes already "
-                f"classified ({kind}); the trace cannot reclassify them, so "
-                f"this entry will not change their rendering. Pass "
-                f"override=True to reclaim them as code.",
+                f"classified ({kind}); the trace neither reclassifies them "
+                f"nor follows data, so this entry has no effect on how they "
+                f"render. Pass override=True to reclaim them as code.",
                 stacklevel=2,
             )
         self._entry_points.append((int(binary_addr), binary_loc.move_id))
@@ -1713,186 +1713,136 @@ class Disassembler:
     def _trace(self) -> None:
         """Walk control flow from every registered entry point.
 
-        For each binary address visited:
-
-        - look up the opcode byte in the CPU's instruction table;
-        - if recognised, classify the address span (skipping if the
-          user has manually classified any of the bytes already);
-        - compute the next addresses via
-          :meth:`Opcode.next_addresses`;
-        - enqueue any that fall inside loaded memory.
-
-        Visited addresses are tracked so the trace terminates on
-        cycles. Addresses outside loaded memory, undefined opcodes,
-        and operand bytes that aren't loaded all silently terminate
-        their respective trace paths.
+        Each trace step is a ``(binary_addr, layout)`` pair: the stored
+        byte to decode and the layout the path runs in (#55). Steps are
+        visited once each, so the trace terminates on cycles;
+        :meth:`_trace_step` decodes one instruction and says where its
+        path continues.
         """
         opcodes = self._cpu.opcodes()
         pending: deque[tuple[int, int]] = deque(self._entry_points)
-
         while pending:
-            addr, layout = pending.popleft()
-            if (addr, layout) in self._traced:
+            step = pending.popleft()
+            if step in self._traced:
                 continue
-            self._traced.add((addr, layout))
+            self._traced.add(step)
+            pending.extend(self._trace_step(*step, opcodes))
 
-            if not self._memory.is_loaded(addr):
-                continue
+    def _trace_step(
+        self, addr: int, layout: int, opcodes,
+    ) -> list[tuple[int, int]]:
+        """Decode the instruction at ``addr`` on a path running in
+        ``layout``, classify it, and return the ``(binary_addr, layout)``
+        steps the path continues at.
 
-            # Push the binary's owning move on the active-move stack
-            # for the duration of this step. Mirrors py8dis's
-            # ``with movemanager.move_id_for_binary_addr[binary_addr]:``
-            # wrapper around its disassemble() step (py8dis/cpu.py).
-            # When the trace step computes a control-flow target as
-            # a runtime address, downstream :meth:`MoveManager.r2b`
-            # disambiguation favours the active move — i.e. "while
-            # tracing inside move N, prefer move N for ambiguous
-            # runtime→binary lookups". For bytes outside any user
-            # move (BASE_MOVE_ID), the active stack is left unchanged.
-            #
-            # The step runs in the path's *layout* (#55): the move it was
-            # reached through, or in place. Usually that is the move that
-            # owns the stored byte, but a ROM can also run moved bytes in
-            # place — ANFS's initialisation code at &BE83 is both the tail
-            # of page 6's source and the routine that performs the copy.
-            layout_move = (
-                self._moves.move_for_id(layout)
-                if layout != BASE_MOVE_ID
-                else None
+        A path ends — no successors — at an unloaded byte, an undefined
+        opcode, an instruction whose operand isn't loaded, and bytes
+        declared as data (#58): those are not an instruction, so nothing
+        they happen to look like (a ``JMP``, a branch, a call) is
+        followed.
+        """
+        if not self._memory.is_loaded(addr):
+            return []
+        opcode = opcodes.get(self._memory.get_u8(addr))
+        if opcode is None:
+            return []
+        if not self._memory.is_loaded(addr, opcode.length()):
+            # The operand isn't loaded: the renderer couldn't show the
+            # instruction, so the opcode byte is left to the leftover
+            # pass as a Byte(1).
+            return []
+        if self._classifications.holds_data(addr, opcode.length()):
+            return []
+
+        # The step runs in the path's layout (#55): the move it was
+        # reached through, or in place. Usually that is the move that
+        # owns the stored byte, but a ROM can also run moved bytes in
+        # place — ANFS's initialisation code at &BE83 is both the tail
+        # of page 6's source and the routine that performs the copy.
+        # The layout's move is active for the step, so a run address
+        # several moves overlay resolves to this one where it can.
+        layout_move = (
+            self._moves.move_for_id(layout) if layout != BASE_MOVE_ID else None
+        )
+        with layout_move if layout_move is not None else nullcontext():
+            self._classify_traced_instruction(addr, opcode)
+            return self._successors(addr, layout, layout_move, opcode)
+
+    def _classify_traced_instruction(self, addr: int, opcode) -> None:
+        """Record the traced instruction at ``addr`` as code, unless its
+        bytes are already classified (an earlier path decoded them, or
+        decoded an instruction overlapping them) or it straddles a move
+        boundary.
+
+        An opcode whose bytes straddle a move boundary can't be rendered
+        as one instruction: its bytes must land in different run spaces,
+        and an assembler emits one instruction's bytes contiguously at
+        one PC. Its bytes are left to the leftover pass, which marks each
+        as a ``Byte(1)`` under the right move — valid (NFS 3.65's BVC at
+        &9564 straddles moves 3 and 4) but surprising enough to warn
+        about.
+        """
+        if self._classifications.is_classified(addr, opcode.length()):
+            return
+        if self._opcode_straddles_move_boundary(addr, opcode.length()):
+            warnings.warn(
+                f"opcode at &{addr:04x} ({opcode.default_mnemonic()}, "
+                f"{opcode.length()} bytes) straddles a move "
+                f"boundary; rendering each byte individually as "
+                f"``equb`` since one instruction can't span two "
+                f"runtime spaces.",
+                stacklevel=4,
             )
-            to_runtime = (
-                layout_move.convert_binary_to_runtime_addr
-                if layout_move is not None
-                else (lambda binary: binary)
-            )
+            return
+        self._classifications.add_classification(addr, opcode)
 
-            with layout_move if layout_move is not None else nullcontext():
-                opcode_byte = self._memory.get_u8(addr)
-                opcode = opcodes.get(opcode_byte)
-                if opcode is None:
-                    # Undefined opcode — terminate this path.
-                    continue
-                if not self._memory.is_loaded(addr, opcode.length()):
-                    # The opcode byte is loaded but its operand isn't
-                    # — we can't safely classify (and the renderer
-                    # would crash trying to read the operand).
-                    # Terminate this path; the opcode byte falls
-                    # through to the leftover pass as a Byte(1).
-                    continue
+    def _successors(
+        self, addr: int, layout: int, layout_move, opcode,
+    ) -> list[tuple[int, int]]:
+        """The ``(binary_addr, layout)`` steps execution continues at
+        after the instruction at ``addr``, on a path running in
+        ``layout``.
 
-                # Classify (skip if any byte in the range is already
-                # classified — could be a manual byte() call or a prior
-                # trace path overlapping us).
-                #
-                # Move boundary: an opcode whose byte range straddles
-                # a move boundary can't be rendered as a single
-                # instruction — its bytes need to land in different
-                # runtime-address spaces to satisfy each move's
-                # copyblock, and beebasm assembles one instruction's
-                # bytes contiguously at one PC. Leave the bytes for
-                # the leftover-classify pass to mark individually as
-                # ``Byte(1)`` so each lands under the right move at
-                # render time.
-                #
-                # Surface a warning so the driver author knows what
-                # the rendered output WILL look like (split equbs
-                # rather than the original instruction) — the
-                # scenario itself is valid (NFS-3.65's BVC at &9564
-                # straddling moves 3 and 4 reflects real ROM
-                # behaviour) but the rendering is surprising enough
-                # to flag.
-                if not self._classifications.is_classified(addr, opcode.length()):
-                    if self._opcode_straddles_move_boundary(addr, opcode.length()):
-                        import warnings
-                        warnings.warn(
-                            f"opcode at &{addr:04x} ({opcode.default_mnemonic()}, "
-                            f"{opcode.length()} bytes) straddles a move "
-                            f"boundary; rendering each byte individually as "
-                            f"``equb`` since one instruction can't span two "
-                            f"runtime spaces.",
-                            stacklevel=2,
-                        )
-                    else:
-                        try:
-                            self._classifications.add_classification(addr, opcode)
-                        except ClassificationError:
-                            # Defensive — is_classified should have
-                            # caught this. Continue tracing regardless.
-                            pass
-
-                # Continue tracing whether we classified or not — the
-                # control flow is determined by the opcode, not by
-                # who owns the classification record.
-                #
-                # Compute control-flow targets in RUNTIME space then
-                # convert back to binary via the move map. The active
-                # move (pushed at the top of this step) acts as the
-                # tiebreaker for runtime addresses covered by more
-                # than one move's destination — "while tracing inside
-                # move N, prefer move N for ambiguous lookups". This
-                # mirrors py8dis's runtime-aware tracer (cpu6502.py
-                # OpcodeAbs.disassemble + OpcodeBranch.disassemble).
-                #
-                # For non-moved code, b2r/r2b are identity, so the
-                # only difference vs. the legacy operand-as-binary
-                # arithmetic is when an operand value sits inside a
-                # moved region — there the legacy form would queue
-                # an unloaded binary (the operand is a runtime addr
-                # whose binary correspondent lives somewhere else).
-                #
-                # Subroutine hooks fire when the call's runtime target
-                # matches a registered hook (the hook dict is keyed
-                # by runtime). The hook returns a binary address
-                # where execution resumes after the JSR, so its
-                # return value is enqueued unconverted.
-                from dasmos.cpu import FlowControl as _FlowControl
-                fall_through = self._fall_through(addr, opcode.length(), layout)
-                flow = opcode.flow_control
-                if flow is _FlowControl.SEQUENTIAL:
-                    if fall_through is not None:
-                        pending.append(fall_through)
-                elif flow in (
-                    _FlowControl.RETURN,
-                    _FlowControl.BREAK,
-                    _FlowControl.UNDEFINED,
-                ):
-                    pass
-                else:
-                    target_runtime = opcode._compute_target_runtime(
-                        self._memory, addr, to_runtime,
-                    )
-                    if (
-                        flow is _FlowControl.SUBROUTINE_CALL
-                        and target_runtime is not None
-                        and target_runtime in self._subroutine_hooks
-                    ):
-                        hook = self._subroutine_hooks[target_runtime]
-                        continuation = hook(self, addr)
-                        if (
-                            continuation is not None
-                            and 0 <= continuation < self._memory.address_space_size
-                        ):
-                            # The hook resumes the same code stream.
-                            pending.append((
-                                continuation,
-                                self._layout_of(continuation, layout),
-                            ))
-                        target = self._resolve_trace_target(target_runtime)
-                        if target is not None:
-                            pending.append(target)
-                        continue
-                    target = self._resolve_trace_target(target_runtime)
-                    if flow is _FlowControl.JUMP:
-                        if target is not None:
-                            pending.append(target)
-                    else:
-                        # SUBROUTINE_CALL or CONDITIONAL_BRANCH: both
-                        # have an implicit fall-through alongside the
-                        # target.
-                        if fall_through is not None:
-                            pending.append(fall_through)
-                        if target is not None:
-                            pending.append(target)
+        Control-flow targets are computed as run addresses in the
+        layout, then resolved back to stored bytes (the active move
+        breaking ties between overlays). A call whose target has a
+        subroutine hook continues wherever the hook says — a binary
+        address in the same code stream — instead of after the call.
+        """
+        from dasmos.cpu import FlowControl
+        fall_through = self._fall_through(addr, opcode.length(), layout)
+        flow = opcode.flow_control
+        if flow is FlowControl.SEQUENTIAL:
+            return [fall_through] if fall_through is not None else []
+        if flow in (FlowControl.RETURN, FlowControl.BREAK, FlowControl.UNDEFINED):
+            return []
+        to_runtime = (
+            layout_move.convert_binary_to_runtime_addr
+            if layout_move is not None
+            else (lambda binary: binary)
+        )
+        target_runtime = opcode._compute_target_runtime(self._memory, addr, to_runtime)
+        successors = []
+        if (
+            flow is FlowControl.SUBROUTINE_CALL
+            and target_runtime is not None
+            and target_runtime in self._subroutine_hooks
+        ):
+            continuation = self._subroutine_hooks[target_runtime](self, addr)
+            if (
+                continuation is not None
+                and 0 <= continuation < self._memory.address_space_size
+            ):
+                successors.append(
+                    (continuation, self._layout_of(continuation, layout)),
+                )
+        elif flow is not FlowControl.JUMP and fall_through is not None:
+            # A call or conditional branch also falls through.
+            successors.append(fall_through)
+        target = self._resolve_trace_target(target_runtime)
+        if target is not None:
+            successors.append(target)
+        return successors
 
     def _entry_layout(self, runtime_addr, move, binary_addr) -> int:
         """The layout a trace seed at ``runtime_addr`` runs in: the move it

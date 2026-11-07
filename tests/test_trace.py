@@ -287,11 +287,10 @@ class TestTraceLoop:
         jmp = ir.classifications.get_classification(0x8000)
         assert isinstance(jmp, Opcode) and jmp.operation is Operation.JMP
 
-    def test_trace_skips_pre_classified_data_in_path(self, tmp_path):
+    def test_trace_stops_at_pre_classified_data_in_path(self, tmp_path):
         # 0x8000: NOP       (ea)  — falls through to 0x8001
         # 0x8001: NOP       (ea)  — manually pre-classified as Byte;
-        #                          trace would otherwise re-classify
-        #                          this as a NOP opcode
+        #                          the driver says it isn't code
         # 0x8002: RTS       (60)
         binary = tmp_path / "p.bin"
         binary.write_bytes(b"\xea\xea\x60")
@@ -306,11 +305,9 @@ class TestTraceLoop:
         manual = ir.classifications.get_classification(0x8001)
         assert isinstance(manual, Byte)
 
-        # Trace continued past the pre-classified data and reached RTS.
-        # py8dis-compatible: trace doesn't terminate at user-classified
-        # data; it just doesn't re-classify there.
-        rts = ir.classifications.get_classification(0x8002)
-        assert isinstance(rts, Opcode) and rts.operation is Operation.RTS
+        # The path ends at the data (#58): the RTS beyond it is reached
+        # by nothing else, so it is left as data too.
+        assert not isinstance(ir.classifications.get_classification(0x8002), Opcode)
 
 
 class TestTraceUnderOverlappingMoves:
