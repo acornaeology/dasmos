@@ -579,8 +579,8 @@ OSBYTE_DESCRIPTIONS: dict[int, str] = {
     0x7e: "Clear escape condition and perform escape effects",
     0x7f: "Check for end-of-file on file handle Y",
     0x80: "Read ADC channel X or buffer status",
-    0x81: "INKEY: Scan for a key with positive X, or read internal "
-          "key number EOR 128 for negative X",
+    0x81: "INKEY: Read a key within the time limit in X and Y, or "
+          "with Y = &FF test for the key with negative INKEY number X",
     0x82: "Read high-order address (machine high word)",
     0x83: "Read top of operating system RAM address (OSHWM)",
     0x84: "Read top of available user RAM (HIMEM)",

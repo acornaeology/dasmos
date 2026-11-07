@@ -2021,11 +2021,13 @@ class TestAcornMosInlineAutoComments:
 
 
 class TestAcornMosInkeyHint:
-    """OSBYTE &79 / &81 INKEY auto-detection: when X's high bit is
-    set AND ``(255 - X) EOR 128`` matches a named INKEY scan code,
-    the analyser registers an ``inkey_key_<name>`` constant and
-    tags the LDX operand with :class:`FormatHint.INKEY` so the
-    renderer emits ``(255 - inkey_key_<name>) EOR 128``.
+    """OSBYTE &79 INKEY auto-detection: when X's high bit is set AND
+    ``(255 - X) EOR 128`` matches a named INKEY scan code, the
+    analyser registers an ``inkey_key_<name>`` constant and tags the
+    LDX operand with :class:`FormatHint.INKEY` so the renderer emits
+    ``(255 - inkey_key_<name>) EOR 128``. OSBYTE &81, whose X is the
+    INKEY number itself and only with Y = &FF, is covered by
+    ``test_osbyte_inkey.py`` (#59).
     """
 
     @staticmethod
@@ -2048,13 +2050,13 @@ class TestAcornMosInkeyHint:
                 return ann.text
         return None
 
-    def test_osbyte_81_with_ctrl_attaches_inkey_aware_inline(self, tmp_path):
+    def test_osbyte_79_with_ctrl_attaches_inkey_aware_inline(self, tmp_path):
         # When the INKEY pattern fires, the JSR-site inline replaces
         # the bare ``osbyte: inkey`` description with one that names
         # the specific key — strictly more informative.
         d = self._make(
             tmp_path,
-            bytes([0xa2, 0x81, 0xa9, 0x81, 0x20, 0xf4, 0xff, 0x60]),
+            bytes([0xa2, 0x81, 0xa9, 0x79, 0x20, 0xf4, 0xff, 0x60]),
         )
         ir = d.disassemble()
         # JSR is at 0x1004 (LDX at 0x1000 + LDA at 0x1002).
@@ -2093,15 +2095,15 @@ class TestAcornMosInkeyHint:
         assert "Test for" not in comment
         assert "key pressed" not in comment
 
-    def test_osbyte_81_with_ctrl_registers_hint_and_constant(self, tmp_path):
-        # LDX #&81 ; LDA #&81 ; JSR osbyte ; RTS
+    def test_osbyte_79_with_ctrl_registers_hint_and_constant(self, tmp_path):
+        # LDX #&81 ; LDA #&79 ; JSR osbyte ; RTS
         # X=&81 decodes to inkey_key_ctrl: (255 - 0x81) EOR 0x80 =
         # 0xfe = 254 (the unsigned form of -2 from py8dis's
         # inkey_enum). LDX's operand byte is at 0x1001.
         from dasmos.core.format_hint import FormatHint
         d = self._make(
             tmp_path,
-            bytes([0xa2, 0x81, 0xa9, 0x81, 0x20, 0xf4, 0xff, 0x60]),
+            bytes([0xa2, 0x81, 0xa9, 0x79, 0x20, 0xf4, 0xff, 0x60]),
         )
         ir = d.disassemble()
         # FormatHint.INKEY was attached at the LDX operand.
@@ -2182,7 +2184,7 @@ class TestAcornMosInkeyHint:
         from dasmos.ext.renderers.beebasm.renderer import BeebasmRenderer
         d = self._make(
             tmp_path,
-            bytes([0xa2, 0x81, 0xa9, 0x81, 0x20, 0xf4, 0xff, 0x60]),
+            bytes([0xa2, 0x81, 0xa9, 0x79, 0x20, 0xf4, 0xff, 0x60]),
         )
         ir = d.disassemble()
         renderer = BeebasmRenderer()

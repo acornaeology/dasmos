@@ -756,17 +756,21 @@ Two sugar methods cover the cases used most often:
    # char_literal_style.
    d.char_literal(0x9412)
 
-   # The byte at &a3c7 is the negative-X-form INKEY scan code an
-   # OSBYTE &79 / &81 caller loads to scan for one specific key.
+   # The byte at &a3c7 is the scan code an OSBYTE &79 caller loads
+   # into X to test one specific key: its internal key number EOR &80.
    # Renders as ``(255 - inkey_key_ctrl) EOR 128`` etc.
    d.inkey_code(0xa3c7)
 
-When the ``acorn_mos`` env's OSBYTE analyser detects a recognisable
-INKEY pattern (``A=&79`` or ``A=&81`` with ``X`` carrying a known
-scan code), it registers ``FormatHint.INKEY`` automatically — call
-:meth:`~dasmos.Disassembler.inkey_code` only when the analyser
-can't infer the pattern (a scan code in a pre-computed table, or
-loaded into ``X`` through an indirect path). Driver-supplied
+When the ``acorn_mos`` env's OSBYTE analyser detects a test of a named
+key, it renders the ``LDX`` operand automatically. OSBYTE &79 with a
+known ``X`` of &80 or more gets ``FormatHint.INKEY``. OSBYTE &81 with
+``Y = &FF`` is different: its ``X`` is the negative INKEY number itself
+(``INKEY(-2)`` passes &FE for CTRL), so it renders as the
+``inkey_key_<name>`` constant. With ``Y`` = 0-&7F, OSBYTE &81's ``X``
+and ``Y`` are a time limit instead, and the call is commented as a timed
+wait for any key. Call :meth:`~dasmos.Disassembler.inkey_code` only when
+the analyser can't infer an OSBYTE &79 scan code (one in a pre-computed
+table, or loaded into ``X`` through an indirect path). Driver-supplied
 expressions via :meth:`~dasmos.Disassembler.expr` always win over
 hints, so ``d.expr(operand_addr, "my_text")`` overrides any analyser
 or driver hint at the same address.

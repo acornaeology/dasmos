@@ -1405,10 +1405,11 @@ class Disassembler:
     ):
         """Sugar for ``format_hint(runtime_addr, FormatHint.INKEY)``.
 
-        Declares that the operand byte at ``runtime_addr`` is the
-        negative-X form of an Acorn INKEY scan code (the byte loaded
-        into X for ``OSBYTE &79`` / ``OSBYTE &81`` to scan for a
-        specific key by its internal number). Renderers express the
+        Declares that the operand byte at ``runtime_addr`` is an Acorn
+        keyboard scan code: the byte loaded into X for ``OSBYTE &79``
+        to test one key, its internal key number EOR &80. (``OSBYTE
+        &81``'s X is the INKEY number itself, so an ``inkey_key_<name>``
+        constant renders it as it stands.) Renderers express the
         byte symbolically as ``(255 - inkey_key_<name>) EOR 128``
         when the value matches a named INKEY key in the BBC's
         scan-code table; bytes that don't match any named key fall

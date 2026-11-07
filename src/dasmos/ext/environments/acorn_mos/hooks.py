@@ -29,6 +29,7 @@ backward-peek heuristic.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from dasmos.core.annotations import Align
@@ -53,44 +54,80 @@ from dasmos.ext.environments.acorn_mos.enums import (
 )
 
 
-# OSBYTE actions that scan / wait for a specific physical key whose
-# scan code arrives in X as ``(255 - inkey_key_<name>) EOR 128``:
+# OSBYTE actions that can test whether one key is pressed, each with
+# its own encoding of the key in X:
 #
-#   &79  ``osbyte_scan_keyboard``   — scan keyboard for one key
-#   &81  ``osbyte_inkey``           — INKEY (read keyboard with time-limit)
-#
-# Both have other modes too — &79 with X<&80 reads a key matrix
-# row; &81 with X+Y as a positive 16-bit time limit waits for any
-# key. The INKEY hint should only register when X has its high bit
-# set, signalling "negative scan code".
-OSBYTE_INKEY_DISPATCH_VALUES = frozenset({0x79, 0x81})
+#   &79  ``osbyte_scan_keyboard``  X = internal key number EOR &80,
+#        rendered ``(255 - inkey_key_<name>) EOR 128``. With X < &80
+#        it scans a range of keys instead.
+#   &81  ``osbyte_inkey``          with Y = &FF, X = the negative INKEY
+#        number itself (BASIC's ``INKEY(-2)`` passes X = &FE for CTRL),
+#        rendered ``inkey_key_<name>``. With Y = 0-&7F, X + 256 * Y is
+#        a time limit instead, and the call waits for any key (#59).
+OSBYTE_SCAN_KEYBOARD = 0x79
+OSBYTE_INKEY = 0x81
 
 
-def _detect_inkey_pattern(a_value: int, state_before_jsr) -> tuple[str, int] | None:
-    """If the call is an INKEY-mode keyboard scan / test, return
-    ``(inkey_name, inkey_key_byte)`` — the named INKEY symbol the
-    LDX byte decodes to plus the unsigned-byte form (e.g.
-    ``("inkey_key_ctrl", 254)``). Returns ``None`` when this isn't
-    an INKEY pattern.
+@dataclass(frozen=True)
+class InkeyTest:
+    """An OSBYTE call that tests whether one named key is pressed.
 
-    A pattern fires only for OSBYTE &79 / &81 when X has its high
-    bit set AND ``(255 - X) EOR 128`` resolves to a named entry in
-    :data:`INKEY_ENUM`. Anything else (mismatched action, X<&80,
-    or a high-bit byte that doesn't decode) is left to the generic
-    OSBYTE handling.
+    ``key`` is the key's INKEY number as an unsigned byte (CTRL, INKEY
+    -2, is 254) and ``name`` its :data:`INKEY_ENUM` symbol.
+    ``x_is_scan_code`` says how X encodes it: as an internal key number
+    EOR &80 (OSBYTE &79), or as the INKEY number itself (OSBYTE &81).
     """
-    if a_value not in OSBYTE_INKEY_DISPATCH_VALUES:
-        return None
+
+    name: str
+    key: int
+    x_is_scan_code: bool
+
+
+def _detect_inkey_pattern(a_value: int, state_before_jsr) -> InkeyTest | None:
+    """The key an OSBYTE call tests, or ``None`` if it isn't a test of a
+    named key whose X comes from an immediate load.
+
+    OSBYTE &79 tests a key when X has its top bit set. OSBYTE &81 tests
+    a key only when Y is known to be &FF: with Y = 0-&7F the same X is
+    the low byte of a time limit, top bit or not.
+    """
     x = state_before_jsr.x
     if x.value is None or x.previous_load_imm_addr is None:
         return None
-    if not (x.value & 0x80):
+    if a_value == OSBYTE_SCAN_KEYBOARD:
+        if not (x.value & 0x80):
+            return None
+        key = (255 - x.value) ^ 0x80
+        x_is_scan_code = True
+    elif a_value == OSBYTE_INKEY:
+        if state_before_jsr.y.value != 0xFF:
+            return None
+        key = x.value
+        x_is_scan_code = False
+    else:
         return None
-    inkey_key = (255 - x.value) ^ 0x80
-    inkey_name = INKEY_ENUM.get(inkey_key)
-    if inkey_name is None:
+    name = INKEY_ENUM.get(key)
+    if name is None:
         return None
-    return inkey_name, inkey_key
+    return InkeyTest(name, key, x_is_scan_code)
+
+
+def _osbyte_81_inline_text(state_before_jsr) -> str:
+    """The JSR-site comment for OSBYTE &81 that isn't a test of a named
+    key, by what is known of X and Y."""
+    x, y = state_before_jsr.x.value, state_before_jsr.y.value
+    if y == 0xFF:
+        if x == 0:
+            return "Read the OS version (INKEY(-256))"
+        return "Test whether the key with negative INKEY number X is pressed"
+    if y is not None and y < 0x80:
+        if x is None:
+            return "Read a key, waiting up to the time limit in X and Y (centiseconds)"
+        return f"Read a key, waiting up to {x + 256 * y} centiseconds"
+    return (
+        "Read a key within the time limit in X and Y, or with Y = &FF "
+        "test for the key with negative INKEY number X"
+    )
 
 
 def _inkey_inline_text(inkey_name: str) -> str:
@@ -627,8 +664,9 @@ def osbyte_analyzer(
             inkey_pattern = _detect_inkey_pattern(a_value, state_before_jsr)
             inline_text = None
             if inkey_pattern is not None:
-                inkey_name, _ = inkey_pattern
-                inline_text = _inkey_inline_text(inkey_name)
+                inline_text = _inkey_inline_text(inkey_pattern.name)
+            elif a_value == OSBYTE_INKEY:
+                inline_text = _osbyte_81_inline_text(state_before_jsr)
             if inline_text is None:
                 x_value_table = OSBYTE_X_VALUE_DESCRIPTIONS.get(a_value)
                 if x_value_table is not None:
@@ -680,25 +718,26 @@ def osbyte_analyzer(
                     disassembler, jsr_binary_addr, post_call_table,
                 )
             # INKEY pattern registration: when the detection above
-            # fired, register the unsigned-form constant (so the
-            # equate table gets ``inkey_key_<name> = <unsigned>``)
-            # and tag the LDX's immediate-operand byte with
-            # FormatHint.INKEY so the renderer emits the symbolic
-            # ``(255 - inkey_key_<name>) EOR 128`` form. The
-            # unsigned constant value is what makes that expression
-            # reduce cleanly to a single byte under beebasm's
-            # evaluation — see ``_render_inkey_immediate`` for the
-            # encoding rationale.
+            # fired, register the key's constant (``inkey_key_<name> =
+            # <INKEY number, unsigned>``) and render the LDX operand from
+            # it. For OSBYTE &81, X *is* the INKEY number, so the operand
+            # is the constant itself. For OSBYTE &79, it is tagged with
+            # FormatHint.INKEY, which renders ``(255 - inkey_key_<name>)
+            # EOR 128``. The unsigned constant is what makes that
+            # expression reduce cleanly to a single byte under beebasm's
+            # evaluation — see ``_render_inkey_immediate``.
             if inkey_pattern is not None:
-                inkey_name, inkey_key = inkey_pattern
                 if not any(
-                    c.name == inkey_name and c.value == inkey_key
+                    c.name == inkey_pattern.name and c.value == inkey_pattern.key
                     for c in disassembler.constants
                 ):
-                    disassembler.constant(inkey_key, inkey_name)
+                    disassembler.constant(inkey_pattern.key, inkey_pattern.name)
                 x_operand = state_before_jsr.x.previous_load_imm_addr + 1
                 if disassembler.expressions.get_or_none(x_operand) is None:
-                    disassembler.format_hint(x_operand, FormatHint.INKEY)
+                    if inkey_pattern.x_is_scan_code:
+                        disassembler.format_hint(x_operand, FormatHint.INKEY)
+                    else:
+                        disassembler.expr(BinaryAddr(x_operand), inkey_pattern.name)
 
 
 # OSEVEN takes an event number in Y. The JSR-site comment is
