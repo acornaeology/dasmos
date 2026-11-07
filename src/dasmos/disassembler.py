@@ -193,7 +193,9 @@ class Disassembler:
         self.string_detection_min_length = string_detection_min_length
         size = cpu.address_space_size
         self._memory = MemoryImage(address_space_size=size)
-        self._moves = MoveManager(address_space_size=size)
+        self._moves = MoveManager(
+            address_space_size=size, is_loaded=self._memory.is_loaded,
+        )
         self._labels = LabelManager(self._moves)
         self._classifications = ClassificationStore()
         self._expressions = ExpressionRegistry()
@@ -1759,8 +1761,8 @@ class Disassembler:
         # owns the stored byte, but a ROM can also run moved bytes in
         # place — ANFS's initialisation code at &BE83 is both the tail
         # of page 6's source and the routine that performs the copy.
-        # The layout's move is active for the step, so a run address
-        # several moves overlay resolves to this one where it can.
+        # The layout's move is active for the step, so the run addresses
+        # a subroutine hook annotates resolve in it.
         layout_move = (
             self._moves.move_for_id(layout) if layout != BASE_MOVE_ID else None
         )
@@ -1839,7 +1841,7 @@ class Disassembler:
         elif flow is not FlowControl.JUMP and fall_through is not None:
             # A call or conditional branch also falls through.
             successors.append(fall_through)
-        target = self._resolve_trace_target(target_runtime)
+        target = self._resolve_trace_target(target_runtime, layout)
         if target is not None:
             successors.append(target)
         return successors
@@ -1893,51 +1895,34 @@ class Disassembler:
                 BinaryAddr(binary_addr),
             )
         )
-        return self._resolve_trace_target(runtime + length)
+        return self._resolve_trace_target(runtime + length, layout)
 
     def _resolve_trace_target(
-        self, target_runtime: int | None,
+        self, target_runtime: int | None, layout: int,
     ) -> tuple[int, int] | None:
-        """Resolve a control-flow target's run address to the
-        ``(binary_addr, layout)`` the trace continues at, or ``None``.
+        """Resolve a control-flow target's run address, reached on a path
+        running in ``layout``, to the ``(binary_addr, layout)`` the trace
+        continues at, or ``None``.
 
-        The layout is the move the run address resolves through — the
-        active (current) move is preferred where several overlay it — or
-        ``BASE_MOVE_ID`` for an address that runs in place.
-        """
-        binary = self._target_runtime_to_binary(target_runtime)
-        if binary is None:
-            return None
-        _binary, move_id = self._moves.r2b(RuntimeAddr(int(target_runtime) & 0xffff))
-        return binary, BASE_MOVE_ID if move_id is None else move_id
-
-    def _target_runtime_to_binary(
-        self, target_runtime: int | None,
-    ) -> int | None:
-        """Resolve a control-flow target's runtime address to a
-        binary address suitable for trace-queue enqueueing.
-
-        Returns None when the target can't be resolved cleanly
-        (operand wasn't loaded, runtime address is ambiguous between
-        multiple moves with none on the active stack, or the
-        resulting binary address falls outside the address space).
-        Used by :meth:`_trace` to convert each control-flow target
-        from runtime to binary before queueing.
+        The path's own layout is preferred where it occupies the address;
+        otherwise moves lie over an image loaded in place (see
+        :meth:`MoveManager.r2b`). ``None`` when there is no target (its
+        operand isn't loaded), it is ambiguous, or it resolves outside
+        the address space.
         """
         if target_runtime is None:
             return None
-        from dasmos.core.memory import RuntimeAddr
         # 6502 addresses fit in 16 bits; mask to defend against
         # arithmetic overflow in branch-target computation (signed
         # offset arithmetic on the high end of the address space).
-        runtime = RuntimeAddr(target_runtime & 0xffff)
-        binary, _ = self._moves.r2b(runtime)
+        binary, target_layout = self._moves.r2b(
+            RuntimeAddr(target_runtime & 0xffff), context=[layout],
+        )
         if binary is None:
             return None
-        binary_int = int(binary)
-        if 0 <= binary_int < self._memory.address_space_size:
-            return binary_int
-        return None
+        if not 0 <= int(binary) < self._memory.address_space_size:
+            return None
+        return int(binary), target_layout
 
     def _opcode_straddles_move_boundary(
         self, addr: int, length: int,
@@ -2309,7 +2294,7 @@ class Disassembler:
                 # ``sta evntv+1``. Suppresses auto-label generation
                 # at alias addresses.
                 or any(existing.expressions.values())
-            ) and len(self._moves.move_ids_for_runtime_addr(runtime_addr)) <= 1:
+            ) and len(self._moves.layout_ids_for_runtime_addr(runtime_addr)) <= 1:
                 continue
             # A referenced address inside a declared index region, with
             # no explicit name of its own, renders relative to the anchor
@@ -2334,15 +2319,18 @@ class Disassembler:
                     runtime_addr, ref_binary_addrs, kind_by_ref,
                 )
                 continue
-            # One auto-label per overlay that refers to the address and
-            # has no name of its own there (#53, #54); see
-            # :meth:`_auto_label_groups`.
+            # One auto-label per copy that is referred to and has no name
+            # of its own there (#53, #54, #57); see
+            # :meth:`_auto_label_groups`. References from outside the
+            # overlays, with no in-place copy, are served by the overlays'
+            # own labels.
+            in_place = self._moves.is_loaded_in_place(runtime_addr)
             planned: list[tuple[int, str]] = []
             for owner, group_refs in self._auto_label_groups(
                 runtime_addr, ref_binary_addrs,
             ):
-                if owner == BASE_MOVE_ID and planned:
-                    continue  # the overlays' own labels serve these refs
+                if owner == BASE_MOVE_ID and planned and not in_place:
+                    continue
                 if existing is not None and self._already_named(
                     existing, runtime_addr, owner,
                 ):
@@ -2367,20 +2355,21 @@ class Disassembler:
         """Group the references to ``runtime_addr`` by the move each
         auto-label made for them would belong to.
 
-        Where several moves overlay the address, each overlay that refers
-        to it gets its own label, owned by that move and named from its
-        layout: its code refers to its own copy (#54). References from
-        anywhere else form one unowned group, listed last. Where at most
-        one move covers the address there is a single group, owned as
-        :meth:`_auto_label_owner` decides.
+        Where several layouts occupy the address — overlays, and an image
+        loaded in place there (#57) — each copy referred to gets its own
+        label, owned by its layout and named from it: a reference refers
+        to the copy the address resolves to from where the referrer is
+        stored (#54). References for which the address is ambiguous join
+        the in-place group, which is listed last and belongs to no move.
+        Where only one layout occupies the address there is a single
+        group, owned as :meth:`_auto_label_owner` decides.
         """
-        covering = self._moves.move_ids_for_runtime_addr(runtime_addr)
-        if len(covering) <= 1:
+        if len(self._moves.layout_ids_for_runtime_addr(runtime_addr)) <= 1:
             return [(self._auto_label_owner(runtime_addr, ref_binary_addrs), ref_binary_addrs)]
         groups: dict[int, list[int]] = {}
         for ref in ref_binary_addrs:
-            owner = self._moves.move_id_for_binary_addr(ref)
-            groups.setdefault(owner if owner in covering else BASE_MOVE_ID, []).append(ref)
+            seen = self._labels.layout_seen_from(runtime_addr, ref)
+            groups.setdefault(BASE_MOVE_ID if seen is None else seen, []).append(ref)
         ordered = [(m, groups[m]) for m in sorted(groups) if m != BASE_MOVE_ID]
         if BASE_MOVE_ID in groups:
             ordered.append((BASE_MOVE_ID, groups[BASE_MOVE_ID]))
@@ -2388,9 +2377,11 @@ class Disassembler:
 
     def _already_named(self, label, runtime_addr, owner: int) -> bool:
         """True when ``label`` already has a name or expression alias that
-        an auto-label owned by ``owner`` would duplicate: one visible from
-        that overlay, or any at all for an unowned label."""
-        if owner != BASE_MOVE_ID:
+        an auto-label owned by ``owner`` would duplicate: where ``owner``
+        is one of several layouts occupying the address, one visible from
+        its copy; otherwise (an unowned label) any at all."""
+        layouts = self._moves.layout_ids_for_runtime_addr(runtime_addr)
+        if len(layouts) > 1 and owner in layouts:
             return bool(
                 self._labels.names_in_overlay(runtime_addr, owner)
                 or self._labels.expressions_in_overlay(runtime_addr, owner)

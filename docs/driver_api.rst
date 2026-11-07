@@ -573,6 +573,30 @@ files, not the span between them:
 so with several images give each its own ``exec_addr`` / ``reload_addr``
 on ``d.load()``.
 
+A file can also *run* where another is loaded. On the Dunjunz disc's
+Master 128 side, the loader ``Dunjunz`` runs at ``&2649``, inside the
+game file ``Dunj5`` (``&2000``-``&2FFF``) that later loads over it. Load
+``Dunj5`` in place, store ``Dunjunz`` anywhere free, and move it to
+where it runs:
+
+.. code-block:: python
+
+   d.load("Dunj5", 0x2000, name="Dunj5")
+   d.load("Dunjunz", 0x3649, name="Dunjunz", exec_addr=0x2649)
+   dunjunz = d.add_move(0x2649, 0x3649, 0x0913, name="dunjunz")
+
+   d.label(0x2700, "dunj5_routine")             # in Dunj5
+   d.label(0x2700, "loader_routine", move=dunjunz)
+   with dunjunz:
+       d.entry(0x2649)                            # the loader's copy
+
+Each run address from ``&2649`` to ``&2F5B`` then has two occupants. An
+annotation that names no move, outside any ``with move:`` block, means
+the bytes loaded in place; ``move=`` or ``with move:`` means the move's.
+Each copy is labelled and cross-referenced separately, as overlays are.
+The trace follows each path in its own copy. Code in any other move sees
+the moved copy, because moves lie over what is loaded in place.
+
 
 Classifying data
 ----------------

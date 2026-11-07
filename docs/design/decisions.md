@@ -896,3 +896,47 @@ do the golden outputs. A driver no longer needs an extra `entry` or a
 non-returning `hook_subroutine` just to keep the trace out of a string
 it has already declared.
 
+## 2026-11-07 — files loaded where moves run
+
+### D-032: An image loaded in place is a layout of the run addresses it occupies
+
+**Status**: accepted, implemented (dasmos#57).
+
+**Context**: Moves were the only occupants a run address could have. A
+run address covered by a move resolved into the move, even where an
+image was loaded in place there. On the Dunjunz Master side, the loaders
+`Dunjunz` (&2649) and `Coder2` (&2000) run where the game file `Dunj5`
+(&2000-&2FFF) later loads. So `d.byte(0x2F50, 0x20)`, meant for `Dunj5`,
+went into the `dunjunz` move and ran past the end of its stored image.
+`d.label(0x2700, "x")` named both copies, and an in-place `JMP` within
+`Dunj5` was traced into the loader. The workaround was to store `Dunj5`
+elsewhere and model it as a move too.
+
+**Decision**: An image loaded in place is one of the *layouts* of every
+run address it occupies, alongside the moves covering it. A run address
+is occupied in place when the byte stored at that same address is loaded
+and is not a move's source. `MoveManager.layout_ids_for_runtime_addr`
+lists the layouts, and `r2b` resolves among them by context:
+
+1. a single layout is used;
+2. otherwise the innermost layout of the context that occupies the
+   address;
+3. otherwise a single covering move, since moves lie over what is loaded
+   in place;
+4. otherwise the address is ambiguous.
+
+For driver annotations and the renderers, the context is the in-place
+layout beneath the active-move stack. So, outside `with move:`, a name
+or annotation with no `move=` means the in-place bytes. For a trace path
+the context is the path's own layout (D-030): in-place code reaches the
+in-place copy, and code in a move reaches its own copy, else the moved
+one. The overlay rules of D-028 and D-029 count the in-place layout too.
+Each copy sees its own names, gets its own auto-label, and is credited
+with the references that resolve to it.
+
+**Consequences**: Unchanged where no move's run range overlaps a loaded
+image, which covers every golden output and all the sibling projects as
+they stand. The Dunjunz Master side can load `Dunj5` in place, and the
+identity-move workaround (refused anyway, since dest == src) is no
+longer needed.
+

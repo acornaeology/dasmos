@@ -112,8 +112,10 @@ time:
   source of a byte. Always unique per byte.
 - **`RuntimeAddr`** — *where the CPU sees the byte at execution
   time*. May not be unique — overlay programs map several binary
-  spans to the same runtime address; the active-move stack
-  disambiguates.
+  spans to the same runtime address, and a file loaded in place can
+  share it with a move's copy; the context of the resolution (the
+  active-move stack, or a trace path's layout) disambiguates (D-030,
+  D-032).
 
 Both subclass `int`. Type-preserving arithmetic on the same type
 (`BinaryAddr + int → BinaryAddr`); subtraction of two same-typed

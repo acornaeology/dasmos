@@ -7,8 +7,10 @@ RAM, or about overlays that share a runtime region.
 
 A binary address can be the source of at most one move (because every
 byte in the binary needs a single classification). A runtime address
-may be the destination of more than one move — disambiguation is
-driven by the active-move stack.
+can be occupied by more than one *layout*: the destinations of several
+moves (overlays), and the image loaded in place there, if any (#57).
+Which one an address means is decided by the context it is resolved in
+— see :meth:`MoveManager.r2b`.
 
 Design points:
 
@@ -168,8 +170,18 @@ class MoveManager:
     that disassemble more than one binary.
     """
 
-    def __init__(self, address_space_size: int = DEFAULT_ADDRESS_SPACE_SIZE):
+    def __init__(
+        self,
+        address_space_size: int = DEFAULT_ADDRESS_SPACE_SIZE,
+        *,
+        is_loaded=None,
+    ):
+        """``is_loaded`` says whether a stored (binary) byte is loaded,
+        so the manager can tell where an image loaded in place occupies
+        a run address that moves also cover. Without it, nothing is
+        taken to be loaded in place."""
         self._address_space_size = address_space_size
+        self._is_loaded = is_loaded if is_loaded is not None else (lambda addr: False)
         # The base move covers the entire address space 1:1 — that's
         # how an unrelocated address resolves to itself. It's stored
         # at index 0 / BASE_MOVE_ID and is not exposed publicly.
@@ -354,39 +366,57 @@ class MoveManager:
         self,
         runtime_addr,
         specific_move_id: int | None = None,
+        *,
+        context=None,
     ) -> tuple[BinaryAddr | None, int | None]:
-        """Convert a runtime address to ``(binary_addr, move_id)``.
+        """Convert a runtime address to ``(binary_addr, layout)``, where
+        the layout is the id of the move it resolves through, or
+        ``BASE_MOVE_ID`` for in place.
 
-        - With ``specific_move_id``: use that move directly.
-        - With no relevant moves at the runtime address: identity-map
-          to ``(BinaryAddr(runtime_addr), BASE_MOVE_ID)``.
-        - With one relevant move: use it.
-        - With multiple relevant moves: pick the most-recently-active one
-          on the move stack; if none of the candidates is active, return
-          ``(None, None)`` to signal ambiguity.
+        With ``specific_move_id``, that move is used directly. Otherwise
+        the address resolves among the layouts occupying it
+        (:meth:`layout_ids_for_runtime_addr`):
+
+        - a single layout is used — in place (the identity) where no
+          move covers the address;
+        - otherwise the innermost layout of ``context`` that occupies
+          the address — a sequence of layout ids, outermost first;
+        - otherwise a single covering move: moves lie over the image
+          loaded in place, so from any context but the in-place one the
+          moved copy is the one there;
+        - otherwise ``(None, None)``: the address is ambiguous.
+
+        The default ``context`` is the in-place layout beneath the
+        active-move stack: outside any ``with move:`` block, an address
+        an in-place image occupies means its in-place bytes.
         """
         runtime_addr = RuntimeAddr(runtime_addr)
 
         if specific_move_id is None:
-            relevant = self.move_ids_for_runtime_addr(runtime_addr)
-            if not relevant:
-                return BinaryAddr(int(runtime_addr)), BASE_MOVE_ID
-            if len(relevant) == 1:
-                specific_move_id = next(iter(relevant))
-            else:
-                # Walk the active stack from most-recent backwards.
-                specific_move_id = None
-                for active in reversed(self._active_move_ids):
-                    if active in relevant:
-                        specific_move_id = active
-                        break
-                if specific_move_id is None:
-                    return None, None
+            specific_move_id = self._resolve_layout(runtime_addr, context)
+            if specific_move_id is None:
+                return None, None
 
         md = self._moves[specific_move_id]
         if md.is_in_move_dest(runtime_addr, include_end_address=True):
             return md.convert_runtime_to_binary_addr(runtime_addr), specific_move_id
         return None, None
+
+    def _resolve_layout(self, runtime_addr, context) -> int | None:
+        """The layout ``runtime_addr`` resolves through in ``context``,
+        or ``None`` if ambiguous; see :meth:`r2b`."""
+        layouts = self.layout_ids_for_runtime_addr(runtime_addr)
+        if len(layouts) == 1:
+            return next(iter(layouts))
+        if context is None:
+            context = [BASE_MOVE_ID, *self._active_move_ids]
+        for layout in reversed(context):
+            if layout in layouts:
+                return layout
+        moves = layouts - {BASE_MOVE_ID}
+        if len(moves) == 1:
+            return next(iter(moves))
+        return None
 
     def r2b_checked(self, runtime_addr) -> BinaryLocation:
         """Like :meth:`r2b` but raises on ambiguous resolution."""
@@ -417,6 +447,31 @@ class MoveManager:
         if self._cache is None:
             self._rebuild_cache()
         return self._cache.get(runtime_addr, set())
+
+    def is_loaded_in_place(self, runtime_addr) -> bool:
+        """True iff an image loaded in place occupies ``runtime_addr``:
+        the byte stored at that same address is loaded and moved nowhere
+        else."""
+        addr = int(runtime_addr)
+        return (
+            0 <= addr < self._address_space_size
+            and self._move_id_for_binary_addr[addr] == BASE_MOVE_ID
+            and self._is_loaded(addr)
+        )
+
+    def layout_ids_for_runtime_addr(self, runtime_addr) -> set[int]:
+        """The layouts occupying ``runtime_addr``: every move whose run
+        range covers it, and the in-place layout (``BASE_MOVE_ID``)
+        where an image loaded in place occupies it — or where no move
+        covers it, since an unmoved address resolves to itself.
+
+        More than one layout means the address has several occupants,
+        which overlays and in-place images then tell apart (#53, #57).
+        """
+        covering = self.move_ids_for_runtime_addr(runtime_addr)
+        if not covering or self.is_loaded_in_place(runtime_addr):
+            return covering | {BASE_MOVE_ID}
+        return set(covering)
 
     def _rebuild_cache(self) -> None:
         cache: dict[RuntimeAddr, set[int]] = defaultdict(set)

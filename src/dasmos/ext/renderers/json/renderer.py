@@ -645,21 +645,18 @@ class JsonRenderer(Renderer[StructuredOutput]):
         """The move an operand's run-address ``target`` resolves into,
         from the instruction stored at ``binary_addr`` (#56).
 
-        Resolved as the trace resolves it (D-030): the instruction's own
-        move when that covers the target, else the one move that does.
-        ``None`` when the target runs in place, or when several moves
-        overlay it and none is the instruction's own — then there is no
-        single answer.
+        Resolved as the trace resolves it (D-030, #57): the instruction's
+        own layout when that occupies the target, else the one move
+        covering it (moves lie over an image loaded in place). ``None``
+        when the target runs in place, or when the address is ambiguous.
         """
-        covering = ir.moves.move_ids_for_runtime_addr(target)
-        own = ir.moves.move_id_for_binary_addr(binary_addr)
-        if own in covering:
-            move_id = own
-        elif len(covering) == 1:
-            (move_id,) = covering
-        else:
+        _binary, layout = ir.moves.r2b(
+            RuntimeAddr(target),
+            context=[ir.moves.move_id_for_binary_addr(binary_addr)],
+        )
+        if layout is None or layout == BASE_MOVE_ID:
             return None
-        return ir.moves.move_for_id(move_id).name
+        return ir.moves.move_for_id(layout).name
 
     @staticmethod
     def _image_index(ir, binary_addr: int) -> int | None:

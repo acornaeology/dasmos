@@ -325,26 +325,26 @@ class LabelManager:
 
     def names_in_overlay(self, runtime_addr, move_id: int) -> list[str]:
         """The explicit names at ``runtime_addr`` as seen from the
-        overlay laid out by ``move_id`` (``BASE_MOVE_ID`` for unmoved
-        code), in registration order.
+        layout ``move_id`` (``BASE_MOVE_ID`` for in place), in
+        registration order.
 
-        Several moves can share a run range — alternative overlays of
-        the same RAM. A name recorded for one of the moves covering
-        ``runtime_addr`` names that move's layout, so the other
-        overlays don't see it (#53); a name recorded for no covering
-        move is visible from all of them. Where at most one move covers
-        the address there is nothing to tell apart and every name is
-        returned.
+        A run address can have several occupants — alternative overlays
+        of the same RAM, and an image loaded in place there (#57). A
+        name recorded for one of the layouts occupying ``runtime_addr``
+        names that layout's copy, so the others don't see it (#53); a
+        name recorded for a move that doesn't occupy it is visible from
+        all of them. Where only one layout occupies the address there is
+        nothing to tell apart and every name is returned.
         """
         label = self.get_label(runtime_addr)
         if label is None:
             return []
-        covering = self._move_manager.move_ids_for_runtime_addr(runtime_addr)
-        if len(covering) <= 1:
+        layouts = self._move_manager.layout_ids_for_runtime_addr(runtime_addr)
+        if len(layouts) <= 1:
             return label.explicit_names_in_insertion_order()
         out: list[str] = []
         for bucket, name_list in label.explicit_names.items():
-            if bucket != move_id and bucket in covering:
+            if bucket != move_id and bucket in layouts:
                 continue
             for name in name_list:
                 if name.text not in out:
@@ -353,48 +353,58 @@ class LabelManager:
 
     def expressions_in_overlay(self, runtime_addr, move_id: int) -> list:
         """The expression aliases at ``runtime_addr`` as seen from the
-        overlay laid out by ``move_id`` — the same visibility rule as
+        layout ``move_id`` — the same visibility rule as
         :meth:`names_in_overlay`, for labels registered with
         ``expr_label(..., move=)`` (#54)."""
         label = self.get_label(runtime_addr)
         if label is None:
             return []
-        covering = self._move_manager.move_ids_for_runtime_addr(runtime_addr)
+        layouts = self._move_manager.layout_ids_for_runtime_addr(runtime_addr)
         out: list = []
         for bucket, expr_list in label.expressions.items():
-            if len(covering) > 1 and bucket != move_id and bucket in covering:
+            if len(layouts) > 1 and bucket != move_id and bucket in layouts:
                 continue
             out.extend(e for e in expr_list if e not in out)
         return out
 
     def references_seen_from(self, runtime_addr, move_id: int) -> list:
-        """The references to ``runtime_addr`` as seen from the overlay
-        laid out by ``move_id``.
+        """The references to ``runtime_addr`` as seen from the layout
+        ``move_id``.
 
-        Where several moves overlay the address and ``move_id`` is one
-        of them with names of its own there, a referrer stored in another
-        of those overlays refers to *that* overlay's copy, so only this
-        overlay's referrers (and any outside the overlays) are returned
-        (#54). Otherwise every reference is.
+        Where several layouts occupy the address and ``move_id`` is one
+        of them with names of its own there, a referrer refers to the
+        copy the address resolves to from where the referrer is stored
+        (:meth:`MoveManager.r2b`), so only the referrers that resolve to
+        this layout's copy — and any for which the address is
+        ambiguous — are returned (#54, #57). Otherwise every reference
+        is.
         """
         label = self.get_label(runtime_addr)
         if label is None:
             return []
-        covering = self._move_manager.move_ids_for_runtime_addr(runtime_addr)
+        layouts = self._move_manager.layout_ids_for_runtime_addr(runtime_addr)
         if (
-            len(covering) <= 1
-            or move_id not in covering
+            len(layouts) <= 1
+            or move_id not in layouts
             or not label.names_for_move(move_id)
         ):
             return list(label.references)
         out = []
         for reference in label.references:
-            referrer = self._move_manager.move_id_for_binary_addr(
-                int(reference.binary_addr),
-            )
-            if referrer == move_id or referrer not in covering:
+            seen = self.layout_seen_from(runtime_addr, int(reference.binary_addr))
+            if seen is None or seen == move_id:
                 out.append(reference)
         return out
+
+    def layout_seen_from(self, runtime_addr, referrer_binary_addr: int) -> int | None:
+        """The layout ``runtime_addr`` resolves through for code stored
+        at ``referrer_binary_addr`` — its own, where that occupies the
+        address — or ``None`` if ambiguous."""
+        referrer = self._move_manager.move_id_for_binary_addr(referrer_binary_addr)
+        _binary, layout = self._move_manager.r2b(
+            RuntimeAddr(int(runtime_addr)), context=[referrer],
+        )
+        return layout
 
     def addr_for_name(self, name: str) -> RuntimeAddr | None:
         """Find the runtime address of a label by one of its names.
