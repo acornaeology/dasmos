@@ -1405,22 +1405,44 @@ class Disassembler:
     ):
         """Sugar for ``format_hint(runtime_addr, FormatHint.INKEY)``.
 
-        Declares that the operand byte at ``runtime_addr`` is an Acorn
-        keyboard scan code: the byte loaded into X for ``OSBYTE &79``
-        to test one key, its internal key number EOR &80. (``OSBYTE
-        &81``'s X is the INKEY number itself, so an ``inkey_key_<name>``
-        constant renders it as it stands.) Renderers express the
-        byte symbolically as ``(255 - inkey_key_<name>) EOR 128``
-        when the value matches a named INKEY key in the BBC's
-        scan-code table; bytes that don't match any named key fall
-        back to a hex literal with a one-time warning.
+        Declares that the byte at ``runtime_addr`` is an Acorn keyboard
+        scan code: the X an ``OSBYTE &79`` caller loads to test one
+        key, its internal key number EOR &80. It renders as ``(255 -
+        inkey_key_<name>) EOR 128``, and the disassembly defines the
+        ``inkey_key_<name>`` constant. A byte that doesn't decode to a
+        named key falls back to a hex literal with a warning.
 
-        Use this when the analyser can't infer the pattern from a
-        nearby ``JSR osbyte`` — for example when the scan code lives
-        in a table of pre-computed values, or is loaded into X
-        through a longer pipeline of stores and reads.
+        For the negative INKEY number itself, the X of ``OSBYTE &81``
+        with Y = &FF, use :meth:`inkey_number`. The ``acorn_mos``
+        environment marks both kinds of operand at a recognised OSBYTE
+        call; use these when it can't, as for a scan code in a table or
+        loaded into X along a longer path.
         """
         self.format_hint(runtime_addr, FormatHint.INKEY, move=move)
+
+    def inkey_number(
+        self,
+        runtime_addr,
+        count: int = 1,
+        *,
+        move: Move | None = None,
+    ):
+        """Declare that the ``count`` bytes from ``runtime_addr`` are
+        negative INKEY numbers: the X BASIC's ``INKEY(-n)`` and
+        ``OSBYTE &81`` with Y = &FF take to test one key (&FE for CTRL,
+        &99 for ','). Sugar for ``format_hint(addr, FormatHint.INKEY_NUMBER)``
+        on each byte.
+
+        Each renders as its key's ``inkey_key_<name>`` constant, which
+        the disassembly defines. The bytes may be immediate operands or
+        data, such as a table of redefinable keys. A byte that isn't a
+        named key's number falls back to a hex literal with a warning.
+        """
+        for offset in range(count):
+            self.format_hint(
+                RuntimeAddr(runtime_addr + offset),
+                FormatHint.INKEY_NUMBER, move=move,
+            )
 
     # -- driver-script API: comments / annotations ----------------------
 
@@ -1703,6 +1725,7 @@ class Disassembler:
         # constants/expressions that the reference walk will see.
         self._compute_cpu_states()
         self._run_post_trace_jsr_analyzers()
+        self._define_inkey_constants()
         refs_by_addr = self._compute_references()
         if self.auto_labels_enabled:
             self._generate_auto_labels(refs_by_addr)
@@ -1710,6 +1733,30 @@ class Disassembler:
             self._synthesise_offset_bases()
         self._disassembled = True
         return IntermediateRepresentation(self)
+
+    def _define_inkey_constants(self) -> None:
+        """Define the ``inkey_key_<name>`` constant behind each byte
+        marked ``FormatHint.INKEY`` or ``FormatHint.INKEY_NUMBER``,
+        where the byte names a key, no expression overrides the hint,
+        and no constant of that name exists yet.
+        """
+        from dasmos.ext.environments.acorn_mos.enums import (
+            INKEY_ENUM, inkey_number_for_hint,
+        )
+        defined = {c.name for c in self._constants}
+        for binary_addr, hint in self._format_hints.items():
+            if hint not in (FormatHint.INKEY, FormatHint.INKEY_NUMBER):
+                continue
+            if not self._memory.is_loaded(binary_addr):
+                continue
+            if self._expressions.get_or_none(binary_addr) is not None:
+                continue
+            key = inkey_number_for_hint(hint, self._memory.get_u8(binary_addr))
+            name = INKEY_ENUM.get(key)
+            if name is None or name in defined:
+                continue
+            self.constant(key, name)
+            defined.add(name)
 
     # -- internals: trace loop ------------------------------------------
 

@@ -526,8 +526,8 @@ class BeebasmRenderer(AssemblerRenderer):
                 stacklevel=2,
             )
             return str(value)
-        if hint is FormatHint.INKEY:
-            return self._render_inkey_immediate(value, operand_addr)
+        if hint in (FormatHint.INKEY, FormatHint.INKEY_NUMBER):
+            return self._render_inkey_hint(hint, value, operand_addr)
         # Future hint values land here as an explicit, informative
         # error rather than a silent fallthrough.
         raise NotImplementedError(

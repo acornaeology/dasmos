@@ -36,7 +36,6 @@ osbyte_insert_input_buffer     = &99
 osword_nfs_info                = &13
 osbyte_make_fs_permanent       = &6d
 osbyte_scan_keyboard           = &79
-inkey_key_ctrl                 = &fe
 osword_read_cmos_clock         = &0e
 osbyte_vsync                   = &13
 osbyte_read_buffer             = &91
@@ -45,6 +44,7 @@ osword_read_palette            = &0b
 osbyte_flush_buffer_class      = &0f
 osfile_read_catalogue_info     = &05
 osfind_open_input              = &40
+inkey_key_ctrl                 = &fe
 
 ; Memory locations
 zp_ptr_lo                   = &00

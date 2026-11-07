@@ -717,27 +717,22 @@ def osbyte_analyzer(
                 _attach_post_call_table(
                     disassembler, jsr_binary_addr, post_call_table,
                 )
-            # INKEY pattern registration: when the detection above
-            # fired, register the key's constant (``inkey_key_<name> =
-            # <INKEY number, unsigned>``) and render the LDX operand from
-            # it. For OSBYTE &81, X *is* the INKEY number, so the operand
-            # is the constant itself. For OSBYTE &79, it is tagged with
-            # FormatHint.INKEY, which renders ``(255 - inkey_key_<name>)
-            # EOR 128``. The unsigned constant is what makes that
-            # expression reduce cleanly to a single byte under beebasm's
-            # evaluation — see ``_render_inkey_immediate``.
+            # INKEY pattern registration: when the detection above fired,
+            # mark the LDX operand with the hint for its encoding. For
+            # OSBYTE &81, X *is* the negative INKEY number
+            # (FormatHint.INKEY_NUMBER, rendered ``inkey_key_<name>``);
+            # for OSBYTE &79 it is the scan code (FormatHint.INKEY,
+            # rendered ``(255 - inkey_key_<name>) EOR 128``). The
+            # disassembly defines the ``inkey_key_<name>`` constant behind
+            # either hint.
             if inkey_pattern is not None:
-                if not any(
-                    c.name == inkey_pattern.name and c.value == inkey_pattern.key
-                    for c in disassembler.constants
-                ):
-                    disassembler.constant(inkey_pattern.key, inkey_pattern.name)
                 x_operand = state_before_jsr.x.previous_load_imm_addr + 1
                 if disassembler.expressions.get_or_none(x_operand) is None:
-                    if inkey_pattern.x_is_scan_code:
-                        disassembler.format_hint(x_operand, FormatHint.INKEY)
-                    else:
-                        disassembler.expr(BinaryAddr(x_operand), inkey_pattern.name)
+                    disassembler.format_hint(
+                        x_operand,
+                        FormatHint.INKEY if inkey_pattern.x_is_scan_code
+                        else FormatHint.INKEY_NUMBER,
+                    )
 
 
 # OSEVEN takes an event number in Y. The JSR-site comment is

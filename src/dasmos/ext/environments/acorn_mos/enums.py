@@ -355,23 +355,19 @@ OSGBPB_ENUM: dict[int, str] = {
 }
 
 
-# INKEY scan-code enum, keyed by the unsigned-byte form an OSBYTE
-# &79 / &81 caller actually loads into X.
+# Negative INKEY numbers, keyed by their unsigned byte.
 #
-# Origin: Acorn's INKEY table maps each physical key to a small
-# negative number (-1 = SHIFT, -2 = CTRL, -17 = Q, …). To scan for
-# that key with OSBYTE &79 (scan keyboard) or &81 (INKEY), the caller
-# loads X with the byte value ``(-key_number) EOR 128``, equivalently
-# ``(key_number AND &FF) EOR 128`` — the formula that fits a
-# negative number into an unsigned byte and signals "negative scan"
-# by the high bit.
+# Acorn numbers each key with a small negative INKEY number (-1 =
+# SHIFT, -2 = CTRL, -17 = Q, ...). Code that tests one key loads X with
+# a byte derived from it, in one of two encodings:
 #
-# Storing the enum keyed by the unsigned byte (the value the
-# disassembler actually sees in ``LDX #imm``) lets the analyser do
-# a single dict lookup instead of computing the inverse arithmetic
-# on every call. The reverse — ``key_code = 255 - (byte_value EOR
-# 128)`` — is folded into the dict via ``{k & 0xff: v for k, v in
-# raw}``.
+# - OSBYTE &81 with Y = &FF (BASIC's ``INKEY(-n)``) takes the INKEY
+#   number itself as a byte: &FE for CTRL.
+# - OSBYTE &79 takes the internal key number EOR &80, which is
+#   ``(255 - inkey_number) EOR 128``: &81 for CTRL.
+#
+# :func:`inkey_number_for_hint` decodes either, by the byte's
+# FormatHint, to the key in this table.
 INKEY_ENUM: dict[int, str] = {
     (k & 0xff): v
     for k, v in {
@@ -468,6 +464,21 @@ INKEY_ENUM: dict[int, str] = {
         -125: "inkey_key_keypad_2",
     }.items()
 }
+
+
+def inkey_number_for_hint(hint, value: int) -> int | None:
+    """The negative INKEY number, as an unsigned byte, that ``value``
+    encodes under ``hint``: the byte itself for ``FormatHint.INKEY_NUMBER``,
+    the OSBYTE &79 scan code decoded for ``FormatHint.INKEY``, and
+    ``None`` for any other hint. Look the result up in
+    :data:`INKEY_ENUM` for the key's name.
+    """
+    from dasmos.core.format_hint import FormatHint
+    if hint is FormatHint.INKEY_NUMBER:
+        return value
+    if hint is FormatHint.INKEY:
+        return (255 - value) ^ 0x80
+    return None
 
 
 # Buffer-number enum: passed in X to OSBYTE actions that target a

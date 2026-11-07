@@ -74,23 +74,25 @@ class FormatHint(Enum):
     #: and warn at render time.
     OCTAL = "octal"
 
-    #: This byte is the negative-X form of an Acorn INKEY scan code
-    #: — the input to ``OSBYTE &79`` (scan keyboard) or ``OSBYTE &81``
-    #: (INKEY) when scanning for a specific key by its internal
-    #: number rather than its ASCII representation. The byte value
-    #: ``X`` decodes via ``key_code = 255 - (X EOR 128)`` to a key
-    #: number named in the BBC's INKEY table (``inkey_key_ctrl``,
-    #: ``inkey_key_shift``, …). The renderer expresses this as
-    #: ``(255 - inkey_key_<name>) EOR 128`` so the source reads as
-    #: the symbolic intent — ``ldx #(255 - inkey_key_ctrl) EOR 128``.
+    #: This byte is an Acorn keyboard scan code: the X an ``OSBYTE
+    #: &79`` caller loads to test one key, its internal key number EOR
+    #: &80. The byte ``X`` decodes via ``255 - (X EOR 128)`` to a
+    #: negative INKEY number named in the BBC's INKEY table
+    #: (``inkey_key_ctrl``, ``inkey_key_shift``, ...), and renders as
+    #: ``(255 - inkey_key_<name>) EOR 128``.
     #:
-    #: BBC-specific. Other systems with their own scan-code
-    #: conventions would use a different hint or a renderer-supplied
-    #: lookup. The renderer lazy-imports the BBC INKEY table from the
-    #: ``acorn_mos`` env when this hint is encountered; bytes that
-    #: don't map to any named INKEY key fall back to a hex literal
-    #: with a one-time warning.
+    #: BBC-specific, like :attr:`INKEY_NUMBER`. The disassembly defines
+    #: the ``inkey_key_<name>`` constant; bytes that don't decode to a
+    #: named key fall back to a hex literal with a warning.
     INKEY = "inkey"
+
+    #: This byte is a negative INKEY number: the X BASIC's
+    #: ``INKEY(-n)`` and ``OSBYTE &81`` with Y = &FF take to test one
+    #: key (&FE for CTRL). It renders as the key's
+    #: ``inkey_key_<name>`` constant, which the disassembly defines;
+    #: bytes that aren't a named key's number fall back to a hex
+    #: literal with a warning.
+    INKEY_NUMBER = "inkey_number"
 
 
 class FormatHintRegistry:
@@ -131,3 +133,7 @@ class FormatHintRegistry:
 
     def get_or_none(self, binary_addr) -> FormatHint | None:
         return self._hints.get(BinaryAddr(binary_addr))
+
+    def items(self):
+        """``(binary_addr, hint)`` pairs, in registration order."""
+        return self._hints.items()

@@ -19,7 +19,6 @@ import pytest
 from dasmos.core.annotations import Align, Comment
 from dasmos.core.format_hint import FormatHint
 from dasmos.disassembler import Disassembler
-from dasmos.expr import sym
 from dasmos.ext.renderers.beebasm import BeebasmRenderer
 
 BEEBASM = os.environ.get("BEEBASM") or shutil.which("beebasm")
@@ -64,8 +63,8 @@ class TestKeyScan:
     def test_x_is_the_inkey_number_itself(self, tmp_path):
         d, ir = _ir(tmp_path, _osbyte_81(0xFF, 0xFE))
         assert ("inkey_key_ctrl", 0xFE) in _constants(d)
-        assert ir.expressions.get(0x1003) == sym("inkey_key_ctrl")
-        assert ir.format_hints.get_or_none(0x1003) is None
+        assert ir.format_hints.get_or_none(0x1003) is FormatHint.INKEY_NUMBER
+        assert ir.expressions.get_or_none(0x1003) is None
 
     def test_x_unknown_describes_the_scan(self, tmp_path):
         # LDY #&FF ; LDX &70 ; LDA #&81 ; JSR OSBYTE
@@ -105,7 +104,6 @@ class TestTimedWait:
         program = [LDX_IMM, 0xF4, LDY_IMM, 0x01, LDA_IMM, 0x81, *JSR_OSBYTE, RTS]
         d, ir = _ir(tmp_path, program)
         assert not any(name.startswith("inkey_key_") for name, _ in _constants(d))
-        assert ir.expressions.get_or_none(0x1001) is None
         assert ir.format_hints.get_or_none(0x1001) is None
         assert _inline_at(ir, 0x1006) == "Read a key, waiting up to 500 centiseconds"
 
@@ -125,7 +123,7 @@ class TestYUnknown:
         program = [LDX_IMM, 0xFE, LDA_IMM, 0x81, *JSR_OSBYTE, RTS]
         d, ir = _ir(tmp_path, program)
         assert not any(name.startswith("inkey_key_") for name, _ in _constants(d))
-        assert ir.expressions.get_or_none(0x1001) is None
+        assert ir.format_hints.get_or_none(0x1001) is None
 
     def test_describes_both_modes(self, tmp_path):
         program = [LDX_IMM, 0xFE, LDA_IMM, 0x81, *JSR_OSBYTE, RTS]

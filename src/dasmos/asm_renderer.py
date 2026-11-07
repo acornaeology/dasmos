@@ -2037,8 +2037,8 @@ class AssemblerRenderer(TextRenderer):
                 stacklevel=2,
             )
             return str(value)
-        if hint is FormatHint.INKEY:
-            return self._render_inkey_immediate(value, operand_addr)
+        if hint in (FormatHint.INKEY, FormatHint.INKEY_NUMBER):
+            return self._render_inkey_hint(hint, value, operand_addr)
         raise NotImplementedError(
             f"{type(self).__name__} doesn't yet handle "
             f"FormatHint.{hint.name}"
@@ -2061,26 +2061,34 @@ class AssemblerRenderer(TextRenderer):
         """
         return ""
 
-    def _render_inkey_immediate(self, value: int, operand_addr: int) -> str:
-        """Symbolic form for a ``FormatHint.INKEY`` byte.
+    def _render_inkey_hint(
+        self, hint: FormatHint, value: int, operand_addr: int,
+    ) -> str:
+        """Symbolic form for a ``FormatHint.INKEY`` or
+        ``FormatHint.INKEY_NUMBER`` byte.
 
-        The disassembled byte is ``(255 - inkey_key) EOR 128`` (mod 256);
-        invert to recover the named BBC negative INKEY scan code. Machine-
-        agnostic: the INKEY table is lazy-imported from the ``acorn_mos``
-        environment. Bytes that don't decode to a named key fall back to
-        a hex literal with a one-time warning.
+        An INKEY number renders as its ``inkey_key_<name>`` constant; an
+        OSBYTE &79 scan code as ``(255 - inkey_key_<name>) EOR 128``,
+        which reduces to the byte. Machine-agnostic: the INKEY table is
+        lazy-imported from the ``acorn_mos`` environment. Bytes that
+        don't decode to a named key fall back to a hex literal with a
+        warning.
         """
-        from dasmos.ext.environments.acorn_mos.enums import INKEY_ENUM
-        inkey_key = (255 - value) ^ 0x80
-        name = INKEY_ENUM.get(inkey_key)
+        from dasmos.ext.environments.acorn_mos.enums import (
+            INKEY_ENUM, inkey_number_for_hint,
+        )
+        name = INKEY_ENUM.get(inkey_number_for_hint(hint, value))
         if name is None:
             warnings.warn(
-                f"FormatHint.INKEY at {self.hex(operand_addr)} — byte "
-                f"{self.hex2(value)} doesn't decode to a named BBC INKEY "
-                f"scan code; falling back to a hex literal.",
+                f"FormatHint.{hint.name} at {self.hex(operand_addr)} — byte "
+                f"{self.hex2(value)} doesn't decode to a named BBC "
+                f"{'INKEY number' if hint is FormatHint.INKEY_NUMBER else 'INKEY scan code'}; "
+                f"falling back to a hex literal.",
                 stacklevel=2,
             )
             return self.hex2(value)
+        if hint is FormatHint.INKEY_NUMBER:
+            return name
         # ``(255 - inkey_key) EOR 128`` as an assembler-neutral tree, so
         # each backend renders its own XOR token (beebasm ``EOR``, 64tass
         # ``^``). The Group keeps the readability parens.

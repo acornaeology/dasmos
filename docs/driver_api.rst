@@ -740,14 +740,15 @@ The general form is :meth:`Disassembler.format_hint
    d.format_hint(0xe017, FormatHint.BINARY)
 
 The current set of hints is ``CHAR``, ``DECIMAL``, ``HEX``,
-``BINARY``, ``OCTAL`` and ``INKEY`` (BBC-specific keyboard scan
-code). The beebasm renderer translates each into its native form
-(``ASC("A")`` or ``'A'`` for ``CHAR``; ``%01010101`` for ``BINARY``;
-``(255 - inkey_key_<name>) EOR 128`` for ``INKEY``). The JSON
-renderer surfaces the hint in the per-operand record so downstream
+``BINARY``, ``OCTAL``, and the BBC-specific ``INKEY`` (a keyboard scan
+code) and ``INKEY_NUMBER`` (a negative INKEY number). The beebasm
+renderer translates each into its native form (``ASC("A")`` or ``'A'``
+for ``CHAR``; ``%01010101`` for ``BINARY``; ``(255 - inkey_key_<name>)
+EOR 128`` for ``INKEY``; ``inkey_key_<name>`` for ``INKEY_NUMBER``). The
+JSON renderer surfaces the hint in the per-operand record so downstream
 tooling can choose its own syntax.
 
-Two sugar methods cover the cases used most often:
+Three sugar methods cover the cases used most often:
 
 .. code-block:: python
 
@@ -756,21 +757,32 @@ Two sugar methods cover the cases used most often:
    # char_literal_style.
    d.char_literal(0x9412)
 
+   # The four bytes at &0F20 are negative INKEY numbers, the X that
+   # OSBYTE &81 takes with Y = &FF and BASIC's INKEY(-n) uses: a table
+   # of redefinable keys. Each renders as inkey_key_comma etc.
+   d.inkey_number(0x0F20, 4)
+
    # The byte at &a3c7 is the scan code an OSBYTE &79 caller loads
    # into X to test one specific key: its internal key number EOR &80.
    # Renders as ``(255 - inkey_key_ctrl) EOR 128`` etc.
    d.inkey_code(0xa3c7)
 
+The two INKEY hints apply to immediate operands and to data bytes alike,
+and the disassembly defines each ``inkey_key_<name>`` constant they use,
+so the driver needn't. A byte that doesn't decode to a named key falls
+back to a hex literal with a warning.
+
 When the ``acorn_mos`` env's OSBYTE analyser detects a test of a named
-key, it renders the ``LDX`` operand automatically. OSBYTE &79 with a
-known ``X`` of &80 or more gets ``FormatHint.INKEY``. OSBYTE &81 with
-``Y = &FF`` is different: its ``X`` is the negative INKEY number itself
-(``INKEY(-2)`` passes &FE for CTRL), so it renders as the
-``inkey_key_<name>`` constant. With ``Y`` = 0-&7F, OSBYTE &81's ``X``
-and ``Y`` are a time limit instead, and the call is commented as a timed
-wait for any key. Call :meth:`~dasmos.Disassembler.inkey_code` only when
-the analyser can't infer an OSBYTE &79 scan code (one in a pre-computed
-table, or loaded into ``X`` through an indirect path). Driver-supplied
+key, it marks the ``LDX`` operand itself. OSBYTE &79 with a known ``X``
+of &80 or more gets ``FormatHint.INKEY``. OSBYTE &81 with ``Y = &FF``
+gets ``FormatHint.INKEY_NUMBER``: its ``X`` is the negative INKEY number
+itself (``INKEY(-2)`` passes &FE for CTRL). With ``Y`` = 0-&7F, OSBYTE
+&81's ``X`` and ``Y`` are a time limit instead, and the call is
+commented as a timed wait for any key. Call
+:meth:`~dasmos.Disassembler.inkey_number` or
+:meth:`~dasmos.Disassembler.inkey_code` when the analyser can't see the
+call: a key held in a table, or loaded into ``X`` some distance from
+the ``JSR``, perhaps by a routine of the program's own. Driver-supplied
 expressions via :meth:`~dasmos.Disassembler.expr` always win over
 hints, so ``d.expr(operand_addr, "my_text")`` overrides any analyser
 or driver hint at the same address.

@@ -828,8 +828,12 @@ class JsonRenderer(Renderer[StructuredOutput]):
         # generator) get the abstract semantic alongside the rendered
         # text, so they can present their own visual representation
         # if desired (HTML char glyph, hex+decimal both, etc.).
-        operand_addr = binary_addr + 1
-        hint = ir.format_hints.get_or_none(operand_addr)
+        # An instruction with no operand has no operand byte: the next
+        # byte, and any hint on it, belongs to the next item.
+        hint = (
+            ir.format_hints.get_or_none(binary_addr + 1)
+            if opcode.length() > 1 else None
+        )
         if hint is not None:
             entry["format_hint"] = hint.value
         target = self._target_runtime(ir, binary_addr, opcode)
@@ -993,31 +997,37 @@ class JsonRenderer(Renderer[StructuredOutput]):
                 stacklevel=2,
             )
             return str(value)
-        if hint is FormatHint.INKEY:
-            return self._render_inkey_immediate(value, operand_addr)
+        if hint in (FormatHint.INKEY, FormatHint.INKEY_NUMBER):
+            return self._render_inkey_hint(hint, value, operand_addr)
         raise NotImplementedError(
             f"JsonRenderer doesn't yet handle FormatHint.{hint.name}"
         )
 
-    def _render_inkey_immediate(self, value: int, operand_addr: int) -> str:
-        """Translate :class:`FormatHint.INKEY` to the symbolic
-        ``(255 - inkey_key_<name>) EOR 128`` form, mirroring the
-        beebasm renderer (see its ``_render_inkey_immediate`` for
-        the encoding rationale). The JSON ``format_hint`` field on
-        the item still surfaces ``"inkey"`` so downstream consumers
-        can render their own representation if they want.
+    def _render_inkey_hint(
+        self, hint: FormatHint, value: int, operand_addr: int,
+    ) -> str:
+        """Translate ``FormatHint.INKEY_NUMBER`` to ``inkey_key_<name>``
+        and ``FormatHint.INKEY`` to ``(255 - inkey_key_<name>) EOR 128``,
+        mirroring the assembler renderers (see
+        ``AssemblerRenderer._render_inkey_hint``). The item's
+        ``format_hint`` field still carries the hint, so consumers can
+        render their own representation.
         """
-        from dasmos.ext.environments.acorn_mos.enums import INKEY_ENUM
-        inkey_key = (255 - value) ^ 0x80
-        name = INKEY_ENUM.get(inkey_key)
+        from dasmos.ext.environments.acorn_mos.enums import (
+            INKEY_ENUM, inkey_number_for_hint,
+        )
+        name = INKEY_ENUM.get(inkey_number_for_hint(hint, value))
         if name is None:
             warnings.warn(
-                f"FormatHint.INKEY at &{operand_addr:04x} — byte "
-                f"&{value:02x} doesn't decode to a named BBC INKEY "
-                f"scan code; falling back to a hex literal.",
+                f"FormatHint.{hint.name} at &{operand_addr:04x} — byte "
+                f"&{value:02x} doesn't decode to a named BBC "
+                f"{'INKEY number' if hint is FormatHint.INKEY_NUMBER else 'INKEY scan code'}; "
+                f"falling back to a hex literal.",
                 stacklevel=2,
             )
             return f"&{value:02x}"
+        if hint is FormatHint.INKEY_NUMBER:
+            return name
         return f"(255 - {name}) EOR 128"
 
     @staticmethod
@@ -1342,7 +1352,7 @@ class JsonRenderer(Renderer[StructuredOutput]):
 
         Each populated entry is the hint's ``.value`` string —
         ``"binary"``, ``"hex"``, ``"decimal"``, ``"char"``,
-        ``"inkey"``, or ``"octal"`` — so consumers can render the
+        ``"inkey"``, ``"inkey_number"`` or ``"octal"`` — so consumers can render the
         author-intended representation without re-deriving from the
         raw integer. The beebasm renderer uses the same hints in
         :meth:`BeebasmRenderer._render_byte` and
